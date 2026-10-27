@@ -51,7 +51,6 @@ public protocol SpiceEngineDelegate: AnyObject {
     func engineDidFail(_ error: SessionError)
     func engineDidUpdateDisplay(_ frame: RemoteFrame)
     func engineDidUpdateAgent(_ capabilities: AgentCapabilities)
-    func engineDidReceiveClipboard(_ data: Data, generation: UInt64)
 }
 
 /// UI 與 C 指標之間的邊界。UI 不持有 SpiceSession／channel。
@@ -65,8 +64,6 @@ public protocol SpiceEngineing: AnyObject {
     func sendKey(_ event: KeyEvent)
     func releaseKeys()
     func sendCtrlAltDelete()
-    func sendClipboard(_ data: Data, generation: UInt64) async throws
-    func requestClipboard(generation: UInt64) async throws -> Data
     func attachDisplayRenderer(_ renderer: AnyObject)
     func requestResolution(_ size: CGSize)
 }

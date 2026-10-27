@@ -17,12 +17,8 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            model.session?.clipboard.isWindowActive = true
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             model.session?.releaseKeys()
-            model.session?.clipboard.isWindowActive = false
         }
     }
 

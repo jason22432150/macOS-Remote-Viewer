@@ -2,7 +2,7 @@
 
 原生 macOS App：雙擊 PVE 下載的 `.vv` 開啟 SPICE 遠端畫面，並提供雙向純文字剪貼簿。
 
-第一版範圍見 `macOS-PVE-Remote-Viewer-技術規劃.md`。目前完成階段 A／B 的專案骨架、Parser、session 狀態、剪貼簿政策與 CocoaSpice 連線適配；實機 PVE 連線與剪貼簿壓力測試仍待用新下載的 `.vv` 驗證。
+第一版範圍見 `macOS-PVE-Remote-Viewer-技術規劃.md`。目前完成階段 A／B 的專案骨架、Parser、session 狀態與 CocoaSpice 連線適配；剪貼簿走 SPICE vdagent。實機 PVE 連線仍待用新下載的 `.vv` 驗證。
 
 ## 需求
 
@@ -57,7 +57,7 @@ swift test
 
 - 雙擊、拖放或選單「開啟 .vv…」
 - 快捷鍵依連線檔：全螢幕、釋放游標、`Ctrl+Alt+Ins` 傳送 `Ctrl+Alt+Del`（不是原組合）
-- 剪貼簿預設手動；自動模式僅同步作用中視窗的純文字，上限 1 MiB
+- 剪貼簿由 CocoaSpice／spice-vdagent 自動雙向同步；Guest 需安裝 spice-vdagent
 
 ## 已知限制
 

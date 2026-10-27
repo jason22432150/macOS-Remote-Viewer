@@ -18,11 +18,6 @@ struct RemoteSessionView: View {
             statusBar
         }
         .navigationTitle(controller.profile?.title ?? "SPICE")
-        .onChange(of: controller.agent.supportsClipboard) { _, supports in
-            if supports {
-                model.clipboardTransportSync(controller)
-            }
-        }
     }
 
     private var showsOverlay: Bool {
@@ -38,22 +33,6 @@ struct RemoteSessionView: View {
         HStack {
             Button("關閉") { model.closeSession() }
             Spacer()
-            Button("傳送文字") {
-                Task { await controller.clipboard.sendLocalTextManually() }
-            }
-            Button("取得文字") {
-                Task { await controller.clipboard.fetchRemoteTextManually() }
-            }
-            Picker("剪貼簿", selection: Binding(
-                get: { model.clipboardMode },
-                set: { model.applyClipboardMode($0) }
-            )) {
-                Text("關閉").tag(ClipboardMode.off)
-                Text("手動").tag(ClipboardMode.manual)
-                Text("自動").tag(ClipboardMode.automatic)
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 240)
             Button("Ctrl+Alt+Del") { controller.sendSecureAttention() }
             Button("全螢幕") { NSApp.keyWindow?.toggleFullScreen(nil) }
         }
@@ -99,9 +78,6 @@ struct RemoteSessionView: View {
             } else if !controller.agent.supportsClipboard {
                 Text("剪貼簿不可用").foregroundStyle(.orange)
             }
-            if let error = controller.clipboard.lastError {
-                Text(error.userMessage).foregroundStyle(.red)
-            }
         }
         .font(.caption)
         .padding(.horizontal, 8)
@@ -118,11 +94,5 @@ struct RemoteSessionView: View {
         case .disconnected: return "已斷線"
         case .failed: return "失敗"
         }
-    }
-}
-
-private extension AppModel {
-    func clipboardTransportSync(_ controller: SessionController) {
-        controller.clipboard.isWindowActive = true
     }
 }

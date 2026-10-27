@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 #import <glib.h>
 #import <spice-client.h>
+#import <spice/vd_agent.h>
 
 @implementation CSConnection (PVEConfig)
 
@@ -69,6 +70,26 @@
     // CA 信任與 public-key pinning 不同；明確清空 pubkey
     g_object_set(session, "pubkey", NULL, NULL);
     return YES;
+}
+
+- (SpiceMainChannel *)pve_spiceMain {
+    @try {
+        return (__bridge SpiceMainChannel *)[self valueForKey:@"spiceMain"];
+    } @catch (__unused NSException *exception) {
+        Ivar ivar = class_getInstanceVariable([CSConnection class], "_spiceMain");
+        if (ivar) {
+            return *(SpiceMainChannel * __unsafe_unretained *)((uintptr_t)self + ivar_getOffset(ivar));
+        }
+        return NULL;
+    }
+}
+
+- (BOOL)pve_hasClipboardCapability {
+    SpiceMainChannel *main = [self pve_spiceMain];
+    if (!main) {
+        return NO;
+    }
+    return spice_main_channel_agent_test_capability(main, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND);
 }
 
 @end

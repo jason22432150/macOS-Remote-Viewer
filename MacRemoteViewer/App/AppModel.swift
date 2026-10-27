@@ -11,13 +11,10 @@ extension UTType {
 final class AppModel {
     var session: SessionController?
     var welcomeError: SessionError?
-    var clipboardMode: ClipboardMode = .manual
     var retainSourceFiles = false
 
     let importer = VVFileImporter()
     private let engine = SpiceEngineAdapter()
-    private let pasteboard = PasteboardService()
-    private let clipboardTransport = EngineClipboardTransport()
 
     func open(urls: [URL]) {
         guard let url = urls.first else { return }
@@ -47,23 +44,10 @@ final class AppModel {
         session = nil
     }
 
-    func applyClipboardMode(_ mode: ClipboardMode) {
-        clipboardMode = mode
-        session?.clipboard.setMode(mode)
-        session?.clipboard.isWindowActive = true
-    }
-
     private func startSession(with profile: ConnectionProfile) {
         session?.cancel()
-        clipboardTransport.engine = engine
-        let clipboard = ClipboardCoordinator(
-            pasteboard: pasteboard,
-            transport: clipboardTransport,
-            mode: clipboardMode
-        )
         let controller = SessionController(
             engine: engine,
-            clipboard: clipboard,
             cleanup: SourceFileCleanup(retainEvenIfRequested: retainSourceFiles),
             diagnostics: DiagnosticsLog(sessionID: profile.sessionID)
         )

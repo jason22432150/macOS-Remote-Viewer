@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-/// 每個工作階段的狀態、取消、channel 事件與清理順序。不直接操作 pasteboard。
+/// 每個工作階段的狀態、取消、channel 事件與清理順序。
 @MainActor
 @Observable
 public final class SessionController: SpiceEngineDelegate {
@@ -12,7 +12,6 @@ public final class SessionController: SpiceEngineDelegate {
     public private(set) var cleanupResult: SourceCleanupResult = .skipped
     public private(set) var unknownFieldHint: String?
 
-    public let clipboard: ClipboardCoordinator
     public let diagnostics: DiagnosticsLog
 
     private let engine: SpiceEngineing
@@ -22,13 +21,11 @@ public final class SessionController: SpiceEngineDelegate {
 
     public init(
         engine: SpiceEngineing,
-        clipboard: ClipboardCoordinator,
         files: FileAccessing = FoundationFileAccessor(),
         cleanup: SourceFileCleanup = SourceFileCleanup(),
         diagnostics: DiagnosticsLog = DiagnosticsLog(sessionID: UUID().uuidString)
     ) {
         self.engine = engine
-        self.clipboard = clipboard
         self.files = files
         self.cleanup = cleanup
         self.diagnostics = diagnostics
@@ -39,8 +36,6 @@ public final class SessionController: SpiceEngineDelegate {
         cancel()
         self.profile = profile
         didCleanupSource = false
-        clipboard.invalidateGeneration()
-        clipboard.isWindowActive = true
         unknownFieldHint = profile.unknownFieldNames.isEmpty
             ? nil
             : "忽略未支援欄位：\(profile.unknownFieldNames.joined(separator: ", "))"
@@ -64,8 +59,6 @@ public final class SessionController: SpiceEngineDelegate {
         default:
             state = .disconnecting
         }
-        clipboard.isWindowActive = false
-        clipboard.invalidateGeneration()
         engine.disconnect()
         engine.releaseKeys()
         if state == .disconnecting {
@@ -107,7 +100,6 @@ public final class SessionController: SpiceEngineDelegate {
     }
 
     public func engineDidDisconnect() {
-        clipboard.invalidateGeneration()
         if state != .failed(.disconnected) {
             state = .disconnected
         }
@@ -124,19 +116,12 @@ public final class SessionController: SpiceEngineDelegate {
 
     public func engineDidUpdateAgent(_ capabilities: AgentCapabilities) {
         agent = capabilities
-        clipboard.updateAgent(capabilities)
         if !capabilities.isConnected || !capabilities.supportsClipboard {
             diagnostics.info("guest-agent-limited")
         }
     }
 
-    public func engineDidReceiveClipboard(_ data: Data, generation: UInt64) {
-        clipboard.handleRemoteText(data, generation: generation)
-    }
-
     private func fail(_ error: SessionError) {
-        clipboard.invalidateGeneration()
-        clipboard.isWindowActive = false
         state = .failed(error)
         diagnostics.error(error)
         engine.disconnect()

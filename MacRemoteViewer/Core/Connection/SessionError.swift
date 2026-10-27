@@ -21,9 +21,6 @@ public enum SessionError: Error, Equatable, Sendable {
     case tls
     case authenticationRejected
     case guestAgentUnavailable
-    case clipboardUnsupported
-    case clipboardTooLarge(maxBytes: Int)
-    case clipboardTimeout
     case disconnected
     case unknown(code: String)
 
@@ -68,12 +65,6 @@ public enum SessionError: Error, Equatable, Sendable {
             return "票證已失效或被拒絕。請重新從 PVE 下載連線檔；本 App 不會自動更新票證。"
         case .guestAgentUnavailable:
             return "Guest agent 不可用，畫面與輸入仍可使用，但剪貼簿已停用。"
-        case .clipboardUnsupported:
-            return "遠端不支援文字剪貼簿。"
-        case .clipboardTooLarge:
-            return "文字超過 1 MiB 上限，已拒絕傳送且不會截斷。"
-        case .clipboardTimeout:
-            return "剪貼簿請求逾時。"
         case .disconnected:
             return "遠端連線已中斷。"
         case .unknown:

@@ -12,11 +12,10 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     private var connection: CSConnection?
     private var input: CSInput?
     private var display: CSDisplay?
-    private var clipboardBridge: PVESpiceClipboard?
+    private let spicePasteboard = CocoaSpicePasteboard()
     private var pendingRenderer: CSRenderer?
     private var lastGuestPoint: CGPoint?
     private var workerStarted = false
-    private var currentGeneration: UInt64 = 1
 
     func startWorker() throws {
         if workerStarted { return }
@@ -29,11 +28,12 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
 
     func connect(profile: ConnectionProfile) throws {
         disconnect()
-        currentGeneration += 1
         let connection = CSConnection(host: profile.host, port: String(profile.tlsPort))
         connection.audioEnabled = false
         connection.delegate = self
-        connection.session.shareClipboard = false
+        connection.session.shareClipboard = true
+        connection.session.pasteboardDelegate = spicePasteboard
+        spicePasteboard.startPolling()
 
         let proxy = profile.proxyURL?.absoluteString
         do {
@@ -50,7 +50,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
         }
 
         self.connection = connection
-        clipboardBridge = PVESpiceClipboard(connection: connection)
         attachPendingRenderer()
         guard connection.connect() else {
             throw SessionError.network
@@ -59,12 +58,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
 
     func disconnect() {
         input?.releaseKeys()
+        spicePasteboard.stopPolling()
+        connection?.session.shareClipboard = false
+        connection?.session.pasteboardDelegate = nil
         connection?.disconnect()
         connection?.delegate = nil
         connection = nil
         input = nil
         display = nil
-        clipboardBridge = nil
         pendingRenderer = nil
         lastGuestPoint = nil
     }
@@ -121,34 +122,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
         input.send(.release, code: Int32(ctrl))
     }
 
-    func sendClipboard(_ data: Data, generation: UInt64) async throws {
-        guard generation == currentGeneration else { throw SessionError.cancelled }
-        guard let clipboardBridge else { throw SessionError.clipboardUnsupported }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            clipboardBridge.sendUTF8(data) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-    }
-
-    func requestClipboard(generation: UInt64) async throws -> Data {
-        guard generation == currentGeneration else { throw SessionError.cancelled }
-        guard let clipboardBridge else { throw SessionError.clipboardUnsupported }
-        return try await withCheckedThrowingContinuation { continuation in
-            clipboardBridge.requestUTF8 { data, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: data ?? Data())
-                }
-            }
-        }
-    }
-
     func attachDisplayRenderer(_ renderer: AnyObject) {
         guard let renderer = renderer as? CSRenderer else { return }
         pendingRenderer = renderer
@@ -180,9 +153,9 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     }
 
     nonisolated func spiceInputAvailable(_ connection: CSConnection, input: CSInput) {
-        input.requestMouseMode(false)
         hopToMain(from: connection) { adapter in
             adapter.input = input
+            input.requestMouseMode(false)
         }
     }
 
@@ -233,10 +206,9 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
 
     nonisolated func spiceAgentConnected(_ connection: CSConnection, supportingFeatures features: CSConnectionAgentFeature) {
         hopToMain(from: connection) { adapter in
-            let clipboardOK = adapter.clipboardBridge?.hasClipboardCapability() ?? false
             adapter.delegate?.engineDidUpdateAgent(AgentCapabilities(
                 isConnected: true,
-                supportsClipboard: clipboardOK,
+                supportsClipboard: adapter.connection?.pve_hasClipboardCapability() ?? false,
                 supportsMonitorsConfig: features.contains(.monitorsConfig)
             ))
         }

@@ -22,16 +22,14 @@
 		B000000000006AA5A6749ADF /* VVParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000009E7CC4B7F8A6 /* VVParser.swift */; };
 		B00000000000FEDD308AD96D /* SourceFilePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000F3500A667694 /* SourceFilePolicy.swift */; };
 		B00000000000BB9430EBD44A /* VVFileImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000001F2EC22BCEF9 /* VVFileImporter.swift */; };
-		B00000000000EE9675C0B7F4 /* ClipboardCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000006C18A970B8A1 /* ClipboardCoordinator.swift */; };
 		B00000000000D16482EC3322 /* SessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000094D843632FD9 /* SessionController.swift */; };
 		B00000000000E1BD6FEE90B8 /* DiagnosticsLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000004558012E8B67 /* DiagnosticsLog.swift */; };
 		B00000000000503CF8E86B06 /* StubSpiceEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000006FB8AAD1CC05 /* StubSpiceEngine.swift */; };
+		B00000000000B32337C0E6C2 /* CocoaSpicePasteboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000AB3B8B7E2E4F /* CocoaSpicePasteboard.swift */; };
 		B00000000000E4F36F2FB575 /* SpiceEngineAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000CA5A3B8822DA /* SpiceEngineAdapter.swift */; };
-		B000000000009A33057F8AFF /* PasteboardService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000002CD13B30FE56 /* PasteboardService.swift */; };
 		B00000000000F56A181E63DC /* InputRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000005904A95E5E8B /* InputRouter.swift */; };
 		B000000000007B07AF4C7FDE /* RemoteDisplayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000DA5E4FDF335 /* RemoteDisplayView.swift */; };
 		B00000000000F6EB7DF9ED34 /* CSConnection+PVEConfig.m in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000DC524A525A99 /* CSConnection+PVEConfig.m */; };
-		B00000000000E0BDD4B045E5 /* PVESpiceClipboard.m in Sources */ = {isa = PBXBuildFile; fileRef = B000000000001494F2F3A3AC /* PVESpiceClipboard.m */; };
 		A10000000000000000000015 /* CocoaSpiceNoUsb in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000014 /* CocoaSpiceNoUsb */; };
 /* End PBXBuildFile section */
 
@@ -51,19 +49,16 @@
 		B000000000009E7CC4B7F8A6 /* VVParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/VVParser.swift"; sourceTree = "<group>"; };
 		B00000000000F3500A667694 /* SourceFilePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/SourceFilePolicy.swift"; sourceTree = "<group>"; };
 		B000000000001F2EC22BCEF9 /* VVFileImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/VVFileImporter.swift"; sourceTree = "<group>"; };
-		B000000000006C18A970B8A1 /* ClipboardCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Clipboard/ClipboardCoordinator.swift"; sourceTree = "<group>"; };
 		B0000000000094D843632FD9 /* SessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Features/RemoteSession/SessionController.swift"; sourceTree = "<group>"; };
 		B000000000004558012E8B67 /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Diagnostics/DiagnosticsLog.swift"; sourceTree = "<group>"; };
 		B000000000006FB8AAD1CC05 /* StubSpiceEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Engine/StubSpiceEngine.swift"; sourceTree = "<group>"; };
+		B00000000000AB3B8B7E2E4F /* CocoaSpicePasteboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Engine/CocoaSpicePasteboard.swift"; sourceTree = "<group>"; };
 		B00000000000CA5A3B8822DA /* SpiceEngineAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Engine/SpiceEngineAdapter.swift"; sourceTree = "<group>"; };
-		B000000000002CD13B30FE56 /* PasteboardService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Platform/macOS/PasteboardService.swift"; sourceTree = "<group>"; };
 		B000000000005904A95E5E8B /* InputRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Platform/macOS/InputRouter.swift"; sourceTree = "<group>"; };
 		B000000000000DA5E4FDF335 /* RemoteDisplayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Platform/macOS/RemoteDisplayView.swift"; sourceTree = "<group>"; };
 		B00000000000DC524A525A99 /* CSConnection+PVEConfig.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "Engine/CSConnection+PVEConfig.m"; sourceTree = "<group>"; };
-		B000000000001494F2F3A3AC /* PVESpiceClipboard.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "Engine/PVESpiceClipboard.m"; sourceTree = "<group>"; };
 		B00000000000D8709828886A /* MacRemoteViewer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Engine/MacRemoteViewer-Bridging-Header.h"; sourceTree = "<group>"; };
 		B00000000000DC524A525A94 /* CSConnection+PVEConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Engine/CSConnection+PVEConfig.h"; sourceTree = "<group>"; };
-		B000000000001494F2F3A3A7 /* PVESpiceClipboard.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Engine/PVESpiceClipboard.h"; sourceTree = "<group>"; };
 		B0000000000003F96932D73F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "App/Info.plist"; sourceTree = "<group>"; };
 		B00000000000BE10C9E3E566 /* MacRemoteViewer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "App/MacRemoteViewer.entitlements"; sourceTree = "<group>"; };
 		A10000000000000000000017 /* Generated.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Generated.xcconfig; path = BuildSupport/Generated.xcconfig; sourceTree = "<group>"; };
@@ -109,19 +104,16 @@
 				B000000000009E7CC4B7F8A6 /* VVParser.swift */,
 				B00000000000F3500A667694 /* SourceFilePolicy.swift */,
 				B000000000001F2EC22BCEF9 /* VVFileImporter.swift */,
-				B000000000006C18A970B8A1 /* ClipboardCoordinator.swift */,
 				B0000000000094D843632FD9 /* SessionController.swift */,
 				B000000000004558012E8B67 /* DiagnosticsLog.swift */,
 				B000000000006FB8AAD1CC05 /* StubSpiceEngine.swift */,
+				B00000000000AB3B8B7E2E4F /* CocoaSpicePasteboard.swift */,
 				B00000000000CA5A3B8822DA /* SpiceEngineAdapter.swift */,
-				B000000000002CD13B30FE56 /* PasteboardService.swift */,
 				B000000000005904A95E5E8B /* InputRouter.swift */,
 				B000000000000DA5E4FDF335 /* RemoteDisplayView.swift */,
 				B00000000000DC524A525A99 /* CSConnection+PVEConfig.m */,
-				B000000000001494F2F3A3AC /* PVESpiceClipboard.m */,
 				B00000000000D8709828886A /* MacRemoteViewer-Bridging-Header.h */,
 				B00000000000DC524A525A94 /* CSConnection+PVEConfig.h */,
-				B000000000001494F2F3A3A7 /* PVESpiceClipboard.h */,
 				B0000000000003F96932D73F /* Info.plist */,
 				B00000000000BE10C9E3E566 /* MacRemoteViewer.entitlements */,
 			);
@@ -226,16 +218,14 @@
 				B000000000006AA5A6749ADF /* VVParser.swift in Sources */,
 				B00000000000FEDD308AD96D /* SourceFilePolicy.swift in Sources */,
 				B00000000000BB9430EBD44A /* VVFileImporter.swift in Sources */,
-				B00000000000EE9675C0B7F4 /* ClipboardCoordinator.swift in Sources */,
 				B00000000000D16482EC3322 /* SessionController.swift in Sources */,
 				B00000000000E1BD6FEE90B8 /* DiagnosticsLog.swift in Sources */,
 				B00000000000503CF8E86B06 /* StubSpiceEngine.swift in Sources */,
+				B00000000000B32337C0E6C2 /* CocoaSpicePasteboard.swift in Sources */,
 				B00000000000E4F36F2FB575 /* SpiceEngineAdapter.swift in Sources */,
-				B000000000009A33057F8AFF /* PasteboardService.swift in Sources */,
 				B00000000000F56A181E63DC /* InputRouter.swift in Sources */,
 				B000000000007B07AF4C7FDE /* RemoteDisplayView.swift in Sources */,
 				B00000000000F6EB7DF9ED34 /* CSConnection+PVEConfig.m in Sources */,
-				B00000000000E0BDD4B045E5 /* PVESpiceClipboard.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

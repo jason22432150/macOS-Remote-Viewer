@@ -33,15 +33,6 @@ struct MacRemoteViewerApp: App {
                     model.session?.releaseKeys()
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
-                Divider()
-                Button("傳送本機文字剪貼簿") {
-                    Task { await model.session?.clipboard.sendLocalTextManually() }
-                }
-                .disabled(model.clipboardMode == .off)
-                Button("取得遠端文字剪貼簿") {
-                    Task { await model.session?.clipboard.fetchRemoteTextManually() }
-                }
-                .disabled(model.clipboardMode == .off)
             }
         }
 

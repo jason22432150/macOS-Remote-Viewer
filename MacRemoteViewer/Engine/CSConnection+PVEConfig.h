@@ -15,6 +15,9 @@ NS_ASSUME_NONNULL_BEGIN
              password:(NSString *)password
                 error:(NSError * _Nullable * _Nullable)error;
 
+/// spice-vdagent 是否宣告 CLIPBOARD_BY_DEMAND；main channel 尚未就緒時回傳 NO。
+- (BOOL)pve_hasClipboardCapability;
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -22,23 +22,20 @@ SWIFT = [
     "Core/VVFile/VVParser.swift",
     "Core/VVFile/SourceFilePolicy.swift",
     "Core/VVFile/VVFileImporter.swift",
-    "Core/Clipboard/ClipboardCoordinator.swift",
     "Features/RemoteSession/SessionController.swift",
     "Diagnostics/DiagnosticsLog.swift",
     "Engine/StubSpiceEngine.swift",
+    "Engine/CocoaSpicePasteboard.swift",
     "Engine/SpiceEngineAdapter.swift",
-    "Platform/macOS/PasteboardService.swift",
     "Platform/macOS/InputRouter.swift",
     "Platform/macOS/RemoteDisplayView.swift",
 ]
 OBJC = [
     "Engine/CSConnection+PVEConfig.m",
-    "Engine/PVESpiceClipboard.m",
 ]
 HEADERS = [
     "Engine/MacRemoteViewer-Bridging-Header.h",
     "Engine/CSConnection+PVEConfig.h",
-    "Engine/PVESpiceClipboard.h",
 ]
 
 IDS = {

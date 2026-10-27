@@ -14,10 +14,8 @@ final class SessionControllerTests: XCTestCase {
             modificationTime: 10
         )
         let engine = MockEngine()
-        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
         let controller = SessionController(
             engine: engine,
-            clipboard: clipboard,
             files: files,
             cleanup: SourceFileCleanup()
         )
@@ -56,8 +54,7 @@ final class SessionControllerTests: XCTestCase {
             modificationTime: 2
         )
         let engine = MockEngine()
-        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
-        let controller = SessionController(engine: engine, clipboard: clipboard, files: files)
+        let controller = SessionController(engine: engine, files: files)
         let profile = try VVParser().parse(data: Data(Self.minimalVV().utf8), sourceIdentity: original)
         controller.open(profile)
         engine.delegate?.engineDidConnect()
@@ -69,18 +66,16 @@ final class SessionControllerTests: XCTestCase {
         let files = MockFileAccessor()
         let engine = MockEngine()
         engine.connectError = .authenticationRejected
-        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
-        let controller = SessionController(engine: engine, clipboard: clipboard, files: files)
+        let controller = SessionController(engine: engine, files: files)
         let profile = try VVParser().parse(data: Data(Self.minimalVV().utf8))
         controller.open(profile)
         XCTAssertEqual(controller.state, .failed(.authenticationRejected))
         XCTAssertTrue(files.removed.isEmpty)
     }
 
-    func testCancelReleasesKeysAndInvalidatesClipboardGeneration() throws {
+    func testCancelReleasesKeys() throws {
         let engine = MockEngine()
-        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
-        let controller = SessionController(engine: engine, clipboard: clipboard)
+        let controller = SessionController(engine: engine)
         controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
         engine.delegate?.engineDidConnect()
         controller.cancel()
@@ -90,8 +85,7 @@ final class SessionControllerTests: XCTestCase {
 
     func testAttachRendererForwardsToEngine() throws {
         let engine = MockEngine()
-        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
-        let controller = SessionController(engine: engine, clipboard: clipboard)
+        let controller = SessionController(engine: engine)
         let renderer = NSObject()
         controller.attachRenderer(renderer)
         XCTAssertTrue(engine.attachedRenderer === renderer)
@@ -99,8 +93,7 @@ final class SessionControllerTests: XCTestCase {
 
     func testDisplayUpdateStoresFrameForViewport() throws {
         let engine = MockEngine()
-        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
-        let controller = SessionController(engine: engine, clipboard: clipboard)
+        let controller = SessionController(engine: engine)
         controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
         engine.delegate?.engineDidConnect()
         engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1920, height: 1080))
@@ -141,8 +134,6 @@ private final class MockEngine: SpiceEngineing {
     func sendKey(_ event: KeyEvent) {}
     func releaseKeys() { didReleaseKeys = true }
     func sendCtrlAltDelete() {}
-    func sendClipboard(_ data: Data, generation: UInt64) async throws {}
-    func requestClipboard(generation: UInt64) async throws -> Data { Data() }
     func attachDisplayRenderer(_ renderer: AnyObject) { attachedRenderer = renderer }
     func requestResolution(_ size: CGSize) {}
 }
@@ -166,18 +157,4 @@ private final class MockFileAccessor: FileAccessing, @unchecked Sendable {
 
     func startAccessing(_ url: URL) -> Bool { true }
     func stopAccessing(_ url: URL) {}
-}
-
-private final class MockPasteboard: PasteboardAccessing {
-    var changeCount: Int = 0
-    func readPlainText() -> String? { nil }
-    func writePlainText(_ text: String) {}
-    func containsNonTextPayload() -> Bool { false }
-}
-
-private final class MockClipboardTransport: SpiceClipboardTransporting {
-    var hasAgent = true
-    var supportsClipboard = true
-    func sendPlainText(_ utf8: Data, generation: UInt64) async throws {}
-    func requestPlainText(generation: UInt64) async throws -> Data { Data() }
 }
