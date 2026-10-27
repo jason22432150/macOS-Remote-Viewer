@@ -24,6 +24,8 @@ final class AppPreferencesStoreTests: XCTestCase {
     func testLoadReturnsDefaultsWhenEmpty() {
         let preferences = store.load()
         XCTAssertEqual(preferences.scrollWheelDirection, .natural)
+        XCTAssertEqual(preferences.mouseWheelSensitivity, ScrollSensitivity.default)
+        XCTAssertEqual(preferences.trackpadScrollSensitivity, ScrollSensitivity.default)
         XCTAssertEqual(preferences.language, .zhHant)
         XCTAssertTrue(preferences.deleteVVFileAfterConnect)
         XCTAssertTrue(preferences.matchGuestResolutionToWindow)
@@ -35,6 +37,8 @@ final class AppPreferencesStoreTests: XCTestCase {
     func testSaveAndLoadRoundTrip() throws {
         var preferences = AppPreferences()
         preferences.scrollWheelDirection = .reversed
+        preferences.mouseWheelSensitivity = 2
+        preferences.trackpadScrollSensitivity = 0.5
         preferences.language = .english
         preferences.deleteVVFileAfterConnect = false
         preferences.loggingEnabled = false
@@ -66,9 +70,31 @@ final class AppPreferencesStoreTests: XCTestCase {
         let loaded = store.load()
         XCTAssertEqual(loaded.language, .english)
         XCTAssertEqual(loaded.scrollWheelDirection, .natural)
+        XCTAssertEqual(loaded.mouseWheelSensitivity, ScrollSensitivity.default)
+        XCTAssertEqual(loaded.trackpadScrollSensitivity, ScrollSensitivity.default)
         XCTAssertTrue(loaded.deleteVVFileAfterConnect)
         XCTAssertTrue(loaded.matchGuestResolutionToWindow)
         XCTAssertTrue(loaded.loggingEnabled)
+    }
+
+    func testAssigningOutOfRangeScrollSensitivityClampsInPlace() {
+        var preferences = AppPreferences()
+        preferences.mouseWheelSensitivity = 100
+        preferences.trackpadScrollSensitivity = -1
+        XCTAssertEqual(preferences.mouseWheelSensitivity, ScrollSensitivity.maximum)
+        XCTAssertEqual(preferences.trackpadScrollSensitivity, ScrollSensitivity.minimum)
+    }
+
+    func testOutOfRangeScrollSensitivityIsClampedOnLoad() throws {
+        let payload: [String: Any] = [
+            "mouseWheelSensitivity": 100,
+            "trackpadScrollSensitivity": 0
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        defaults.set(data, forKey: UserDefaultsPreferencesStore.defaultKey)
+        let loaded = store.load()
+        XCTAssertEqual(loaded.mouseWheelSensitivity, ScrollSensitivity.maximum)
+        XCTAssertEqual(loaded.trackpadScrollSensitivity, ScrollSensitivity.minimum)
     }
 
     func testCorruptJSONFallsBackToDefaults() {
@@ -82,6 +108,10 @@ final class AppPreferencesStoreTests: XCTestCase {
         let settings = AppSettings(store: store, fileLog: FileLogSink(enabled: true, writer: MemoryFileLogWriter()))
         settings.preferences.language = .english
         XCTAssertEqual(store.load().language, .english)
+        settings.preferences.mouseWheelSensitivity = 1.5
+        settings.preferences.trackpadScrollSensitivity = 0.75
+        XCTAssertEqual(store.load().mouseWheelSensitivity, 1.5)
+        XCTAssertEqual(store.load().trackpadScrollSensitivity, 0.75)
         settings.selectResolutionPreset(RemoteResolutionPreset(width: 1600, height: 900))
         XCTAssertFalse(store.load().matchGuestResolutionToWindow)
         XCTAssertEqual(store.load().manualResolutionWidth, 1600)

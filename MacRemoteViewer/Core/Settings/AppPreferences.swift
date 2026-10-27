@@ -27,9 +27,31 @@ public enum ScrollWheelDirection: String, Codable, CaseIterable, Identifiable, S
     public var id: String { rawValue }
 }
 
+/// 設定頁與持久化用的滾動靈敏度倍率。
+/// 數值必須與 `ScrollWheelMapping` 的常數相同；兩邊不能互相 import，否則 Xcode batch compile 會 cycle。
+public enum ScrollSensitivity: Sendable {
+    public static let `default`: Double = 1
+    public static let minimum: Double = 0.05
+    public static let maximum: Double = 4
+    public static let step: Double = 0.05
+
+    public static func clamp(_ value: Double) -> Double {
+        guard !value.isNaN else { return `default` }
+        return min(max(value, minimum), maximum)
+    }
+}
+
 /// 可持久化的使用者偏好。
 public struct AppPreferences: Equatable, Sendable, Codable {
     public var scrollWheelDirection: ScrollWheelDirection
+    /// 傳統滑鼠滾輪（line-based）倍率，1 為目前預設。
+    public var mouseWheelSensitivity: Double {
+        didSet { mouseWheelSensitivity = ScrollSensitivity.clamp(mouseWheelSensitivity) }
+    }
+    /// 觸控板雙指（pixel-based）倍率，1 為目前預設。
+    public var trackpadScrollSensitivity: Double {
+        didSet { trackpadScrollSensitivity = ScrollSensitivity.clamp(trackpadScrollSensitivity) }
+    }
     public var language: AppLanguage
     /// 成功連線後是否刪除匯入的 `.vv`。
     public var deleteVVFileAfterConnect: Bool
@@ -41,6 +63,8 @@ public struct AppPreferences: Equatable, Sendable, Codable {
 
     public init(
         scrollWheelDirection: ScrollWheelDirection = .natural,
+        mouseWheelSensitivity: Double = ScrollSensitivity.default,
+        trackpadScrollSensitivity: Double = ScrollSensitivity.default,
         language: AppLanguage = .zhHant,
         deleteVVFileAfterConnect: Bool = true,
         matchGuestResolutionToWindow: Bool = true,
@@ -49,6 +73,8 @@ public struct AppPreferences: Equatable, Sendable, Codable {
         loggingEnabled: Bool = true
     ) {
         self.scrollWheelDirection = scrollWheelDirection
+        self.mouseWheelSensitivity = ScrollSensitivity.clamp(mouseWheelSensitivity)
+        self.trackpadScrollSensitivity = ScrollSensitivity.clamp(trackpadScrollSensitivity)
         self.language = language
         self.deleteVVFileAfterConnect = deleteVVFileAfterConnect
         self.matchGuestResolutionToWindow = matchGuestResolutionToWindow
@@ -64,6 +90,14 @@ public struct AppPreferences: Equatable, Sendable, Codable {
             ScrollWheelDirection.self,
             forKey: .scrollWheelDirection
         ) ?? fallback.scrollWheelDirection
+        mouseWheelSensitivity = ScrollSensitivity.clamp(
+            try container.decodeIfPresent(Double.self, forKey: .mouseWheelSensitivity)
+                ?? fallback.mouseWheelSensitivity
+        )
+        trackpadScrollSensitivity = ScrollSensitivity.clamp(
+            try container.decodeIfPresent(Double.self, forKey: .trackpadScrollSensitivity)
+                ?? fallback.trackpadScrollSensitivity
+        )
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? fallback.language
         deleteVVFileAfterConnect = try container.decodeIfPresent(
             Bool.self,

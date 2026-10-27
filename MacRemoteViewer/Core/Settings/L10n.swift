@@ -36,6 +36,12 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case scrollDirection
     case scrollNatural
     case scrollReversed
+    case mouseWheelSensitivity
+    case mouseWheelSensitivityHelp
+    case trackpadScrollSensitivity
+    case trackpadScrollSensitivityHelp
+    case scrollSensitivitySlow
+    case scrollSensitivityFast
     case language
     case deleteVVAfterConnect
     case deleteVVAfterConnectHelp
@@ -130,6 +136,12 @@ public enum L10n {
         .scrollDirection: "滾輪方向",
         .scrollNatural: "與系統相同",
         .scrollReversed: "反向",
+        .mouseWheelSensitivity: "滑鼠滾輪靈敏度",
+        .mouseWheelSensitivityHelp: "調整傳統滑鼠滾輪（一格一線）送到遠端的幅度。1× 為目前預設。",
+        .trackpadScrollSensitivity: "觸控板雙指靈敏度",
+        .trackpadScrollSensitivityHelp: "調整觸控板雙指捲動送到遠端的幅度。Magic Mouse 的精準滾動也使用此設定。1× 為目前預設。",
+        .scrollSensitivitySlow: "慢",
+        .scrollSensitivityFast: "快",
         .language: "語言",
         .deleteVVAfterConnect: "成功連線後刪除 .vv 檔案",
         .deleteVVAfterConnectHelp: "PVE 票證通常只能用一次。開啟後刪除可避免誤用過期檔；測試時可關閉此選項以重複使用同一檔案。",
@@ -201,6 +213,12 @@ public enum L10n {
         .scrollDirection: "Scroll wheel direction",
         .scrollNatural: "Match system",
         .scrollReversed: "Reversed",
+        .mouseWheelSensitivity: "Mouse wheel sensitivity",
+        .mouseWheelSensitivityHelp: "Scales traditional mouse-wheel notches sent to the guest. 1× is the current default.",
+        .trackpadScrollSensitivity: "Trackpad two-finger sensitivity",
+        .trackpadScrollSensitivityHelp: "Scales two-finger trackpad scrolling sent to the guest. Precise Magic Mouse scrolling uses this setting too. 1× is the current default.",
+        .scrollSensitivitySlow: "Slow",
+        .scrollSensitivityFast: "Fast",
         .language: "Language",
         .deleteVVAfterConnect: "Delete the .vv file after a successful connection",
         .deleteVVAfterConnectHelp: "PVE tickets are usually one-time. Deleting the file avoids reusing an expired ticket. Turn this off when you need to reuse the same file while testing.",

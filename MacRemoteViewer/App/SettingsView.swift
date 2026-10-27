@@ -16,6 +16,19 @@ struct SettingsView: View {
                     Text(L10n.string(.scrollReversed, language: language)).tag(ScrollWheelDirection.reversed)
                 }
                 .pickerStyle(.segmented)
+
+                ScrollSensitivitySlider(
+                    title: L10n.string(.mouseWheelSensitivity, language: language),
+                    help: L10n.string(.mouseWheelSensitivityHelp, language: language),
+                    value: $settings.preferences.mouseWheelSensitivity,
+                    language: language
+                )
+                ScrollSensitivitySlider(
+                    title: L10n.string(.trackpadScrollSensitivity, language: language),
+                    help: L10n.string(.trackpadScrollSensitivityHelp, language: language),
+                    value: $settings.preferences.trackpadScrollSensitivity,
+                    language: language
+                )
             }
 
             Section(L10n.string(.settingsLanguage, language: language)) {
@@ -87,7 +100,47 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 520, minHeight: 560)
+        .frame(minWidth: 520, minHeight: 640)
         .padding(8)
+    }
+}
+
+/// 滾動靈敏度滑桿：範圍與 `ScrollSensitivity` 共用。
+private struct ScrollSensitivitySlider: View {
+    let title: String
+    let help: String
+    @Binding var value: Double
+    let language: AppLanguage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(formattedValue)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(
+                value: $value,
+                in: ScrollSensitivity.minimum...ScrollSensitivity.maximum,
+                step: ScrollSensitivity.step
+            ) {
+                Text(title)
+            } minimumValueLabel: {
+                Text(L10n.string(.scrollSensitivitySlow, language: language))
+            } maximumValueLabel: {
+                Text(L10n.string(.scrollSensitivityFast, language: language))
+            }
+            Text(help)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var formattedValue: String {
+        value.formatted(
+            .number.precision(.fractionLength(0...2)).locale(language.locale)
+        ) + "×"
     }
 }

@@ -14,9 +14,10 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 560)
-        .onAppear { syncScrollWheel() }
-        .onChange(of: model.settings.preferences.scrollWheelDirection) { _, _ in
-            syncScrollWheel()
+        .onAppear { syncScrollInput() }
+        // 監看整包 preferences，之後新增滾動相關欄位時不必再漏接 onChange。
+        .onChange(of: model.settings.preferences) { _, _ in
+            syncScrollInput()
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
@@ -26,8 +27,11 @@ struct ContentView: View {
         }
     }
 
-    private func syncScrollWheel() {
-        router.invertScrollWheel = model.settings.preferences.invertScrollWheel
+    private func syncScrollInput() {
+        let preferences = model.settings.preferences
+        router.invertScrollWheel = preferences.invertScrollWheel
+        router.mouseWheelSensitivity = preferences.mouseWheelSensitivity
+        router.trackpadScrollSensitivity = preferences.trackpadScrollSensitivity
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {

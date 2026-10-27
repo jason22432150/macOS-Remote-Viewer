@@ -18,6 +18,14 @@ final class L10nTests: XCTestCase {
             L10n.string(.scrollReversed, language: .zhHant),
             L10n.string(.scrollReversed, language: .english)
         )
+        XCTAssertNotEqual(
+            L10n.string(.mouseWheelSensitivity, language: .zhHant),
+            L10n.string(.mouseWheelSensitivity, language: .english)
+        )
+        XCTAssertNotEqual(
+            L10n.string(.trackpadScrollSensitivity, language: .zhHant),
+            L10n.string(.trackpadScrollSensitivity, language: .english)
+        )
     }
 
     func testFormatInsertsSafeFieldName() {

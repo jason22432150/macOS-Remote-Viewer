@@ -6,6 +6,10 @@ final class InputRouter {
     var captured = true
     /// 與系統滾輪相反時為 true，來自可持久化的使用者偏好。
     var invertScrollWheel = false
+    /// 傳統滑鼠滾輪倍率，1 為預設。
+    var mouseWheelSensitivity: Double = 1
+    /// 觸控板雙指／精準滾動倍率，1 為預設。
+    var trackpadScrollSensitivity: Double = 1
     private var pressedScancodes: Set<Int> = []
 
     func mouseEvent(from event: NSEvent, in view: NSView, mapping: GuestPointerMapping) -> MouseEvent? {
@@ -31,7 +35,10 @@ final class InputRouter {
         case .scrollWheel:
             let delta = ScrollWheelMapping.guestDelta(
                 event.scrollingDeltaY,
-                inverted: invertScrollWheel
+                inverted: invertScrollWheel,
+                hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas,
+                mouseWheelSensitivity: mouseWheelSensitivity,
+                trackpadScrollSensitivity: trackpadScrollSensitivity
             )
             return MouseEvent(kind: .scroll, point: point, buttonMask: mask, scrollDelta: delta)
         default:

@@ -90,3 +90,35 @@ public struct GuestPointerMapping: Equatable, Sendable {
         guestPoint(fromViewPoint: viewPoint, bounds: bounds) != nil
     }
 }
+
+/// 把本機滾輪位移轉成要送給 guest 的方向與幅度。
+/// 與 `GuestPointerMapping` 同檔，讓 `InputRouter` 在 Xcode batch compile 下仍看得到此型別。
+public enum ScrollWheelMapping {
+    public static let defaultSensitivity: Double = 1
+    public static let minimumSensitivity: Double = 0.05
+    public static let maximumSensitivity: Double = 4
+    /// 觸控板／Magic Mouse 的像素位移比滾輪一格大很多，先縮再套用使用者倍率。
+    public static let preciseScrollBaseScale: Double = 0.25
+
+    /// `inverted` 為 true 時正負相反，用來對應「反向滾輪」。
+    /// 傳統滑鼠滾輪是 line-based（`hasPreciseScrollingDeltas == false`）；
+    /// 觸控板雙指與 Magic Mouse 是 pixel-based，共用觸控板靈敏度。
+    public static func guestDelta(
+        _ scrollingDeltaY: CGFloat,
+        inverted: Bool,
+        hasPreciseScrollingDeltas: Bool = false,
+        mouseWheelSensitivity: Double = defaultSensitivity,
+        trackpadScrollSensitivity: Double = defaultSensitivity
+    ) -> CGFloat {
+        let directed = inverted ? -scrollingDeltaY : scrollingDeltaY
+        let userScale = hasPreciseScrollingDeltas ? trackpadScrollSensitivity : mouseWheelSensitivity
+        let baseScale = hasPreciseScrollingDeltas ? preciseScrollBaseScale : 1
+        return directed * CGFloat(clampSensitivity(userScale) * baseScale)
+    }
+
+    /// 非法或超出範圍的靈敏度回到可操作區間，避免 0 或極大值讓滾動失效。
+    public static func clampSensitivity(_ value: Double) -> Double {
+        guard !value.isNaN else { return defaultSensitivity }
+        return min(max(value, minimumSensitivity), maximumSensitivity)
+    }
+}
