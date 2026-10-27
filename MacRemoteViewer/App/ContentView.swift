@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -55,9 +56,10 @@ struct WelcomeView: View {
     var body: some View {
         let language = model.settings.language
         VStack(spacing: 20) {
-            Image(systemName: "display")
-                .font(.system(size: 48))
-                .foregroundStyle(.tint)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 96, height: 96)
             Text("Mac Remote Viewer")
                 .font(.largeTitle.weight(.semibold))
             Text(L10n.string(.welcomeSubtitle, language: language))
