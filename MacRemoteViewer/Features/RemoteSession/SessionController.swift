@@ -10,9 +10,9 @@ public final class SessionController: SpiceEngineDelegate {
     public private(set) var agent: AgentCapabilities = AgentCapabilities()
     public private(set) var displaySize: RemoteFrame?
     public private(set) var cleanupResult: SourceCleanupResult = .skipped
-    public private(set) var unknownFieldHint: String?
 
     public let diagnostics: DiagnosticsLog
+    public private(set) var resolutionPreference: GuestResolutionPreference
 
     private let engine: SpiceEngineing
     private let files: FileAccessing
@@ -28,13 +28,15 @@ public final class SessionController: SpiceEngineDelegate {
         files: FileAccessing = FoundationFileAccessor(),
         cleanup: SourceFileCleanup = SourceFileCleanup(),
         diagnostics: DiagnosticsLog = DiagnosticsLog(sessionID: UUID().uuidString),
-        resolutionDebounce: Duration = .milliseconds(400)
+        resolutionDebounce: Duration = .milliseconds(400),
+        resolutionPreference: GuestResolutionPreference = .matchWindow
     ) {
         self.engine = engine
         self.files = files
         self.cleanup = cleanup
         self.diagnostics = diagnostics
         self.resolutionDebounce = resolutionDebounce
+        self.resolutionPreference = resolutionPreference
         self.engine.delegate = self
     }
 
@@ -42,9 +44,6 @@ public final class SessionController: SpiceEngineDelegate {
         cancel()
         self.profile = profile
         didCleanupSource = false
-        unknownFieldHint = profile.unknownFieldNames.isEmpty
-            ? nil
-            : "忽略未支援欄位：\(profile.unknownFieldNames.joined(separator: ", "))"
         diagnostics.compatibilityHint(unknownFields: profile.unknownFieldNames)
         state = .connecting
         do {
@@ -104,6 +103,13 @@ public final class SessionController: SpiceEngineDelegate {
 
     public func requestResolution(_ size: CGSize) {
         updateViewportSize(size)
+    }
+
+    /// 設定頁變更解析度策略時立刻套用；重設 lastRequested 以免被去重擋下。
+    public func applyResolutionPreference(_ preference: GuestResolutionPreference) {
+        resolutionPreference = preference
+        lastRequestedFrame = nil
+        flushResolutionIfNeeded()
     }
 
     public func engineDidConnect() {
@@ -175,8 +181,10 @@ public final class SessionController: SpiceEngineDelegate {
     private func flushResolutionIfNeeded() {
         guard state == .connected else { return }
         guard agent.supportsMonitorsConfig else { return }
-        guard let pendingViewportSize else { return }
-        guard let frame = GuestResolutionPolicy.frame(forViewSize: pendingViewportSize) else { return }
+        guard let frame = GuestResolutionPolicy.targetFrame(
+            preference: resolutionPreference,
+            windowSize: pendingViewportSize
+        ) else { return }
         guard GuestResolutionPolicy.shouldRequest(
             frame,
             currentDisplay: displaySize,

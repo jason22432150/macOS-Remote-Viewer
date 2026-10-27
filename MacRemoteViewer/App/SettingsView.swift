@@ -39,9 +39,42 @@ struct SettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+
+            Section(L10n.string(.settingsDisplay, language: language)) {
+                Toggle(
+                    L10n.string(.matchResolutionToWindow, language: language),
+                    isOn: $settings.preferences.matchGuestResolutionToWindow
+                )
+                Text(L10n.string(.matchResolutionToWindowHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(L10n.string(.commonResolutions, language: language))
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
+                    ForEach(RemoteResolutionPreset.common) { preset in
+                        Button(preset.displayName) {
+                            settings.selectResolutionPreset(preset)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(settings.isSelectedPreset(preset) ? Color.accentColor : nil)
+                    }
+                }
+                Button(L10n.string(.resetResolution, language: language)) {
+                    settings.resetResolutionToMatchWindow()
+                }
+                Text(L10n.string(.resetResolutionHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(L10n.string(.clipboardAndResolutionHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(L10n.string(.keyboardHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 480, minHeight: 280)
+        .frame(minWidth: 520, minHeight: 480)
         .padding(8)
     }
 }

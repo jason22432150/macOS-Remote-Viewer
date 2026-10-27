@@ -256,6 +256,44 @@ final class SessionControllerTests: XCTestCase {
         ])
     }
 
+    func testPresetResolutionIgnoresViewportSize() throws {
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            resolutionDebounce: .zero,
+            resolutionPreference: .preset(RemoteFrame(width: 1920, height: 1080))
+        )
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1920, height: 1080)])
+    }
+
+    func testKeepGuestDoesNotRequestResolution() throws {
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            resolutionDebounce: .zero,
+            resolutionPreference: .keepGuest
+        )
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+    }
+
+    func testApplyResolutionPreferenceSendsPreset() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1280, height: 800)])
+
+        controller.applyResolutionPreference(.preset(RemoteFrame(width: 1920, height: 1080)))
+        XCTAssertEqual(engine.requestedResolutions, [
+            CGSize(width: 1280, height: 800),
+            CGSize(width: 1920, height: 1080)
+        ])
+    }
+
     func testCancelDropsPendingResolutionRequest() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine, resolutionDebounce: .zero)

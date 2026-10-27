@@ -18,6 +18,9 @@ final class AppModel {
 
     init(settings: AppSettings = AppSettings()) {
         self.settings = settings
+        settings.onChange = { [weak self] in
+            self?.applySettingsToActiveSession()
+        }
     }
 
     func open(urls: [URL]) {
@@ -48,6 +51,10 @@ final class AppModel {
         session = nil
     }
 
+    func applySettingsToActiveSession() {
+        session?.applyResolutionPreference(settings.preferences.resolutionPreference)
+    }
+
     private func startSession(with profile: ConnectionProfile) {
         session?.cancel()
         let controller = SessionController(
@@ -55,7 +62,8 @@ final class AppModel {
             cleanup: SourceFileCleanup(
                 deleteAfterSuccessfulConnect: settings.preferences.deleteVVFileAfterConnect
             ),
-            diagnostics: DiagnosticsLog(sessionID: profile.sessionID)
+            diagnostics: DiagnosticsLog(sessionID: profile.sessionID),
+            resolutionPreference: settings.preferences.resolutionPreference
         )
         session = controller
         controller.open(profile)
