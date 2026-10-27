@@ -114,7 +114,10 @@ final class RemoteCanvasView: MTKView {
     }
 
     override func mouseMoved(with event: NSEvent) { handleMouse(event) }
-    override func mouseDown(with event: NSEvent) { handleMouse(event) }
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        handleMouse(event)
+    }
     override func mouseUp(with event: NSEvent) { handleMouse(event) }
     override func mouseDragged(with event: NSEvent) { handleMouse(event) }
     override func rightMouseDown(with event: NSEvent) { handleMouse(event) }
@@ -136,6 +139,19 @@ final class RemoteCanvasView: MTKView {
         sendKey(event)
     }
 
+    /// 擷取輸入時把 Cmd+A 等 menu key equivalent 轉給 guest，避免本機選單先吃掉。
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard router?.captured == true, controller != nil else {
+            return super.performKeyEquivalent(with: event)
+        }
+        if isLocalQuitShortcut(event) {
+            return super.performKeyEquivalent(with: event)
+        }
+        if interceptHotKey(event) { return true }
+        sendKey(event)
+        return true
+    }
+
     override func resignFirstResponder() -> Bool {
         releaseKeys()
         return super.resignFirstResponder()
@@ -151,8 +167,15 @@ final class RemoteCanvasView: MTKView {
     }
 
     private func sendKey(_ event: NSEvent) {
-        guard let controller, let router, let key = router.keyEvent(from: event) else { return }
-        controller.sendKey(key)
+        guard let controller, let router else { return }
+        for key in router.keyEvents(from: event) {
+            controller.sendKey(key)
+        }
+    }
+
+    private func isLocalQuitShortcut(_ event: NSEvent) -> Bool {
+        event.modifierFlags.contains(.command)
+            && event.charactersIgnoringModifiers?.lowercased() == "q"
     }
 
     private func interceptHotKey(_ event: NSEvent) -> Bool {
