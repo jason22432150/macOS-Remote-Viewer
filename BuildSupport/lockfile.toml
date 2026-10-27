@@ -4,6 +4,7 @@
 cpu = "arm64"
 macos = "27.0.1"
 xcode = "27.1"
+# 產品規劃仍為 14.0；Homebrew bottle 以本機 SDK 建置，原型 xcconfig 跟 SDK，避免 ld version 警告。
 deployment_target = "14.0"
 
 [cocoaspice]

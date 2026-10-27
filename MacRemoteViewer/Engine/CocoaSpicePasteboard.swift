@@ -113,7 +113,7 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
     }
 
     /// 寫入走 async，避免 GLib worker 在 disconnect 期間 `main.sync` 與 `CSMain.syncWith` 互鎖。
-    private func onMainWrite(_ body: @escaping () -> Void) {
+    private func onMainWrite(_ body: @escaping @Sendable () -> Void) {
         if Thread.isMainThread {
             body()
             return

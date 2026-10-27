@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""產生 MacRemoteViewer.xcodeproj。IDs 固定以便 diff。"""
+"""產生 MacRemoteViewer.xcodeproj。IDs 固定以便 diff。
+
+Debug／Release 關閉 SWIFT_ENABLE_BATCH_MODE：Xcode 分批編譯會讓 InputRouter
+找不到同 module 的 mapping 型別（cannot find in scope）。
+"""
 
 from pathlib import Path
 
@@ -17,7 +21,14 @@ SWIFT = [
     "Core/Connection/ConnectionProfile.swift",
     "Core/Connection/SpiceEngine.swift",
     "Core/Connection/GuestPointerMapping.swift",
+    "Core/Connection/GuestResolutionPolicy.swift",
+    "Core/Connection/SessionStatusText.swift",
+    "Core/Settings/AppPreferences.swift",
+    "Core/Settings/AppSettings.swift",
+    "Core/Settings/L10n.swift",
+    "Diagnostics/FileLogWriter.swift",
     "Core/Connection/KeyboardMapping.swift",
+    "Core/Connection/MouseButtonMapping.swift",
     "Core/VVFile/HotKeyParser.swift",
     "Core/VVFile/VVParser.swift",
     "Core/VVFile/SourceFilePolicy.swift",
@@ -67,7 +78,10 @@ def file_id(path: str, kind: str) -> str:
     value = 0
     for ch in f"{kind}:{path}":
         value = (value * 131 + ord(ch)) & 0xFFFFFFFFFFFF
-    return f"B{value:023X}"[-24:]
+    ident = f"B{value:023X}"[-24:]
+    if len(ident) != 24 or any(ch not in "0123456789ABCDEF" for ch in ident):
+        raise SystemExit(f"PBX id 必須是 24 碼 hex：{ident}")
+    return ident
 
 
 def main() -> None:
@@ -262,10 +276,10 @@ def main() -> None:
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_TESTABILITY = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_ENABLE_BATCH_MODE = NO;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			}};
@@ -279,9 +293,9 @@ def main() -> None:
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_ENABLE_BATCH_MODE = NO;
 				SWIFT_VERSION = 6.0;
 			}};
 			name = Release;
@@ -471,5 +485,12 @@ def main() -> None:
     print(f"wrote {PROJECT / 'project.pbxproj'}")
 
 
+def _self_check_ids() -> None:
+    for path in SWIFT + OBJC + HEADERS + ["App/Info.plist", "App/MacRemoteViewer.entitlements"]:
+        for kind in ("ref", "build"):
+            file_id(path, kind)
+
+
 if __name__ == "__main__":
+    _self_check_ids()
     main()

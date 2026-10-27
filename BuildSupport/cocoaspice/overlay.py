@@ -375,6 +375,20 @@ def swift_string_list(values: list[str]) -> str:
     return f"[{inner}]"
 
 
+def overlay_renderer_protected_category(checkout: Path) -> None:
+    """公開 header 已宣告 `CSDisplay (Renderer)`；內部 header 必須用不同 category 名稱。"""
+    path = checkout / "Sources" / "CocoaSpice" / "CSDisplay+Renderer_Protected.h"
+    _replace_once(
+        path,
+        [
+            (
+                "@interface CSDisplay (Renderer)\n",
+                "@interface CSDisplay (RendererProtected)\n",
+            )
+        ],
+    )
+
+
 def overlay_package_swift(checkout: Path) -> None:
     path = checkout / "Package.swift"
     text = path.read_text()
@@ -402,6 +416,7 @@ def main() -> None:
     overlay_csmain(checkout)
     overlay_package_swift(checkout)
     overlay_display_initial_frame(checkout)
+    overlay_renderer_protected_category(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 
 

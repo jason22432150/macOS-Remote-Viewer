@@ -12,6 +12,7 @@ from overlay import (
     overlay_display_initial_frame,
     overlay_gst_ios_init,
     overlay_package_swift,
+    overlay_renderer_protected_category,
 )
 
 CSMAIN_FIXTURE = """\
@@ -147,6 +148,24 @@ PACKAGE_FIXTURE = """\
                 .headerSearchPath("ExternalHeaders/spice-client-glib-2.0")]),
 """
 
+RENDERER_PROTECTED_FIXTURE = """\
+#import "CSDisplay.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@interface CSDisplay (Renderer)
+
+- (void)copyBuffer:(id<MTLBuffer>)sourceBuffer
+            region:(MTLRegion)region
+      sourceOffset:(NSUInteger)sourceOffset
+ sourceBytesPerRow:(NSUInteger)sourceBytesPerRow
+        completion:(completionCallback_t)completion;
+
+@end
+
+NS_ASSUME_NONNULL_END
+"""
+
 
 class OverlayTests(unittest.TestCase):
     def test_csmain_uses_default_context_and_drops_utm_api(self) -> None:
@@ -231,6 +250,18 @@ class OverlayTests(unittest.TestCase):
             )
             self.assertIn("self.cursor.display = self;", display_text)
             self.assertNotIn("possibly retrigger cursor rebuild", display_text)
+
+    def test_renderer_protected_category_is_renamed_to_avoid_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "Sources" / "CocoaSpice" / "CSDisplay+Renderer_Protected.h"
+            path.parent.mkdir(parents=True)
+            path.write_text(RENDERER_PROTECTED_FIXTURE)
+            overlay_renderer_protected_category(root)
+            text = path.read_text()
+            self.assertIn("@interface CSDisplay (RendererProtected)", text)
+            self.assertNotIn("@interface CSDisplay (Renderer)\n", text)
+            self.assertIn("copyBuffer:", text)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,15 @@
 #import <spice-client.h>
 #import <spice/vd_agent.h>
 
+/// GObject 指標不是 ObjC object，不能加 `__unsafe_unretained`。
+static void *pve_ivarRawPointer(CSConnection *object, const char *name) {
+    Ivar ivar = class_getInstanceVariable([CSConnection class], name);
+    if (!ivar) {
+        return NULL;
+    }
+    return *(void **)((uintptr_t)object + ivar_getOffset(ivar));
+}
+
 @implementation CSConnection (PVEConfig)
 
 - (SpiceSession *)pve_spiceSession {
@@ -13,10 +22,7 @@
     @try {
         session = (__bridge SpiceSession *)[self valueForKey:@"spiceSession"];
     } @catch (__unused NSException *exception) {
-        Ivar ivar = class_getInstanceVariable([CSConnection class], "_spiceSession");
-        if (ivar) {
-            session = *(SpiceSession * __unsafe_unretained *)((uintptr_t)self + ivar_getOffset(ivar));
-        }
+        session = (SpiceSession *)pve_ivarRawPointer(self, "_spiceSession");
     }
     return session;
 }
@@ -76,11 +82,7 @@
     @try {
         return (__bridge SpiceMainChannel *)[self valueForKey:@"spiceMain"];
     } @catch (__unused NSException *exception) {
-        Ivar ivar = class_getInstanceVariable([CSConnection class], "_spiceMain");
-        if (ivar) {
-            return *(SpiceMainChannel * __unsafe_unretained *)((uintptr_t)self + ivar_getOffset(ivar));
-        }
-        return NULL;
+        return (SpiceMainChannel *)pve_ivarRawPointer(self, "_spiceMain");
     }
 }
 

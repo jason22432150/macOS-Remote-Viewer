@@ -21,6 +21,8 @@ done
 
 cflags="$(pkg-config --cflags spice-client-glib-2.0 glib-2.0 gstreamer-1.0)"
 libs="$(pkg-config --libs spice-client-glib-2.0 glib-2.0 gstreamer-1.0)"
+# Homebrew bottle 以目前 SDK 建置；若仍寫 14.0，ld 會對每個 dylib 發出 version 警告。
+sdk_version="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || printf '%s' '14.0')"
 
 header_paths=""
 for token in $cflags; do
@@ -32,15 +34,24 @@ for token in $cflags; do
   esac
 done
 
+# CocoaSpice SPM 已帶入 pkg-config 的 -Wl,-rpath；App 再寫一次會 duplicate rpath。
+filtered_libs=""
+for token in $libs; do
+  case "$token" in
+    -Wl,-rpath,*) ;;
+    *) filtered_libs="$filtered_libs $token" ;;
+  esac
+done
+
 {
   echo "// 由 BuildSupport/generate-xcconfig.sh 產生。不要手動編輯。"
   echo "// 這是階段 A 原型設定：連結 Homebrew 的 spice-gtk／GLib／GStreamer。"
   echo "// 階段 E 必須改為 App bundle 內嵌 dylib，且不得留下 Homebrew rpath。"
   echo "HEADER_SEARCH_PATHS = \$(inherited)$header_paths"
-  echo "OTHER_LDFLAGS = \$(inherited) $libs"
+  echo "OTHER_LDFLAGS = \$(inherited)$filtered_libs"
   echo "LIBRARY_SEARCH_PATHS = \$(inherited) /opt/homebrew/lib"
   echo "LD_RUNPATH_SEARCH_PATHS = \$(inherited) @executable_path/../Frameworks /opt/homebrew/lib"
-  echo "MACOSX_DEPLOYMENT_TARGET = 14.0"
+  echo "MACOSX_DEPLOYMENT_TARGET = $sdk_version"
   echo "SWIFT_OBJC_BRIDGING_HEADER = MacRemoteViewer/Engine/MacRemoteViewer-Bridging-Header.h"
   echo "SWIFT_STRICT_CONCURRENCY = complete"
 } > "$OUT"

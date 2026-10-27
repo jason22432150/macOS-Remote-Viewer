@@ -6,7 +6,7 @@ import CocoaSpiceRenderer
 
 /// 封裝 CocoaSpice／C API，集中 callback 與執行緒轉接。UI 不持有 C 指標。
 @MainActor
-final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConnectionDelegate {
+final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     weak var delegate: SpiceEngineDelegate?
 
     private var connection: CSConnection?
