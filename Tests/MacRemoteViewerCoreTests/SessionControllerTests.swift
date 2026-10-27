@@ -100,6 +100,137 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(controller.displaySize, RemoteFrame(width: 1920, height: 1080))
     }
 
+    func testViewportResizeRequestsGuestResolutionWhenAgentAllows() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1281, height: 801))
+        XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1280, height: 800)])
+    }
+
+    func testViewportResizeIsIgnoredWithoutMonitorsConfig() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: false)
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+    }
+
+    func testPendingViewportResizeFlushesWhenAgentConnects() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+
+        engine.delegate?.engineDidUpdateAgent(AgentCapabilities(
+            isConnected: true,
+            supportsClipboard: true,
+            supportsMonitorsConfig: true
+        ))
+        XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1600, height: 900)])
+    }
+
+    func testDuplicateViewportSizeDoesNotResend() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+    }
+
+    func testMatchingGuestDisplayDoesNotResend() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1280, height: 800))
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+    }
+
+    func testGuestInitiatedChangeReappliesWindowSizeIfNeverRequested() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1280, height: 800))
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1280, height: 800)])
+    }
+
+    func testDoesNotRefightGuestWhileRequestedSizeIsPending() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1280, height: 802))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+    }
+
+    func testDebouncedResizeSendsLatestSize() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .milliseconds(30))
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1000, height: 800))
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1600, height: 900)])
+    }
+
+    func testAgentReconnectResendsViewportSize() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+
+        engine.delegate?.engineDidUpdateAgent(AgentCapabilities())
+        engine.delegate?.engineDidUpdateAgent(AgentCapabilities(
+            isConnected: true,
+            supportsClipboard: true,
+            supportsMonitorsConfig: true
+        ))
+        XCTAssertEqual(engine.requestedResolutions, [
+            CGSize(width: 1600, height: 900),
+            CGSize(width: 1600, height: 900)
+        ])
+    }
+
+    func testCancelDropsPendingResolutionRequest() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        controller.cancel()
+        engine.delegate?.engineDidUpdateAgent(AgentCapabilities(
+            isConnected: true,
+            supportsClipboard: true,
+            supportsMonitorsConfig: true
+        ))
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+    }
+
+    private func connect(
+        _ controller: SessionController,
+        engine: MockEngine,
+        monitorsConfig: Bool
+    ) throws {
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        engine.delegate?.engineDidUpdateAgent(AgentCapabilities(
+            isConnected: true,
+            supportsClipboard: true,
+            supportsMonitorsConfig: monitorsConfig
+        ))
+    }
+
     private static func minimalVV() -> String {
         """
         [virt-viewer]
@@ -120,6 +251,7 @@ private final class MockEngine: SpiceEngineing {
     var connectError: SessionError?
     var didReleaseKeys = false
     var attachedRenderer: AnyObject?
+    var requestedResolutions: [CGSize] = []
 
     func startWorker() throws {}
 
@@ -135,7 +267,9 @@ private final class MockEngine: SpiceEngineing {
     func releaseKeys() { didReleaseKeys = true }
     func sendCtrlAltDelete() {}
     func attachDisplayRenderer(_ renderer: AnyObject) { attachedRenderer = renderer }
-    func requestResolution(_ size: CGSize) {}
+    func requestResolution(_ size: CGSize) {
+        requestedResolutions.append(size)
+    }
 }
 
 private final class MockFileAccessor: FileAccessing, @unchecked Sendable {

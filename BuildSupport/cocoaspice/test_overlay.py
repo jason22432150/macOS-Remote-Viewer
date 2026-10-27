@@ -46,6 +46,12 @@ CSMAIN_FIXTURE = """\
 """
 
 DISPLAY_FIXTURE = r"""
+    self.canvasData = NULL;
+    self.canvasBuffer = NULL; // no more new draws
+    if (self.canvasIsBusy) {
+        dispatch_semaphore_wait(invalidateComplete, DISPATCH_TIME_FOREVER);
+    }
+
 - (void)updateVisibleAreaWithRect:(CGRect)rect {
     CGRect primary = self.canvasArea;
     CGRect visible = CGRectIntersection(primary, rect);
@@ -199,6 +205,8 @@ class OverlayTests(unittest.TestCase):
                 display_text,
             )
             self.assertIn("self.canvasIsBusy", display_text)
+            self.assertIn("clippedDrawRect", display_text)
+            self.assertIn("self.canvasDirtyRect = CGRectZero", display_text)
             self.assertIn("canvasBufferOffset", display_text)
             self.assertNotIn("drawCompletedEvent", display_text)
             self.assertIn(

@@ -9,7 +9,11 @@ struct RemoteSessionView: View {
         VStack(spacing: 0) {
             toolbar
             ZStack {
-                RemoteDisplayView(controller: controller, router: router)
+                RemoteDisplayView(
+                    controller: controller,
+                    router: router,
+                    displaySize: controller.displaySize
+                )
                     .background(Color.black)
                 if showsOverlay {
                     overlay
@@ -73,8 +77,14 @@ struct RemoteSessionView: View {
             if let hint = controller.unknownFieldHint {
                 Text(hint).foregroundStyle(.secondary)
             }
+            if let frame = controller.displaySize {
+                Text("\(frame.width)×\(frame.height)")
+                    .monospacedDigit()
+            }
             if !controller.agent.isConnected {
                 Text("無 guest agent").foregroundStyle(.orange)
+            } else if !controller.agent.supportsMonitorsConfig {
+                Text("無法自動調整解析度").foregroundStyle(.orange)
             } else if !controller.agent.supportsClipboard {
                 Text("剪貼簿不可用").foregroundStyle(.orange)
             }

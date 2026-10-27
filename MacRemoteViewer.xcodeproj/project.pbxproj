@@ -17,6 +17,7 @@
 		B000000000006A20D84F1C4F /* ConnectionProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000007116521D21D4 /* ConnectionProfile.swift */; };
 		B0000000000062CA5ECB69FC /* SpiceEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000005AE2B288B189 /* SpiceEngine.swift */; };
 		B000000000001935B2369D71 /* GuestPointerMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000096B7E5E69E1E /* GuestPointerMapping.swift */; };
+		B00000000000C0DE0000A001 /* GuestResolutionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000C0DE0000A002 /* GuestResolutionPolicy.swift */; };
 		B00000000000FCF7D41A077B /* KeyboardMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000007933A984E918 /* KeyboardMapping.swift */; };
 		B0000000000069626BD3A415 /* HotKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000E44BC16ACA0C /* HotKeyParser.swift */; };
 		B000000000006AA5A6749ADF /* VVParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000009E7CC4B7F8A6 /* VVParser.swift */; };
@@ -44,6 +45,7 @@
 		B000000000007116521D21D4 /* ConnectionProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Connection/ConnectionProfile.swift"; sourceTree = "<group>"; };
 		B000000000005AE2B288B189 /* SpiceEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Connection/SpiceEngine.swift"; sourceTree = "<group>"; };
 		B0000000000096B7E5E69E1E /* GuestPointerMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Connection/GuestPointerMapping.swift"; sourceTree = "<group>"; };
+		B00000000000C0DE0000A002 /* GuestResolutionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Connection/GuestResolutionPolicy.swift"; sourceTree = "<group>"; };
 		B000000000007933A984E918 /* KeyboardMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Connection/KeyboardMapping.swift"; sourceTree = "<group>"; };
 		B00000000000E44BC16ACA0C /* HotKeyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/HotKeyParser.swift"; sourceTree = "<group>"; };
 		B000000000009E7CC4B7F8A6 /* VVParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/VVParser.swift"; sourceTree = "<group>"; };
@@ -99,6 +101,7 @@
 				B000000000007116521D21D4 /* ConnectionProfile.swift */,
 				B000000000005AE2B288B189 /* SpiceEngine.swift */,
 				B0000000000096B7E5E69E1E /* GuestPointerMapping.swift */,
+				B00000000000C0DE0000A002 /* GuestResolutionPolicy.swift */,
 				B000000000007933A984E918 /* KeyboardMapping.swift */,
 				B00000000000E44BC16ACA0C /* HotKeyParser.swift */,
 				B000000000009E7CC4B7F8A6 /* VVParser.swift */,
@@ -213,6 +216,7 @@
 				B000000000006A20D84F1C4F /* ConnectionProfile.swift in Sources */,
 				B0000000000062CA5ECB69FC /* SpiceEngine.swift in Sources */,
 				B000000000001935B2369D71 /* GuestPointerMapping.swift in Sources */,
+				B00000000000C0DE0000A001 /* GuestResolutionPolicy.swift in Sources */,
 				B00000000000FCF7D41A077B /* KeyboardMapping.swift in Sources */,
 				B0000000000069626BD3A415 /* HotKeyParser.swift in Sources */,
 				B000000000006AA5A6749ADF /* VVParser.swift in Sources */,

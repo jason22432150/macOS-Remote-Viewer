@@ -7,6 +7,8 @@ import CocoaSpiceRenderer
 struct RemoteDisplayView: NSViewRepresentable {
     var controller: SessionController
     var router: InputRouter
+    /// 讓 guest 解析度變更時 SwiftUI 會呼叫 `updateNSView`，才能重算 letterbox。
+    var displaySize: RemoteFrame?
 
     func makeNSView(context: Context) -> RemoteCanvasView {
         let view = RemoteCanvasView(frame: .zero, device: MTLCreateSystemDefaultDevice())
@@ -22,6 +24,8 @@ struct RemoteDisplayView: NSViewRepresentable {
         nsView.router = router
         nsView.attachRendererIfNeeded()
         nsView.updateViewport()
+        nsView.syncGuestResolution()
+        _ = displaySize
     }
 }
 
@@ -59,6 +63,13 @@ final class RemoteCanvasView: MTKView {
         updateViewport()
     }
 
+    /// 視窗邏輯尺寸變化時請 guest 對齊解析度；agent 未就緒則由 SessionController 暫存。
+    func syncGuestResolution(_ size: CGSize? = nil) {
+        let canvasSize = size ?? bounds.size
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+        controller?.updateViewportSize(canvasSize)
+    }
+
     /// CocoaSpice 以 drawable 中心繪製；必須把 scale 設成與滑鼠對應相同的 letterbox。
     func updateViewport() {
         guard let renderer = metalRenderer,
@@ -79,6 +90,7 @@ final class RemoteCanvasView: MTKView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        syncGuestResolution(newSize)
         DispatchQueue.main.async { [weak self] in
             self?.updateViewport()
         }
@@ -124,6 +136,7 @@ final class RemoteCanvasView: MTKView {
             window.makeFirstResponder(self)
         }
         attachRendererIfNeeded()
+        syncGuestResolution()
     }
 
     override func mouseEntered(with event: NSEvent) {

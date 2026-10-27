@@ -17,18 +17,24 @@ public final class SessionController: SpiceEngineDelegate {
     private let engine: SpiceEngineing
     private let files: FileAccessing
     private let cleanup: SourceFileCleanup
+    private let resolutionDebounce: Duration
     private var didCleanupSource = false
+    private var pendingViewportSize: CGSize?
+    private var lastRequestedFrame: RemoteFrame?
+    private var resolutionTask: Task<Void, Never>?
 
     public init(
         engine: SpiceEngineing,
         files: FileAccessing = FoundationFileAccessor(),
         cleanup: SourceFileCleanup = SourceFileCleanup(),
-        diagnostics: DiagnosticsLog = DiagnosticsLog(sessionID: UUID().uuidString)
+        diagnostics: DiagnosticsLog = DiagnosticsLog(sessionID: UUID().uuidString),
+        resolutionDebounce: Duration = .milliseconds(400)
     ) {
         self.engine = engine
         self.files = files
         self.cleanup = cleanup
         self.diagnostics = diagnostics
+        self.resolutionDebounce = resolutionDebounce
         self.engine.delegate = self
     }
 
@@ -53,6 +59,7 @@ public final class SessionController: SpiceEngineDelegate {
     }
 
     public func cancel() {
+        resetResolutionSync()
         switch state {
         case .idle, .disconnected, .failed:
             break
@@ -88,18 +95,28 @@ public final class SessionController: SpiceEngineDelegate {
         engine.attachDisplayRenderer(renderer)
     }
 
+    /// 以畫面視圖的邏輯尺寸（points）對齊 guest 解析度；無 vdagent 時略過。
+    public func updateViewportSize(_ size: CGSize) {
+        guard pendingViewportSize != size else { return }
+        pendingViewportSize = size
+        scheduleResolutionSync()
+    }
+
     public func requestResolution(_ size: CGSize) {
-        guard agent.supportsMonitorsConfig else { return }
-        engine.requestResolution(size)
+        updateViewportSize(size)
     }
 
     public func engineDidConnect() {
         state = .connected
         diagnostics.info("connected")
         deleteSourceFileIfNeeded()
+        flushResolutionIfNeeded()
     }
 
     public func engineDidDisconnect() {
+        resolutionTask?.cancel()
+        resolutionTask = nil
+        lastRequestedFrame = nil
         if state != .failed(.disconnected) {
             state = .disconnected
         }
@@ -112,19 +129,71 @@ public final class SessionController: SpiceEngineDelegate {
 
     public func engineDidUpdateDisplay(_ frame: RemoteFrame) {
         displaySize = frame
+        // 尚未送出過目標尺寸時，guest 自行改解析度仍要以視窗為準再對齊。
+        // 已送出則交給 lastRequested 去重，避免與 guest 套用中的中間尺寸互打。
+        if lastRequestedFrame == nil {
+            flushResolutionIfNeeded()
+        }
     }
 
     public func engineDidUpdateAgent(_ capabilities: AgentCapabilities) {
+        let gainedMonitorsConfig = !agent.supportsMonitorsConfig && capabilities.supportsMonitorsConfig
         agent = capabilities
         if !capabilities.isConnected || !capabilities.supportsClipboard {
             diagnostics.info("guest-agent-limited")
         }
+        if gainedMonitorsConfig {
+            lastRequestedFrame = nil
+        }
+        flushResolutionIfNeeded()
     }
 
     private func fail(_ error: SessionError) {
+        resetResolutionSync()
         state = .failed(error)
         diagnostics.error(error)
         engine.disconnect()
+    }
+
+    /// 拖曳縮放會連續觸發；等尺寸穩定後才送 monitors config。
+    private func scheduleResolutionSync() {
+        resolutionTask?.cancel()
+        if resolutionDebounce == .zero {
+            flushResolutionIfNeeded()
+            return
+        }
+        resolutionTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: resolutionDebounce)
+            } catch {
+                return
+            }
+            flushResolutionIfNeeded()
+        }
+    }
+
+    private func flushResolutionIfNeeded() {
+        guard state == .connected else { return }
+        guard agent.supportsMonitorsConfig else { return }
+        guard let pendingViewportSize else { return }
+        guard let frame = GuestResolutionPolicy.frame(forViewSize: pendingViewportSize) else { return }
+        guard GuestResolutionPolicy.shouldRequest(
+            frame,
+            currentDisplay: displaySize,
+            lastRequested: lastRequestedFrame
+        ) else {
+            return
+        }
+        lastRequestedFrame = frame
+        diagnostics.info("guest-resolution \(frame.width)x\(frame.height)")
+        engine.requestResolution(CGSize(width: frame.width, height: frame.height))
+    }
+
+    private func resetResolutionSync() {
+        resolutionTask?.cancel()
+        resolutionTask = nil
+        pendingViewportSize = nil
+        lastRequestedFrame = nil
     }
 
     private func deleteSourceFileIfNeeded() {

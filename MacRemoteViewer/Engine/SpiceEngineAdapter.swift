@@ -14,6 +14,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     private var display: CSDisplay?
     private let spicePasteboard = CocoaSpicePasteboard()
     private var pendingRenderer: CSRenderer?
+    private var pendingResolution: CGSize?
     private var lastGuestPoint: CGPoint?
     private var workerStarted = false
 
@@ -67,6 +68,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
         input = nil
         display = nil
         pendingRenderer = nil
+        pendingResolution = nil
         lastGuestPoint = nil
     }
 
@@ -134,7 +136,15 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     }
 
     func requestResolution(_ size: CGSize) {
-        display?.requestResolution(CGRect(origin: .zero, size: size))
+        guard size.width > 0, size.height > 0 else { return }
+        pendingResolution = size
+        applyPendingResolution()
+    }
+
+    /// Display channel 可能比 agent 晚就緒；先記住目標尺寸，避免請求被丟掉。
+    private func applyPendingResolution() {
+        guard let display, let pendingResolution else { return }
+        display.requestResolution(CGRect(origin: .zero, size: pendingResolution))
     }
 
     // MARK: - CSConnectionDelegate
@@ -182,6 +192,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
             if adapter.display == nil || isPrimary {
                 adapter.display = display
                 adapter.attachPendingRenderer()
+                adapter.applyPendingResolution()
                 adapter.delegate?.engineDidUpdateDisplay(RemoteFrame(width: width, height: height))
             }
         }

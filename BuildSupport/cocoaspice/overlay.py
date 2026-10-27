@@ -120,6 +120,17 @@ def overlay_display_initial_frame(checkout: Path) -> None:
 }""",
             ),
             (
+                """    self.canvasData = NULL;
+    self.canvasBuffer = NULL; // no more new draws
+    if (self.canvasIsBusy) {""",
+                """    self.canvasData = NULL;
+    self.canvasBuffer = NULL; // no more new draws
+    // guest 改解析度會銷毀舊 surface；不可把上一張 canvas 的 dirty rect
+    // 帶到新的較小 buffer，否則 didModifyRange 會超出長度並 abort。
+    self.canvasDirtyRect = CGRectZero;
+    if (self.canvasIsBusy) {""",
+            ),
+            (
                 """    self.numVertices = sizeof(quadVertices) / sizeof(CSRenderVertex);
 }
 
@@ -170,31 +181,101 @@ def overlay_display_initial_frame(checkout: Path) -> None:
     [self invalidate];
 }
 
+/// 把 damage rect 裁成 canvas 內的整數像素。視窗自動改解析度時，
+/// 上一張 surface 的 dirty region 可能比新 buffer 大。
+- (CGRect)clippedDrawRect:(CGRect)rect {
+    CGRect bounds = self.canvasArea;
+    if (CGRectIsEmpty(bounds)) {
+        return CGRectNull;
+    }
+    if (!CGRectIsEmpty(self.visibleArea)) {
+        CGRect visible = CGRectIntersection(bounds, self.visibleArea);
+        if (!CGRectIsNull(visible) && !CGRectIsEmpty(visible)) {
+            bounds = visible;
+        }
+    }
+    CGRect clipped = CGRectIntersection(rect, bounds);
+    if (CGRectIsNull(clipped) || CGRectIsEmpty(clipped)) {
+        return CGRectNull;
+    }
+    clipped = CGRectIntersection(CGRectIntegral(clipped), bounds);
+    if (CGRectIsNull(clipped) || CGRectIsEmpty(clipped)) {
+        return CGRectNull;
+    }
+    return clipped;
+}
+
 - (void)drawRegion:(CGRect)rect {
-    if (!self.canvasData || !self.canvasBuffer) {
+    if (!self.canvasData || !self.canvasBuffer || self.canvasStride <= 0) {
         return; // not ready to draw yet
     }
+    rect = [self clippedDrawRect:rect];
+    if (CGRectIsNull(rect) || CGRectIsEmpty(rect)) {
+        return;
+    }
+    NSInteger pixelSize = (self.canvasFormat == SPICE_SURFACE_FMT_32_xRGB) ? 4 : 2;
+    NSInteger x = (NSInteger)rect.origin.x;
+    NSInteger y = (NSInteger)rect.origin.y;
+    NSInteger width = (NSInteger)rect.size.width;
+    NSInteger height = (NSInteger)rect.size.height;
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 || pixelSize <= 0) {
+        return;
+    }
+    NSUInteger stride = (NSUInteger)self.canvasStride;
+    NSUInteger rowBytes = (NSUInteger)width * (NSUInteger)pixelSize;
+    if (rowBytes == 0 || rowBytes > stride) {
+        return;
+    }
+    NSUInteger offset = (NSUInteger)y * stride + (NSUInteger)x * (NSUInteger)pixelSize;
+    NSUInteger bufferLength = self.canvasBuffer.length;
+    NSUInteger maxHeight = 0;
+    for (NSInteger row = 0; row < height; row++) {
+        NSUInteger end = self.canvasBufferOffset + offset + (NSUInteger)row * stride + rowBytes;
+        if (end > bufferLength) {
+            break;
+        }
+        maxHeight = (NSUInteger)row + 1;
+    }
+    if (maxHeight == 0) {
+        return;
+    }
+    height = (NSInteger)maxHeight;
+    NSInteger destX = x - (NSInteger)self.visibleArea.origin.x;
+    NSInteger destY = y - (NSInteger)self.visibleArea.origin.y;
+    if (self.canvasTexture) {
+        NSInteger maxWidth = (NSInteger)self.canvasTexture.width - destX;
+        NSInteger maxDestHeight = (NSInteger)self.canvasTexture.height - destY;
+        if (destX < 0 || destY < 0 || maxWidth <= 0 || maxDestHeight <= 0) {
+            return;
+        }
+        if (width > maxWidth) {
+            width = maxWidth;
+            rowBytes = (NSUInteger)width * (NSUInteger)pixelSize;
+        }
+        if (height > maxDestHeight) {
+            height = maxDestHeight;
+        }
+    }
     if (self.canvasIsBusy) {
+        rect.size.width = width;
+        rect.size.height = height;
         self.canvasDirtyRect = CGRectUnion(self.canvasDirtyRect, rect);
         return;
     }
     self.canvasIsBusy = YES;
-    NSInteger pixelSize = (self.canvasFormat == SPICE_SURFACE_FMT_32_xRGB) ? 4 : 2;
-    // create draw region
     MTLRegion region = {
-        { rect.origin.x-self.visibleArea.origin.x, rect.origin.y-self.visibleArea.origin.y, 0 }, // MTLOrigin
-        { rect.size.width, rect.size.height, 1} // MTLSize
+        { destX, destY, 0 },
+        { width, height, 1 }
     };
-    NSUInteger offset = (NSUInteger)(rect.origin.y*self.canvasStride + rect.origin.x*pixelSize);
 #if TARGET_OS_OSX || TARGET_OS_SIMULATOR
-    for (NSUInteger i = 0; i < rect.size.height; i++) {
+    for (NSUInteger i = 0; i < (NSUInteger)height; i++) {
+        NSUInteger location = self.canvasBufferOffset + offset + i * stride;
 #if TARGET_OS_SIMULATOR
-        memcpy(self.canvasBuffer.contents + self.canvasBufferOffset + offset + i*self.canvasStride,
-               self.canvasData + offset + i*self.canvasStride,
-               rect.size.width*pixelSize);
+        memcpy(self.canvasBuffer.contents + location,
+               self.canvasData + offset + i * stride,
+               rowBytes);
 #else /* !TARGET_OS_SIMULATOR */
-        [self.canvasBuffer didModifyRange:NSMakeRange(self.canvasBufferOffset + offset + i*self.canvasStride,
-                                                      rect.size.width*pixelSize)];
+        [self.canvasBuffer didModifyRange:NSMakeRange(location, rowBytes)];
 #endif /* TARGET_OS_SIMULATOR */
     }
 #endif
