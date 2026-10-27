@@ -36,6 +36,15 @@ final class L10nTests: XCTestCase {
         XCTAssertNotEqual(chinese, english)
     }
 
+    func testRemoteIPFormatIncludesHost() {
+        // 只驗證 L10n 模板；host 為控制過的字面值。正式顯示請走 SessionStatusText.remoteIP。
+        let host = "192.0.2.10"
+        let chinese = L10n.string(.statusRemoteIP, language: .zhHant, host)
+        let english = L10n.string(.statusRemoteIP, language: .english, host)
+        XCTAssertEqual(chinese, "遠端 IP：192.0.2.10")
+        XCTAssertEqual(english, "Remote IP: 192.0.2.10")
+    }
+
     func testSessionErrorUsesSelectedLanguage() {
         XCTAssertEqual(
             SessionError.disconnected.userMessage(language: .zhHant),

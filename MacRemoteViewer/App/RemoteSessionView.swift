@@ -75,6 +75,15 @@ struct RemoteSessionView: View {
     private var statusBar: some View {
         HStack {
             Text(statusText)
+            if let remoteIP = SessionStatusText.remoteIP(from: controller.profile, language: language) {
+                Text("·")
+                    .foregroundStyle(.secondary)
+                Text(remoteIP)
+                    .monospaced()
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
             Spacer()
             if let names = controller.profile?.unknownFieldNames, !names.isEmpty {
                 Text(L10n.string(.ignoredFields, language: language, names.joined(separator: ", ")))

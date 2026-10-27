@@ -20,6 +20,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case statusDisconnecting
     case statusDisconnected
     case statusFailed
+    case statusRemoteIP
     case noGuestAgent
     case cannotAdjustResolution
     case clipboardUnavailable
@@ -120,6 +121,7 @@ public enum L10n {
         .statusDisconnecting: "中斷中",
         .statusDisconnected: "已斷線",
         .statusFailed: "失敗",
+        .statusRemoteIP: "遠端 IP：%@",
         .noGuestAgent: "無 guest agent",
         .cannotAdjustResolution: "無法自動調整解析度",
         .clipboardUnavailable: "剪貼簿不可用",
@@ -197,6 +199,7 @@ public enum L10n {
         .statusDisconnecting: "Disconnecting",
         .statusDisconnected: "Disconnected",
         .statusFailed: "Failed",
+        .statusRemoteIP: "Remote IP: %@",
         .noGuestAgent: "No guest agent",
         .cannotAdjustResolution: "Cannot resize guest display",
         .clipboardUnavailable: "Clipboard unavailable",
