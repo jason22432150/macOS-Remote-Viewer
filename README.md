@@ -53,6 +53,29 @@ swift test
 
 5. 用 Xcode 開啟 `MacRemoteViewer.xcodeproj`，Run。
 
+## 打包給別人（不上架、不公證）
+
+沒有 Developer ID 也可以產出 DMG。對方從 GitHub 下載會被標隔離屬性，第一次要「仍要打開」。
+
+```bash
+./BuildSupport/package-portable.sh
+```
+
+目的：建置 Release，把 spice-gtk／GLib／GStreamer 等 dylib 打進 App，ad-hoc 簽署後做成 DMG。  
+影響：寫入 `dist/` 與 `build/package/`，不修改 Homebrew 套件。  
+預期：出現 `dist/MacRemoteViewer-*-arm64.dmg`、`.sha256`；映像內有 App、「應用程式」捷徑與 `如何開啟.txt`。
+
+把 DMG 上傳到 GitHub Release 即可，不要把 `dist/` 提交進 git。
+
+對方打開 DMG 後：
+
+1. 把 `Mac Remote Viewer` 拖到「應用程式」
+2. 退出磁碟映像，從「應用程式」開啟
+3. 第一次：Control-點 App → 打開；或「系統設定 → 隱私權與安全性 → 仍要打開」
+4. 進階：`xattr -cr "/Applications/Mac Remote Viewer.app"`
+
+目前 bottle 是本機 Homebrew 建置，**只保證 Apple Silicon、與打包機相同的 macOS 大版本**。換成別的 macOS／Intel 會打不開。
+
 ## 使用
 
 - 雙擊、拖放或選單「開啟 .vv…」
@@ -61,6 +84,7 @@ swift test
 
 ## 已知限制
 
-- 原型以 Homebrew overlay 連結 CocoaSpice：動態 `gst_init`、GLib worker 跑在 default main context。這不是 UTM 的靜態 GStreamer／spice-gtk fork，發布前必須改為 App bundle 內嵌 dylib。Homebrew bottle 若以 macOS 27 建置，此路徑目前只保證在本機 macOS 27 執行。
-- 沒有 Apple Developer ID 時只能本機 ad-hoc 執行，無法公證發布。
+- 可攜包內嵌 Homebrew dylib，不是 UTM 的靜態 GStreamer／spice-gtk fork。GLib worker 跑在 default main context。
+- 沒有 Developer ID：可以打包，但不能公證。下載後會有隔離屬性警告。
+- Homebrew bottle 若以 macOS 27 建置，打出來的 DMG 目前只保證在 Apple Silicon 的 macOS 27 執行。
 - 尚未完成音效、多顯示器、圖片剪貼簿、USB、PVE API 自動換票。

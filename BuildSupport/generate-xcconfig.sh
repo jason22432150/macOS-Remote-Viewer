@@ -48,7 +48,7 @@ done
   echo "// 這是階段 A 原型設定：連結 Homebrew 的 spice-gtk／GLib／GStreamer。"
   echo "// 階段 E 必須改為 App bundle 內嵌 dylib，且不得留下 Homebrew rpath。"
   echo "HEADER_SEARCH_PATHS = \$(inherited)$header_paths"
-  echo "OTHER_LDFLAGS = \$(inherited)$filtered_libs"
+  echo "OTHER_LDFLAGS = \$(inherited)$filtered_libs -headerpad_max_install_names"
   echo "LIBRARY_SEARCH_PATHS = \$(inherited) /opt/homebrew/lib"
   echo "LD_RUNPATH_SEARCH_PATHS = \$(inherited) @executable_path/../Frameworks /opt/homebrew/lib"
   echo "MACOSX_DEPLOYMENT_TARGET = $sdk_version"

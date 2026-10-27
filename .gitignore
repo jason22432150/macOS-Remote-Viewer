@@ -39,6 +39,9 @@ ThirdParty/CocoaSpice/
 __pycache__/
 *.pyc
 
+# 可攜打包產物（內含 Homebrew dylib，不進 git）
+dist/
+
 # 系統
 .DS_Store
 *.swp

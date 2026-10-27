@@ -51,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: AppModel?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        prepareHomebrewGStreamerPlugins()
+        preparePortableRuntime()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -63,16 +63,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// 原型：動態 GStreamer 需要找得到 Homebrew plugin。發布版不得依賴此路徑。
-private func prepareHomebrewGStreamerPlugins() {
-    guard getenv("GST_PLUGIN_PATH") == nil else { return }
-    let candidates = [
-        "/opt/homebrew/lib/gstreamer-1.0",
-        "/usr/local/lib/gstreamer-1.0",
-    ]
-    for path in candidates where FileManager.default.fileExists(atPath: path) {
-        setenv("GST_PLUGIN_PATH", path, 0)
-        setenv("GST_PLUGIN_SYSTEM_PATH", path, 0)
-        return
+/// 在 `gst_init` 之前設定可攜 runtime 路徑。
+/// 打包後的 App 使用 bundle 內 plugin／OpenSSL modules；本機 Xcode 執行才退回 Homebrew。
+private func preparePortableRuntime() {
+    let contents = Bundle.main.bundleURL.appendingPathComponent("Contents", isDirectory: true)
+    let fileManager = FileManager.default
+    let gstPlugins = contents.appendingPathComponent("Resources/gstreamer-1.0", isDirectory: true)
+    let scanner = contents.appendingPathComponent("MacOS/gst-plugin-scanner")
+    let opensslModules = contents.appendingPathComponent("Resources/ossl-modules", isDirectory: true)
+
+    if fileManager.fileExists(atPath: gstPlugins.path) {
+        setenv("GST_PLUGIN_SYSTEM_PATH", gstPlugins.path, 1)
+        setenv("GST_PLUGIN_PATH", gstPlugins.path, 1)
+    } else if getenv("GST_PLUGIN_PATH") == nil {
+        let homebrewPlugins = [
+            "/opt/homebrew/lib/gstreamer-1.0",
+            "/usr/local/lib/gstreamer-1.0",
+        ]
+        for path in homebrewPlugins where fileManager.fileExists(atPath: path) {
+            setenv("GST_PLUGIN_PATH", path, 0)
+            setenv("GST_PLUGIN_SYSTEM_PATH", path, 0)
+            break
+        }
+    }
+
+    if fileManager.fileExists(atPath: scanner.path) {
+        setenv("GST_PLUGIN_SCANNER", scanner.path, 1)
+    }
+
+    if fileManager.fileExists(atPath: opensslModules.path) {
+        setenv("OPENSSL_MODULES", opensslModules.path, 1)
     }
 }
