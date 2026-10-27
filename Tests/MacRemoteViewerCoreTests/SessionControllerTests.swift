@@ -88,6 +88,25 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .disconnected)
     }
 
+    func testAttachRendererForwardsToEngine() throws {
+        let engine = MockEngine()
+        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
+        let controller = SessionController(engine: engine, clipboard: clipboard)
+        let renderer = NSObject()
+        controller.attachRenderer(renderer)
+        XCTAssertTrue(engine.attachedRenderer === renderer)
+    }
+
+    func testDisplayUpdateStoresFrameForViewport() throws {
+        let engine = MockEngine()
+        let clipboard = ClipboardCoordinator(pasteboard: MockPasteboard(), transport: MockClipboardTransport())
+        let controller = SessionController(engine: engine, clipboard: clipboard)
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1920, height: 1080))
+        XCTAssertEqual(controller.displaySize, RemoteFrame(width: 1920, height: 1080))
+    }
+
     private static func minimalVV() -> String {
         """
         [virt-viewer]
@@ -107,6 +126,7 @@ private final class MockEngine: SpiceEngineing {
     weak var delegate: SpiceEngineDelegate?
     var connectError: SessionError?
     var didReleaseKeys = false
+    var attachedRenderer: AnyObject?
 
     func startWorker() throws {}
 
@@ -123,7 +143,7 @@ private final class MockEngine: SpiceEngineing {
     func sendCtrlAltDelete() {}
     func sendClipboard(_ data: Data, generation: UInt64) async throws {}
     func requestClipboard(generation: UInt64) async throws -> Data { Data() }
-    func attachDisplayRenderer(_ renderer: AnyObject) {}
+    func attachDisplayRenderer(_ renderer: AnyObject) { attachedRenderer = renderer }
     func requestResolution(_ size: CGSize) {}
 }
 
