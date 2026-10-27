@@ -15,7 +15,7 @@ final class AppModel {
     var retainSourceFiles = false
 
     let importer = VVFileImporter()
-    private let engine = StubSpiceEngine()
+    private let engine = SpiceEngineAdapter()
     private let pasteboard = PasteboardService()
     private let clipboardTransport = EngineClipboardTransport()
 

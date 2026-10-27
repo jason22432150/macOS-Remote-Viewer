@@ -41,6 +41,7 @@ done
   echo "LIBRARY_SEARCH_PATHS = \$(inherited) /opt/homebrew/lib"
   echo "LD_RUNPATH_SEARCH_PATHS = \$(inherited) @executable_path/../Frameworks /opt/homebrew/lib"
   echo "MACOSX_DEPLOYMENT_TARGET = 14.0"
+  echo "SWIFT_OBJC_BRIDGING_HEADER = MacRemoteViewer/Engine/MacRemoteViewer-Bridging-Header.h"
   echo "SWIFT_STRICT_CONCURRENCY = complete"
 } > "$OUT"
 

@@ -41,7 +41,17 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 swift test
 ```
 
-4. 用 Xcode 開啟 `MacRemoteViewer.xcodeproj`，Run。第一次會下載鎖定的 CocoaSpice commit。
+4. 取得鎖定的 CocoaSpice 並套用 Homebrew overlay：
+
+```bash
+./BuildSupport/bootstrap-cocoaspice.sh
+```
+
+目的：clone 鎖定 commit 到 `ThirdParty/CocoaSpice`（不進 git），把靜態 GStreamer／`spice_util_set_main_context` 換成 Homebrew 可連結的版本。  
+影響：只寫入該目錄。  
+預期：終端顯示「CocoaSpice 已就緒」。
+
+5. 用 Xcode 開啟 `MacRemoteViewer.xcodeproj`，Run。
 
 ## 使用
 
@@ -51,6 +61,6 @@ swift test
 
 ## 已知限制
 
-- 目前 App 以 stub SPICE 引擎建置：Parser、檔案關聯、錯誤 UI 可用，但還不能顯示 PVE 畫面。Homebrew 的 `spice-gtk`／GStreamer **不能**直接滿足 CocoaSpice（缺少 `gst_plugin_*_register` 與 `spice_util_set_main_context`，那是 UTM 的靜態 GStreamer／spice-gtk fork）。
+- 原型以 Homebrew overlay 連結 CocoaSpice：動態 `gst_init`、GLib worker 跑在 default main context。這不是 UTM 的靜態 GStreamer／spice-gtk fork，發布前必須改為 App bundle 內嵌 dylib。Homebrew bottle 若以 macOS 27 建置，此路徑目前只保證在本機 macOS 27 執行。
 - 沒有 Apple Developer ID 時只能本機 ad-hoc 執行，無法公證發布。
 - 尚未完成音效、多顯示器、圖片剪貼簿、USB、PVE API 自動換票。

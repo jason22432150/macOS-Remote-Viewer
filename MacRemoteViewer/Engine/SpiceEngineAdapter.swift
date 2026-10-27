@@ -13,6 +13,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     private var input: CSInput?
     private var display: CSDisplay?
     private var clipboardBridge: PVESpiceClipboard?
+    private var pendingRenderer: CSRenderer?
     private var workerStarted = false
     private var currentGeneration: UInt64 = 1
 
@@ -49,6 +50,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
 
         self.connection = connection
         clipboardBridge = PVESpiceClipboard(connection: connection)
+        attachPendingRenderer()
         guard connection.connect() else {
             throw SessionError.network
         }
@@ -62,6 +64,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
         input = nil
         display = nil
         clipboardBridge = nil
+        pendingRenderer = nil
     }
 
     func sendMouse(_ event: MouseEvent) {
@@ -137,8 +140,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     }
 
     func attachDisplayRenderer(_ renderer: AnyObject) {
-        guard let display, let renderer = renderer as? CSRenderer else { return }
-        display.addRenderer(renderer)
+        guard let renderer = renderer as? CSRenderer else { return }
+        pendingRenderer = renderer
+        attachPendingRenderer()
+    }
+
+    private func attachPendingRenderer() {
+        guard let display, let pendingRenderer else { return }
+        display.addRenderer(pendingRenderer)
     }
 
     func requestResolution(_ size: CGSize) {
@@ -173,6 +182,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     func spiceDisplayCreated(_ connection: CSConnection, display: CSDisplay) {
         if self.display == nil || display.isPrimaryDisplay {
             self.display = display
+            attachPendingRenderer()
             delegate?.engineDidUpdateDisplay(RemoteFrame(
                 width: Int(display.displaySize.width),
                 height: Int(display.displaySize.height)

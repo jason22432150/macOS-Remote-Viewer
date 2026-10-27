@@ -35,6 +35,10 @@ ThirdParty/CocoaSpice/
 *.p12
 *.mobileprovision
 
+# Python
+__pycache__/
+*.pyc
+
 # 系統
 .DS_Store
 *.swp

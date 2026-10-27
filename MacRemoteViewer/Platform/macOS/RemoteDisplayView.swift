@@ -1,15 +1,18 @@
 import AppKit
+import MetalKit
 import SwiftUI
+import CocoaSpiceRenderer
 
-/// 輸入畫布。CocoaSpice Metal renderer 待原生依賴鎖定後再接上。
+/// 遠端畫面：Metal 呈現 SPICE framebuffer，同時攔截鍵盤滑鼠。
 struct RemoteDisplayView: NSViewRepresentable {
     var controller: SessionController
     var router: InputRouter
 
     func makeNSView(context: Context) -> RemoteCanvasView {
-        let view = RemoteCanvasView()
+        let view = RemoteCanvasView(frame: .zero, device: MTLCreateSystemDefaultDevice())
         view.controller = controller
         view.router = router
+        view.setupMetal()
         view.setupTracking()
         return view
     }
@@ -17,27 +20,37 @@ struct RemoteDisplayView: NSViewRepresentable {
     func updateNSView(_ nsView: RemoteCanvasView, context: Context) {
         nsView.controller = controller
         nsView.router = router
+        nsView.attachRendererIfNeeded()
     }
 }
 
-final class RemoteCanvasView: NSView {
+final class RemoteCanvasView: MTKView {
     weak var controller: SessionController?
     var router: InputRouter?
+    private var metalRenderer: CSMetalRenderer?
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
 
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.setFill()
-        dirtyRect.fill()
-        let text = "等待 SPICE 畫面（原生引擎尚未連結）"
-        let attrs: [NSAttributedString.Key: Any] = [
-            .foregroundColor: NSColor.secondaryLabelColor,
-            .font: NSFont.systemFont(ofSize: 16)
-        ]
-        let size = text.size(withAttributes: attrs)
-        let origin = CGPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2)
-        text.draw(at: origin, withAttributes: attrs)
+    /// 建立 CocoaSpice Metal renderer，並在 display channel 就緒後掛上。
+    func setupMetal() {
+        framebufferOnly = false
+        colorPixelFormat = .bgra8Unorm
+        clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        isPaused = false
+        enableSetNeedsDisplay = false
+        autoResizeDrawable = true
+        if metalRenderer == nil {
+            let renderer = CSMetalRenderer(metalKitView: self)
+            metalRenderer = renderer
+            delegate = renderer
+        }
+        attachRendererIfNeeded()
+    }
+
+    func attachRendererIfNeeded() {
+        guard let metalRenderer else { return }
+        controller?.attachRenderer(metalRenderer)
     }
 
     func setupTracking() {
@@ -52,6 +65,7 @@ final class RemoteCanvasView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
+        attachRendererIfNeeded()
     }
 
     override func mouseMoved(with event: NSEvent) { handleMouse(event) }

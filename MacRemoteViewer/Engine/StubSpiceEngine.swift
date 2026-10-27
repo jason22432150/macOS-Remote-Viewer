@@ -1,8 +1,7 @@
 import Foundation
 import CoreGraphics
 
-/// 在尚未完成 UTM 相容的 spice-gtk／GStreamer 靜態連結前使用。
-/// 讓 Parser、UI、檔案關聯可以先跑；真正連線會回報引擎尚未就緒。
+/// 測試與無原生依賴時的替身。App 正式路徑使用 SpiceEngineAdapter。
 @MainActor
 final class StubSpiceEngine: SpiceEngineing {
     weak var delegate: SpiceEngineDelegate?

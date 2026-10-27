@@ -24,12 +24,20 @@ SWIFT = [
     "Features/RemoteSession/SessionController.swift",
     "Diagnostics/DiagnosticsLog.swift",
     "Engine/StubSpiceEngine.swift",
+    "Engine/SpiceEngineAdapter.swift",
     "Platform/macOS/PasteboardService.swift",
     "Platform/macOS/InputRouter.swift",
     "Platform/macOS/RemoteDisplayView.swift",
 ]
-OBJC: list[str] = []
-HEADERS: list[str] = []
+OBJC = [
+    "Engine/CSConnection+PVEConfig.m",
+    "Engine/PVESpiceClipboard.m",
+]
+HEADERS = [
+    "Engine/MacRemoteViewer-Bridging-Header.h",
+    "Engine/CSConnection+PVEConfig.h",
+    "Engine/PVESpiceClipboard.h",
+]
 
 IDS = {
     "project": "A10000000000000000000001",
@@ -49,6 +57,7 @@ IDS = {
     "product": "A10000000000000000000011",
     "package_cocoaspice": "A10000000000000000000012",
     "product_cocoaspice": "A10000000000000000000014",
+    "framework_cocoaspice": "A10000000000000000000015",
     "xcconfig": "A10000000000000000000017",
     "entitlements": "A10000000000000000000018",
     "info": "A10000000000000000000019",
@@ -63,6 +72,11 @@ def file_id(path: str, kind: str) -> str:
 
 
 def main() -> None:
+    if not (ROOT / "ThirdParty" / "CocoaSpice" / "Package.swift").exists():
+        print(
+            "warning: 缺少 ThirdParty/CocoaSpice，請先執行 BuildSupport/bootstrap-cocoaspice.sh",
+            file=__import__("sys").stderr,
+        )
     refs = []
     build_files = []
     source_entries = []
@@ -103,6 +117,10 @@ def main() -> None:
         f'\t\t{IDS["product"]} /* Mac Remote Viewer.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Mac Remote Viewer.app"; sourceTree = BUILT_PRODUCTS_DIR; }};\n'
     )
 
+    cocoaspice_build = (
+        f'\t\t{IDS["framework_cocoaspice"]} /* CocoaSpiceNoUsb in Frameworks */ = '
+        f'{{isa = PBXBuildFile; productRef = {IDS["product_cocoaspice"]} /* CocoaSpiceNoUsb */; }};\n'
+    )
 
     pbxproj = f'''// !$*UTF8*$!
 {{
@@ -113,7 +131,7 @@ def main() -> None:
 	objects = {{
 
 /* Begin PBXBuildFile section */
-{''.join(build_files)}/* End PBXBuildFile section */
+{''.join(build_files)}{cocoaspice_build}/* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 {''.join(refs)}/* End PBXFileReference section */
@@ -123,6 +141,7 @@ def main() -> None:
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				{IDS["framework_cocoaspice"]} /* CocoaSpiceNoUsb in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		}};
@@ -170,6 +189,7 @@ def main() -> None:
 			);
 			name = MacRemoteViewer;
 			packageProductDependencies = (
+				{IDS["product_cocoaspice"]} /* CocoaSpiceNoUsb */,
 			);
 			productName = "Mac Remote Viewer";
 			productReference = {IDS["product"]} /* Mac Remote Viewer.app */;
@@ -201,6 +221,7 @@ def main() -> None:
 			);
 			mainGroup = {IDS["main_group"]};
 			packageReferences = (
+				{IDS["package_cocoaspice"]} /* XCLocalSwiftPackageReference "ThirdParty/CocoaSpice" */,
 			);
 			productRefGroup = {IDS["products_group"]} /* Products */;
 			projectDirPath = "";
@@ -283,6 +304,7 @@ def main() -> None:
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.macremoteviewer.app;
 				PRODUCT_NAME = "Mac Remote Viewer";
+				SWIFT_OBJC_BRIDGING_HEADER = "MacRemoteViewer/Engine/MacRemoteViewer-Bridging-Header.h";
 				SWIFT_VERSION = 6.0;
 			}};
 			name = Debug;
@@ -304,6 +326,7 @@ def main() -> None:
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.macremoteviewer.app;
 				PRODUCT_NAME = "Mac Remote Viewer";
+				SWIFT_OBJC_BRIDGING_HEADER = "MacRemoteViewer/Engine/MacRemoteViewer-Bridging-Header.h";
 				SWIFT_VERSION = 6.0;
 			}};
 			name = Release;
@@ -330,6 +353,21 @@ def main() -> None:
 			defaultConfigurationName = Debug;
 		}};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		{IDS["package_cocoaspice"]} /* XCLocalSwiftPackageReference "ThirdParty/CocoaSpice" */ = {{
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ThirdParty/CocoaSpice;
+		}};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		{IDS["product_cocoaspice"]} /* CocoaSpiceNoUsb */ = {{
+			isa = XCSwiftPackageProductDependency;
+			package = {IDS["package_cocoaspice"]} /* XCLocalSwiftPackageReference "ThirdParty/CocoaSpice" */;
+			productName = CocoaSpiceNoUsb;
+		}};
+/* End XCSwiftPackageProductDependency section */
 
 	}};
 	rootObject = {IDS["project"]} /* Project object */;

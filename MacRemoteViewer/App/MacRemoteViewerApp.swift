@@ -55,11 +55,29 @@ struct MacRemoteViewerApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: AppModel?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        prepareHomebrewGStreamerPlugins()
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         model?.open(urls: urls)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+}
+
+/// 原型：動態 GStreamer 需要找得到 Homebrew plugin。發布版不得依賴此路徑。
+private func prepareHomebrewGStreamerPlugins() {
+    guard getenv("GST_PLUGIN_PATH") == nil else { return }
+    let candidates = [
+        "/opt/homebrew/lib/gstreamer-1.0",
+        "/usr/local/lib/gstreamer-1.0",
+    ]
+    for path in candidates where FileManager.default.fileExists(atPath: path) {
+        setenv("GST_PLUGIN_PATH", path, 0)
+        setenv("GST_PLUGIN_SYSTEM_PATH", path, 0)
+        return
     }
 }

@@ -17,7 +17,7 @@ license = "Apache-2.0"
 source = "homebrew"
 formula = "spice-gtk"
 version = "0.43_1"
-note = "已安裝但不足以連結 CocoaSpice。缺少 UTM spice-gtk fork 的 spice_util_set_main_context，以及靜態註冊的 GStreamer plugins。"
+note = "原型以 overlay 相容：CSMain 使用 g_main_context_default()，gst_ios_init 改呼叫 gst_init。缺少 UTM fork 的 spice_util_set_main_context 與靜態 gst_plugin_*_register。"
 
 [glib]
 source = "homebrew"
