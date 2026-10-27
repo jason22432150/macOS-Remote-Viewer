@@ -52,7 +52,9 @@ final class AppModel {
         session?.cancel()
         let controller = SessionController(
             engine: engine,
-            cleanup: SourceFileCleanup(),
+            cleanup: SourceFileCleanup(
+                deleteAfterSuccessfulConnect: settings.preferences.deleteVVFileAfterConnect
+            ),
             diagnostics: DiagnosticsLog(sessionID: profile.sessionID)
         )
         session = controller

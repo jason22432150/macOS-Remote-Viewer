@@ -47,25 +47,32 @@ public struct FoundationFileAccessor: FileAccessing {
     }
 }
 
-/// 成功建立工作階段後，依 `delete-this-file=1` 刪除匯入原檔。
+/// 成功建立工作階段後，依使用者偏好刪除匯入的 `.vv`。
+/// `.vv` 的 `delete-this-file` 仍會解析保存，但刪除與否以 App 設定為準。
 public struct SourceFileCleanup: Sendable {
-    public var retainEvenIfRequested: Bool
+    public var deleteAfterSuccessfulConnect: Bool
 
-    public init(retainEvenIfRequested: Bool = false) {
-        self.retainEvenIfRequested = retainEvenIfRequested
+    public init(deleteAfterSuccessfulConnect: Bool = true) {
+        self.deleteAfterSuccessfulConnect = deleteAfterSuccessfulConnect
     }
 
     public func deleteIfNeeded(
         profile: ConnectionProfile,
         files: FileAccessing
     ) -> SourceCleanupResult {
-        guard profile.deleteSourceFile, !retainEvenIfRequested else {
+        guard deleteAfterSuccessfulConnect else {
             return .skipped
         }
         guard let identity = profile.sourceIdentity else {
             return .skipped
         }
         let url = URL(fileURLWithPath: identity.path)
+        let accessed = files.startAccessing(url)
+        defer {
+            if accessed {
+                files.stopAccessing(url)
+            }
+        }
         do {
             let current = try files.identity(of: url)
             guard current.fileNumber == identity.fileNumber,

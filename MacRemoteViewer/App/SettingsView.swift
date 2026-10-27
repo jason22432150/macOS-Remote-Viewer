@@ -29,9 +29,19 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
             }
+
+            Section(L10n.string(.settingsConnectionFile, language: language)) {
+                Toggle(
+                    L10n.string(.deleteVVAfterConnect, language: language),
+                    isOn: $settings.preferences.deleteVVFileAfterConnect
+                )
+                Text(L10n.string(.deleteVVAfterConnectHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 420, minHeight: 160)
+        .frame(minWidth: 480, minHeight: 280)
         .padding(8)
     }
 }

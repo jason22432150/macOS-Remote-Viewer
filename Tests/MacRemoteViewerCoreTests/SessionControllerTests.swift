@@ -41,6 +41,7 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .connected)
         XCTAssertEqual(controller.cleanupResult, .deleted)
         XCTAssertTrue(files.removed.contains(url.path))
+        XCTAssertEqual(files.accessCount, 1)
     }
 
     func testReplacedFileIsNotDeleted() throws {
@@ -60,6 +61,58 @@ final class SessionControllerTests: XCTestCase {
         engine.delegate?.engineDidConnect()
         XCTAssertEqual(controller.cleanupResult, .replacedFilePreserved)
         XCTAssertTrue(files.removed.isEmpty)
+    }
+
+    func testUserPreferenceKeepsSourceFileAfterConnect() throws {
+        let files = MockFileAccessor()
+        let url = URL(fileURLWithPath: "/tmp/example.vv")
+        files.identities[url] = SourceFileIdentity(
+            path: url.path,
+            fileNumber: 42,
+            volumeIdentifier: 1,
+            size: 100,
+            modificationTime: 10
+        )
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            files: files,
+            cleanup: SourceFileCleanup(deleteAfterSuccessfulConnect: false)
+        )
+        let profile = try VVParser().parse(
+            data: Data(Self.minimalVV().utf8),
+            sourceIdentity: files.identities[url]
+        )
+        controller.open(profile)
+        engine.delegate?.engineDidConnect()
+        XCTAssertEqual(controller.cleanupResult, .skipped)
+        XCTAssertTrue(files.removed.isEmpty)
+    }
+
+    func testUserPreferenceDeletesFileEvenWithoutDeleteThisFileFlag() throws {
+        let files = MockFileAccessor()
+        let url = URL(fileURLWithPath: "/tmp/example.vv")
+        files.identities[url] = SourceFileIdentity(
+            path: url.path,
+            fileNumber: 7,
+            volumeIdentifier: 1,
+            size: 80,
+            modificationTime: 3
+        )
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            files: files,
+            cleanup: SourceFileCleanup(deleteAfterSuccessfulConnect: true)
+        )
+        let profile = try VVParser().parse(
+            data: Data(Self.minimalVV(deleteThisFile: false).utf8),
+            sourceIdentity: files.identities[url]
+        )
+        controller.open(profile)
+        engine.delegate?.engineDidConnect()
+        XCTAssertEqual(controller.cleanupResult, .deleted)
+        XCTAssertEqual(files.removed, [url.path])
     }
 
     func testFailedConnectionKeepsSourceFile() throws {
@@ -231,7 +284,7 @@ final class SessionControllerTests: XCTestCase {
         ))
     }
 
-    private static func minimalVV() -> String {
+    private static func minimalVV(deleteThisFile: Bool = true) -> String {
         """
         [virt-viewer]
         type=spice
@@ -241,7 +294,7 @@ final class SessionControllerTests: XCTestCase {
         password=example-ticket-not-secret
         ca=-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----
         host-subject=CN=pve.example.test
-        delete-this-file=1
+        delete-this-file=\(deleteThisFile ? "1" : "0")
         """
     }
 }
@@ -275,6 +328,7 @@ private final class MockEngine: SpiceEngineing {
 private final class MockFileAccessor: FileAccessing, @unchecked Sendable {
     var identities: [URL: SourceFileIdentity] = [:]
     var removed: [String] = []
+    var accessCount = 0
 
     func read(from url: URL) throws -> Data { Data() }
 
@@ -289,6 +343,9 @@ private final class MockFileAccessor: FileAccessing, @unchecked Sendable {
         removed.append(url.path)
     }
 
-    func startAccessing(_ url: URL) -> Bool { true }
+    func startAccessing(_ url: URL) -> Bool {
+        accessCount += 1
+        return true
+    }
     func stopAccessing(_ url: URL) {}
 }
