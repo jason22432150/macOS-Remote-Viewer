@@ -74,26 +74,29 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
 
     func sendMouse(_ event: MouseEvent) {
         guard let input else { return }
-        let buttons = CSInputButton(rawValue: UInt(event.buttonMask))
+        let mask = CSInputButton(rawValue: UInt(event.buttonMask))
         switch event.kind {
         case .move:
             if input.serverModeCursor {
                 let previous = lastGuestPoint ?? event.point
                 let delta = CGPoint(x: event.point.x - previous.x, y: event.point.y - previous.y)
-                input.sendMouseMotion(buttons, relativePoint: delta)
+                input.sendMouseMotion(mask, relativePoint: delta)
             } else {
-                input.sendMousePosition(buttons, absolutePoint: event.point)
+                input.sendMousePosition(mask, absolutePoint: event.point)
                 // client 模式必須自己移動 overlay，否則遠端游標會停在舊位置。
                 display?.cursor?.move(to: event.point)
             }
             lastGuestPoint = event.point
         case .down, .up:
-            input.sendMouseButton(buttons, mask: buttons, pressed: event.kind == .down)
+            // 只能送剛變化的那一顆 bit；複合 mask 當 button id 時 SPICE 會解成無效值。
+            let button = CSInputButton(rawValue: UInt(event.button))
+            guard !button.isEmpty else { return }
+            input.sendMouseButton(button, mask: mask, pressed: event.kind == .down)
             if !input.serverModeCursor {
                 display?.cursor?.move(to: event.point)
             }
         case .scroll:
-            input.sendMouseScroll(.smooth, buttonMask: buttons, dy: event.scrollDelta)
+            input.sendMouseScroll(.smooth, buttonMask: mask, dy: event.scrollDelta)
         }
     }
 

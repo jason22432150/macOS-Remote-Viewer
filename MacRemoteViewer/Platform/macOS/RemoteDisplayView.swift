@@ -161,8 +161,14 @@ final class RemoteCanvasView: MTKView {
     override func mouseDragged(with event: NSEvent) { handleMouse(event) }
     override func rightMouseDown(with event: NSEvent) { handleMouse(event) }
     override func rightMouseUp(with event: NSEvent) { handleMouse(event) }
-    override func otherMouseDown(with event: NSEvent) { handleMouse(event) }
+    /// 右鍵／側鍵按住時 AppKit 改送 *Dragged；不轉發則本機游標已隱藏、guest 也收不到移動。
+    override func rightMouseDragged(with event: NSEvent) { handleMouse(event) }
+    override func otherMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        handleMouse(event)
+    }
     override func otherMouseUp(with event: NSEvent) { handleMouse(event) }
+    override func otherMouseDragged(with event: NSEvent) { handleMouse(event) }
     override func scrollWheel(with event: NSEvent) { handleMouse(event) }
 
     override func keyDown(with event: NSEvent) {
@@ -199,16 +205,22 @@ final class RemoteCanvasView: MTKView {
     private func handleMouse(_ event: NSEvent) {
         guard let controller, let router else { return }
         updateViewport()
-        guard let mapping else {
+        if let mapping {
+            let location = convert(event.locationInWindow, from: nil)
+            let insideDisplay = mapping.contains(viewPoint: location, bounds: bounds)
+            // 只有滑鼠在遠端畫面內才隱藏本機游標；黑邊維持可見。
+            updateLocalCursor(hidden: router.captured && insideDisplay)
+            if let mouse = router.mouseEvent(from: event, in: self, mapping: mapping) {
+                controller.sendMouse(mouse)
+            }
+            // 側鍵上頁／下一頁只在畫面內送出，與滑鼠事件範圍一致。
+            if insideDisplay {
+                for key in router.sideButtonKeyEvents(from: event) {
+                    controller.sendKey(key)
+                }
+            }
+        } else {
             showLocalCursor()
-            return
-        }
-        let location = convert(event.locationInWindow, from: nil)
-        let insideDisplay = mapping.contains(viewPoint: location, bounds: bounds)
-        // 只有滑鼠在遠端畫面內才隱藏本機游標；黑邊維持可見。
-        updateLocalCursor(hidden: router.captured && insideDisplay)
-        if let mouse = router.mouseEvent(from: event, in: self, mapping: mapping) {
-            controller.sendMouse(mouse)
         }
     }
 

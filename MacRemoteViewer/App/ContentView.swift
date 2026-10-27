@@ -14,10 +14,10 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 560)
-        .onAppear { syncScrollInput() }
-        // 監看整包 preferences，之後新增滾動相關欄位時不必再漏接 onChange。
+        .onAppear { syncMouseInput() }
+        // 監看整包 preferences，之後新增滑鼠相關欄位時不必再漏接 onChange。
         .onChange(of: model.settings.preferences) { _, _ in
-            syncScrollInput()
+            syncMouseInput()
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
@@ -27,11 +27,13 @@ struct ContentView: View {
         }
     }
 
-    private func syncScrollInput() {
+    private func syncMouseInput() {
         let preferences = model.settings.preferences
         router.invertScrollWheel = preferences.invertScrollWheel
         router.mouseWheelSensitivity = preferences.mouseWheelSensitivity
         router.trackpadScrollSensitivity = preferences.trackpadScrollSensitivity
+        router.sideButton4 = preferences.sideButton4
+        router.sideButton5 = preferences.sideButton5
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {

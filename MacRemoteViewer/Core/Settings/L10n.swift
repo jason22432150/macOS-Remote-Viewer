@@ -43,6 +43,12 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case trackpadScrollSensitivityHelp
     case scrollSensitivitySlow
     case scrollSensitivityFast
+    case sideButton4
+    case sideButton5
+    case sideButtonPreviousPage
+    case sideButtonNextPage
+    case sideButtonNone
+    case sideButtonHelp
     case language
     case deleteVVAfterConnect
     case deleteVVAfterConnectHelp
@@ -144,6 +150,12 @@ public enum L10n {
         .trackpadScrollSensitivityHelp: "調整觸控板雙指捲動送到遠端的幅度。Magic Mouse 的精準滾動也使用此設定。1× 為目前預設。",
         .scrollSensitivitySlow: "慢",
         .scrollSensitivityFast: "快",
+        .sideButton4: "側鍵 4（後方）",
+        .sideButton5: "側鍵 5（前方）",
+        .sideButtonPreviousPage: "上頁",
+        .sideButtonNextPage: "下一頁",
+        .sideButtonNone: "無動作",
+        .sideButtonHelp: "上頁／下一頁會送到遠端 Alt+←／Alt+→（瀏覽器與檔案總管的上一頁／下一頁）。可對調或停用。",
         .language: "語言",
         .deleteVVAfterConnect: "成功連線後刪除 .vv 檔案",
         .deleteVVAfterConnectHelp: "PVE 票證通常只能用一次。開啟後刪除可避免誤用過期檔；測試時可關閉此選項以重複使用同一檔案。",
@@ -222,6 +234,12 @@ public enum L10n {
         .trackpadScrollSensitivityHelp: "Scales two-finger trackpad scrolling sent to the guest. Precise Magic Mouse scrolling uses this setting too. 1× is the current default.",
         .scrollSensitivitySlow: "Slow",
         .scrollSensitivityFast: "Fast",
+        .sideButton4: "Side button 4 (back)",
+        .sideButton5: "Side button 5 (forward)",
+        .sideButtonPreviousPage: "Previous page",
+        .sideButtonNextPage: "Next page",
+        .sideButtonNone: "Do nothing",
+        .sideButtonHelp: "Previous/next page send Alt+Left/Alt+Right to the guest (browser and file-explorer navigation). You can swap or disable them.",
         .language: "Language",
         .deleteVVAfterConnect: "Delete the .vv file after a successful connection",
         .deleteVVAfterConnectHelp: "PVE tickets are usually one-time. Deleting the file avoids reusing an expired ticket. Turn this off when you need to reuse the same file while testing.",

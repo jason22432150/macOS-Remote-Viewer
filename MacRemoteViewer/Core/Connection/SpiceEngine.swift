@@ -21,13 +21,23 @@ public struct MouseEvent: Sendable, Equatable {
 
     public var kind: Kind
     public var point: CGPoint
+    /// 目前按下的全部按鍵（SPICE／CSInput mask）。
     public var buttonMask: UInt32
+    /// down／up 時剛變化的那一顆按鍵；move／scroll 為 0。
+    public var button: UInt32
     public var scrollDelta: CGFloat
 
-    public init(kind: Kind, point: CGPoint, buttonMask: UInt32 = 0, scrollDelta: CGFloat = 0) {
+    public init(
+        kind: Kind,
+        point: CGPoint,
+        buttonMask: UInt32 = 0,
+        button: UInt32 = 0,
+        scrollDelta: CGFloat = 0
+    ) {
         self.kind = kind
         self.point = point
         self.buttonMask = buttonMask
+        self.button = button
         self.scrollDelta = scrollDelta
     }
 }

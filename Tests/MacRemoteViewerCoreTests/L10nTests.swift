@@ -26,6 +26,12 @@ final class L10nTests: XCTestCase {
             L10n.string(.trackpadScrollSensitivity, language: .zhHant),
             L10n.string(.trackpadScrollSensitivity, language: .english)
         )
+        XCTAssertNotEqual(
+            L10n.string(.sideButton4, language: .zhHant),
+            L10n.string(.sideButton4, language: .english)
+        )
+        XCTAssertEqual(L10n.string(.sideButtonPreviousPage, language: .zhHant), "上頁")
+        XCTAssertEqual(L10n.string(.sideButtonNextPage, language: .zhHant), "下一頁")
     }
 
     func testFormatInsertsSafeFieldName() {

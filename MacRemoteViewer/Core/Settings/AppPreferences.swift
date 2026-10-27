@@ -60,6 +60,10 @@ public struct AppPreferences: Equatable, Sendable, Codable {
     public var manualResolutionWidth: Int?
     public var manualResolutionHeight: Int?
     public var loggingEnabled: Bool
+    /// 滑鼠側鍵 4（通常是後方鍵）送到 guest 的動作。
+    public var sideButton4: MouseSideButtonAction
+    /// 滑鼠側鍵 5（通常是前方鍵）送到 guest 的動作。
+    public var sideButton5: MouseSideButtonAction
 
     public init(
         scrollWheelDirection: ScrollWheelDirection = .natural,
@@ -70,7 +74,9 @@ public struct AppPreferences: Equatable, Sendable, Codable {
         matchGuestResolutionToWindow: Bool = true,
         manualResolutionWidth: Int? = nil,
         manualResolutionHeight: Int? = nil,
-        loggingEnabled: Bool = true
+        loggingEnabled: Bool = true,
+        sideButton4: MouseSideButtonAction = .previousPage,
+        sideButton5: MouseSideButtonAction = .nextPage
     ) {
         self.scrollWheelDirection = scrollWheelDirection
         self.mouseWheelSensitivity = ScrollSensitivity.clamp(mouseWheelSensitivity)
@@ -81,6 +87,8 @@ public struct AppPreferences: Equatable, Sendable, Codable {
         self.manualResolutionWidth = manualResolutionWidth
         self.manualResolutionHeight = manualResolutionHeight
         self.loggingEnabled = loggingEnabled
+        self.sideButton4 = sideButton4
+        self.sideButton5 = sideButton5
     }
 
     public init(from decoder: Decoder) throws {
@@ -110,6 +118,14 @@ public struct AppPreferences: Equatable, Sendable, Codable {
         manualResolutionWidth = try container.decodeIfPresent(Int.self, forKey: .manualResolutionWidth)
         manualResolutionHeight = try container.decodeIfPresent(Int.self, forKey: .manualResolutionHeight)
         loggingEnabled = try container.decodeIfPresent(Bool.self, forKey: .loggingEnabled) ?? fallback.loggingEnabled
+        sideButton4 = try container.decodeIfPresent(
+            MouseSideButtonAction.self,
+            forKey: .sideButton4
+        ) ?? fallback.sideButton4
+        sideButton5 = try container.decodeIfPresent(
+            MouseSideButtonAction.self,
+            forKey: .sideButton5
+        ) ?? fallback.sideButton5
     }
 
     public var invertScrollWheel: Bool {

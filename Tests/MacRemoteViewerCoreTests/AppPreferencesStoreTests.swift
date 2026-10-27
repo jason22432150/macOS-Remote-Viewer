@@ -32,6 +32,8 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertNil(preferences.manualFrame)
         XCTAssertTrue(preferences.loggingEnabled)
         XCTAssertEqual(preferences.resolutionPreference, .matchWindow)
+        XCTAssertEqual(preferences.sideButton4, .previousPage)
+        XCTAssertEqual(preferences.sideButton5, .nextPage)
     }
 
     func testSaveAndLoadRoundTrip() throws {
@@ -42,6 +44,8 @@ final class AppPreferencesStoreTests: XCTestCase {
         preferences.language = .english
         preferences.deleteVVFileAfterConnect = false
         preferences.loggingEnabled = false
+        preferences.sideButton4 = .nextPage
+        preferences.sideButton5 = .none
         preferences.selectResolutionPreset(RemoteResolutionPreset(width: 1920, height: 1080))
         try store.save(preferences)
 
@@ -75,6 +79,8 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertTrue(loaded.deleteVVFileAfterConnect)
         XCTAssertTrue(loaded.matchGuestResolutionToWindow)
         XCTAssertTrue(loaded.loggingEnabled)
+        XCTAssertEqual(loaded.sideButton4, .previousPage)
+        XCTAssertEqual(loaded.sideButton5, .nextPage)
     }
 
     func testAssigningOutOfRangeScrollSensitivityClampsInPlace() {
@@ -110,8 +116,12 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertEqual(store.load().language, .english)
         settings.preferences.mouseWheelSensitivity = 1.5
         settings.preferences.trackpadScrollSensitivity = 0.75
+        settings.preferences.sideButton4 = .none
+        settings.preferences.sideButton5 = .previousPage
         XCTAssertEqual(store.load().mouseWheelSensitivity, 1.5)
         XCTAssertEqual(store.load().trackpadScrollSensitivity, 0.75)
+        XCTAssertEqual(store.load().sideButton4, .none)
+        XCTAssertEqual(store.load().sideButton5, .previousPage)
         settings.selectResolutionPreset(RemoteResolutionPreset(width: 1600, height: 900))
         XCTAssertFalse(store.load().matchGuestResolutionToWindow)
         XCTAssertEqual(store.load().manualResolutionWidth, 1600)

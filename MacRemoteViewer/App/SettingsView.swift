@@ -29,6 +29,20 @@ struct SettingsView: View {
                     value: $settings.preferences.trackpadScrollSensitivity,
                     language: language
                 )
+
+                SideButtonActionPicker(
+                    title: L10n.string(.sideButton4, language: language),
+                    selection: $settings.preferences.sideButton4,
+                    language: language
+                )
+                SideButtonActionPicker(
+                    title: L10n.string(.sideButton5, language: language),
+                    selection: $settings.preferences.sideButton5,
+                    language: language
+                )
+                Text(L10n.string(.sideButtonHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section(L10n.string(.settingsLanguage, language: language)) {
@@ -142,5 +156,20 @@ private struct ScrollSensitivitySlider: View {
         value.formatted(
             .number.precision(.fractionLength(0...2)).locale(language.locale)
         ) + "×"
+    }
+}
+
+/// 側鍵 4／5 的動作選單，選項順序與預設（上頁、下一頁）一致。
+private struct SideButtonActionPicker: View {
+    let title: String
+    @Binding var selection: MouseSideButtonAction
+    let language: AppLanguage
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            Text(L10n.string(.sideButtonPreviousPage, language: language)).tag(MouseSideButtonAction.previousPage)
+            Text(L10n.string(.sideButtonNextPage, language: language)).tag(MouseSideButtonAction.nextPage)
+            Text(L10n.string(.sideButtonNone, language: language)).tag(MouseSideButtonAction.none)
+        }
     }
 }

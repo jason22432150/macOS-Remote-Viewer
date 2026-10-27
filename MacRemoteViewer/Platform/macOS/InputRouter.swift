@@ -10,6 +10,10 @@ final class InputRouter {
     var mouseWheelSensitivity: Double = 1
     /// 觸控板雙指／精準滾動倍率，1 為預設。
     var trackpadScrollSensitivity: Double = 1
+    /// 側鍵 4 送到 guest 的動作，來自可持久化的使用者偏好。
+    var sideButton4: MouseSideButtonAction = .previousPage
+    /// 側鍵 5 送到 guest 的動作，來自可持久化的使用者偏好。
+    var sideButton5: MouseSideButtonAction = .nextPage
     private var pressedScancodes: Set<Int> = []
 
     func mouseEvent(from event: NSEvent, in view: NSView, mapping: GuestPointerMapping) -> MouseEvent? {
@@ -23,13 +27,35 @@ final class InputRouter {
         ) else {
             return nil
         }
-        let mask = Self.buttonMask(from: event)
+        let pressed = NSEvent.pressedMouseButtons
+        let mask = MouseButtonMapping.spiceMask(
+            pressedMouseButtons: pressed,
+            button4: sideButton4,
+            button5: sideButton5
+        )
 
         switch event.type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            return MouseEvent(kind: .down, point: point, buttonMask: mask)
+            let bits = MouseButtonMapping.spiceButtons(
+                pressedMouseButtons: pressed,
+                changedButtonNumber: event.buttonNumber,
+                isRelease: false,
+                button4: sideButton4,
+                button5: sideButton5
+            )
+            // 停用的側鍵或無法對應的按鍵不送 down，但仍轉發後續 move。
+            guard bits.button != 0 else { return nil }
+            return MouseEvent(kind: .down, point: point, buttonMask: bits.mask, button: bits.button)
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
-            return MouseEvent(kind: .up, point: point, buttonMask: mask)
+            let bits = MouseButtonMapping.spiceButtons(
+                pressedMouseButtons: pressed,
+                changedButtonNumber: event.buttonNumber,
+                isRelease: true,
+                button4: sideButton4,
+                button5: sideButton5
+            )
+            guard bits.button != 0 else { return nil }
+            return MouseEvent(kind: .up, point: point, buttonMask: bits.mask, button: bits.button)
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             return MouseEvent(kind: .move, point: point, buttonMask: mask)
         case .scrollWheel:
@@ -44,6 +70,20 @@ final class InputRouter {
         default:
             return nil
         }
+    }
+
+    /// 側鍵上頁／下一頁在 mouseDown 送出 Alt+方向鍵 click。
+    func sideButtonKeyEvents(from event: NSEvent) -> [KeyEvent] {
+        guard captured else { return [] }
+        guard event.type == .otherMouseDown else { return [] }
+        let action = MouseButtonMapping.action(
+            buttonNumber: event.buttonNumber,
+            button4: sideButton4,
+            button5: sideButton5
+        )
+        let altAlreadyDown = pressedScancodes.contains(MouseSideButtonAction.leftAltScancode)
+            || pressedScancodes.contains(MouseSideButtonAction.rightAltScancode)
+        return action.pageNavigationClickEvents(altAlreadyDown: altAlreadyDown)
     }
 
     func keyEvents(from event: NSEvent) -> [KeyEvent] {
@@ -129,15 +169,6 @@ final class InputRouter {
         default:
             return false
         }
-    }
-
-    private static func buttonMask(from event: NSEvent) -> UInt32 {
-        var mask: UInt32 = 0
-        let buttons = NSEvent.pressedMouseButtons
-        if buttons & 1 != 0 { mask |= 1 }
-        if buttons & 4 != 0 { mask |= 2 }
-        if buttons & 2 != 0 { mask |= 4 }
-        return mask
     }
 
     private static func functionKeyCode(_ number: Int) -> Int? {
