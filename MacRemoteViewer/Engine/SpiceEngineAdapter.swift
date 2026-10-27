@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 import MetalKit
-import CocoaSpiceNoUsb
+@preconcurrency import CocoaSpiceNoUsb
 import CocoaSpiceRenderer
 
 /// 封裝 CocoaSpice／C API，集中 callback 與執行緒轉接。UI 不持有 C 指標。
@@ -156,71 +156,103 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
 
     // MARK: - CSConnectionDelegate
 
-    func spiceConnected(_ connection: CSConnection) {
-        delegate?.engineDidConnect()
-    }
-
-    func spiceDisconnected(_ connection: CSConnection) {
-        delegate?.engineDidDisconnect()
-    }
-
-    func spiceInputAvailable(_ connection: CSConnection, input: CSInput) {
-        self.input = input
-        input.requestMouseMode(false)
-    }
-
-    func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {
-        if self.input === input {
-            self.input = nil
+    /// CocoaSpice 從 GLib worker 呼叫；不可直接進入 MainActor 隔離方法。
+    nonisolated func spiceConnected(_ connection: CSConnection) {
+        hopToMain(from: connection) { adapter in
+            adapter.delegate?.engineDidConnect()
         }
     }
 
-    func spiceError(_ connection: CSConnection, code: CSConnectionError, message: String?) {
-        delegate?.engineDidFail(Self.mapError(code: code, message: message))
+    nonisolated func spiceDisconnected(_ connection: CSConnection) {
+        hopToMain(from: connection) { adapter in
+            adapter.delegate?.engineDidDisconnect()
+        }
     }
 
-    func spiceDisplayCreated(_ connection: CSConnection, display: CSDisplay) {
-        if self.display == nil || display.isPrimaryDisplay {
-            self.display = display
-            attachPendingRenderer()
-            delegate?.engineDidUpdateDisplay(RemoteFrame(
-                width: Int(display.displaySize.width),
-                height: Int(display.displaySize.height)
+    nonisolated func spiceInputAvailable(_ connection: CSConnection, input: CSInput) {
+        input.requestMouseMode(false)
+        hopToMain(from: connection) { adapter in
+            adapter.input = input
+        }
+    }
+
+    nonisolated func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {
+        hopToMain(from: connection) { adapter in
+            if adapter.input === input {
+                adapter.input = nil
+            }
+        }
+    }
+
+    nonisolated func spiceError(_ connection: CSConnection, code: CSConnectionError, message: String?) {
+        let error = Self.mapError(code: code, message: message)
+        hopToMain(from: connection) { adapter in
+            adapter.delegate?.engineDidFail(error)
+        }
+    }
+
+    nonisolated func spiceDisplayCreated(_ connection: CSConnection, display: CSDisplay) {
+        let width = Int(display.displaySize.width)
+        let height = Int(display.displaySize.height)
+        let isPrimary = display.isPrimaryDisplay
+        hopToMain(from: connection) { adapter in
+            if adapter.display == nil || isPrimary {
+                adapter.display = display
+                adapter.attachPendingRenderer()
+                adapter.delegate?.engineDidUpdateDisplay(RemoteFrame(width: width, height: height))
+            }
+        }
+    }
+
+    nonisolated func spiceDisplayUpdated(_ connection: CSConnection, display: CSDisplay) {
+        let width = Int(display.displaySize.width)
+        let height = Int(display.displaySize.height)
+        hopToMain(from: connection) { adapter in
+            guard display === adapter.display else { return }
+            adapter.delegate?.engineDidUpdateDisplay(RemoteFrame(width: width, height: height))
+        }
+    }
+
+    nonisolated func spiceDisplayDestroyed(_ connection: CSConnection, display: CSDisplay) {
+        hopToMain(from: connection) { adapter in
+            if adapter.display === display {
+                adapter.display = nil
+            }
+        }
+    }
+
+    nonisolated func spiceAgentConnected(_ connection: CSConnection, supportingFeatures features: CSConnectionAgentFeature) {
+        hopToMain(from: connection) { adapter in
+            let clipboardOK = adapter.clipboardBridge?.hasClipboardCapability() ?? false
+            adapter.delegate?.engineDidUpdateAgent(AgentCapabilities(
+                isConnected: true,
+                supportsClipboard: clipboardOK,
+                supportsMonitorsConfig: features.contains(.monitorsConfig)
             ))
         }
     }
 
-    func spiceDisplayUpdated(_ connection: CSConnection, display: CSDisplay) {
-        guard display === self.display else { return }
-        delegate?.engineDidUpdateDisplay(RemoteFrame(
-            width: Int(display.displaySize.width),
-            height: Int(display.displaySize.height)
-        ))
-    }
-
-    func spiceDisplayDestroyed(_ connection: CSConnection, display: CSDisplay) {
-        if self.display === display {
-            self.display = nil
+    nonisolated func spiceAgentDisconnected(_ connection: CSConnection) {
+        hopToMain(from: connection) { adapter in
+            adapter.delegate?.engineDidUpdateAgent(AgentCapabilities())
         }
     }
 
-    func spiceAgentConnected(_ connection: CSConnection, supportingFeatures features: CSConnectionAgentFeature) {
-        let clipboardOK = clipboardBridge?.hasClipboardCapability() ?? false
-        delegate?.engineDidUpdateAgent(AgentCapabilities(
-            isConnected: true,
-            supportsClipboard: clipboardOK,
-            supportsMonitorsConfig: features.contains(.monitorsConfig)
-        ))
+    nonisolated func spiceForwardedPortOpened(_ connection: CSConnection, port: CSPort) {}
+    nonisolated func spiceForwardedPortClosed(_ connection: CSConnection, port: CSPort) {}
+
+    /// 把 GLib 執行緒上的事件轉回 MainActor；連線已更換則丟棄過期 callback。
+    nonisolated private func hopToMain(
+        from connection: CSConnection,
+        _ body: @escaping @MainActor (SpiceEngineAdapter) -> Void
+    ) {
+        Task { @MainActor in
+            guard self.connection === connection else { return }
+            body(self)
+        }
     }
 
-    func spiceAgentDisconnected(_ connection: CSConnection) {
-        delegate?.engineDidUpdateAgent(AgentCapabilities())
-    }
-
-    func spiceForwardedPortOpened(_ connection: CSConnection, port: CSPort) {}
-    func spiceForwardedPortClosed(_ connection: CSConnection, port: CSPort) {}
-
-    private static func mapError(code: CSConnectionError, message: String?) -> SessionError {
+    nonisolated private static func mapError(code: CSConnectionError, message: String?) -> SessionError {
         let lowered = (message ?? "").lowercased()
         if lowered.contains("tls") || lowered.contains("certificate") || lowered.contains("ssl") {
             return .tls
