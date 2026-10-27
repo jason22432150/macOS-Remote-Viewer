@@ -41,7 +41,9 @@ public struct GuestPointerMapping: Equatable, Sendable {
     }
 
     /// `pixel` 的原點在 drawable 左上、Y 向下。
-    public func guestPoint(fromPixelPoint pixel: CGPoint) -> CGPoint? {
+    /// 黑邊（letterbox / pillarbox）預設不對應 guest，避免游標被夾到畫面邊緣。
+    /// `clampToDisplay` 為 true 時，超出範圍的點會對應到畫面邊緣（給 mouse-up 釋放按鍵用）。
+    public func guestPoint(fromPixelPoint pixel: CGPoint, clampToDisplay: Bool = false) -> CGPoint? {
         guard displaySize.width > 0, displaySize.height > 0, viewportScale > 0 else {
             return nil
         }
@@ -54,18 +56,37 @@ public struct GuestPointerMapping: Equatable, Sendable {
             y: viewportOrigin.y + drawableSize.height / 2 - scaled.height / 2
         )
         var local = CGPoint(x: pixel.x - drawOrigin.x, y: pixel.y - drawOrigin.y)
-        local.x = min(max(local.x, 0), scaled.width)
-        local.y = min(max(local.y, 0), scaled.height)
+        let isInside = local.x >= 0 && local.x <= scaled.width
+            && local.y >= 0 && local.y <= scaled.height
+        if !isInside {
+            guard clampToDisplay else { return nil }
+            local.x = min(max(local.x, 0), scaled.width)
+            local.y = min(max(local.y, 0), scaled.height)
+        }
         return CGPoint(x: local.x / viewportScale, y: local.y / viewportScale)
     }
 
     /// `viewPoint` 與 `bounds` 使用 flipped NSView 座標（左上為原點）。
-    public func guestPoint(fromViewPoint viewPoint: CGPoint, bounds: CGRect) -> CGPoint? {
+    public func guestPoint(
+        fromViewPoint viewPoint: CGPoint,
+        bounds: CGRect,
+        clampToDisplay: Bool = false
+    ) -> CGPoint? {
         guard bounds.width > 0, bounds.height > 0 else { return nil }
         let pixel = CGPoint(
             x: viewPoint.x * drawableSize.width / bounds.width,
             y: viewPoint.y * drawableSize.height / bounds.height
         )
-        return guestPoint(fromPixelPoint: pixel)
+        return guestPoint(fromPixelPoint: pixel, clampToDisplay: clampToDisplay)
+    }
+
+    /// drawable 像素是否落在等比縮放後的遠端畫面內（不含黑邊）。
+    public func contains(pixelPoint: CGPoint) -> Bool {
+        guestPoint(fromPixelPoint: pixelPoint) != nil
+    }
+
+    /// NSView 座標是否落在等比縮放後的遠端畫面內（不含黑邊）。
+    public func contains(viewPoint: CGPoint, bounds: CGRect) -> Bool {
+        guestPoint(fromViewPoint: viewPoint, bounds: bounds) != nil
     }
 }

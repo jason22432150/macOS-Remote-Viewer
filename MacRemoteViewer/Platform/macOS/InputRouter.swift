@@ -8,7 +8,13 @@ final class InputRouter {
 
     func mouseEvent(from event: NSEvent, in view: NSView, mapping: GuestPointerMapping) -> MouseEvent? {
         let location = view.convert(event.locationInWindow, from: nil)
-        guard let point = mapping.guestPoint(fromViewPoint: location, bounds: view.bounds) else {
+        // 黑邊不轉給 guest；button-up 例外，夾到畫面邊緣以免 guest 按鍵卡住。
+        let clampToDisplay = Self.isButtonUp(event)
+        guard let point = mapping.guestPoint(
+            fromViewPoint: location,
+            bounds: view.bounds,
+            clampToDisplay: clampToDisplay
+        ) else {
             return nil
         }
         let mask = Self.buttonMask(from: event)
@@ -99,6 +105,15 @@ final class InputRouter {
         case .delete:
             return event.keyCode == 117
         case .unnamed:
+            return false
+        }
+    }
+
+    private static func isButtonUp(_ event: NSEvent) -> Bool {
+        switch event.type {
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp:
+            return true
+        default:
             return false
         }
     }

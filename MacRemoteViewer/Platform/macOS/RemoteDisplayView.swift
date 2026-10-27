@@ -30,6 +30,8 @@ final class RemoteCanvasView: MTKView {
     var router: InputRouter?
     private var metalRenderer: CSMetalRenderer?
     private var mapping: GuestPointerMapping?
+    /// `NSCursor.hide` / `unhide` 是計數式 API，必須成對呼叫。
+    private var isLocalCursorHidden = false
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
@@ -96,21 +98,45 @@ final class RemoteCanvasView: MTKView {
         ))
     }
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let window {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSWindow.didResignKeyNotification,
+                object: window
+            )
+        }
+        if newWindow == nil {
+            showLocalCursor()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
+        if let window {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowDidResignKey(_:)),
+                name: NSWindow.didResignKeyNotification,
+                object: window
+            )
+            window.makeFirstResponder(self)
+        }
         attachRendererIfNeeded()
     }
 
     override func mouseEntered(with event: NSEvent) {
-        if router?.captured == true {
-            NSCursor.hide()
-        }
         handleMouse(event)
     }
 
     override func mouseExited(with event: NSEvent) {
-        NSCursor.unhide()
+        showLocalCursor()
+    }
+
+    /// 失去 key window 時立刻顯示本機游標，避免 NSCursor.hide 殘留到其他 App。
+    @objc private func windowDidResignKey(_ notification: Notification) {
+        showLocalCursor()
     }
 
     override func mouseMoved(with event: NSEvent) { handleMouse(event) }
@@ -160,10 +186,31 @@ final class RemoteCanvasView: MTKView {
     private func handleMouse(_ event: NSEvent) {
         guard let controller, let router else { return }
         updateViewport()
-        guard let mapping else { return }
+        guard let mapping else {
+            showLocalCursor()
+            return
+        }
+        let location = convert(event.locationInWindow, from: nil)
+        let insideDisplay = mapping.contains(viewPoint: location, bounds: bounds)
+        // 只有滑鼠在遠端畫面內才隱藏本機游標；黑邊維持可見。
+        updateLocalCursor(hidden: router.captured && insideDisplay)
         if let mouse = router.mouseEvent(from: event, in: self, mapping: mapping) {
             controller.sendMouse(mouse)
         }
+    }
+
+    private func updateLocalCursor(hidden: Bool) {
+        guard isLocalCursorHidden != hidden else { return }
+        if hidden {
+            NSCursor.hide()
+        } else {
+            NSCursor.unhide()
+        }
+        isLocalCursorHidden = hidden
+    }
+
+    private func showLocalCursor() {
+        updateLocalCursor(hidden: false)
     }
 
     private func sendKey(_ event: NSEvent) {
@@ -186,7 +233,7 @@ final class RemoteCanvasView: MTKView {
         }
         if router.matches(profile.releaseCursor, event: event) {
             router.captured = false
-            NSCursor.unhide()
+            showLocalCursor()
             window?.makeFirstResponder(nil)
             return true
         }
