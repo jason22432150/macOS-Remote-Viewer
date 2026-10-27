@@ -1,38 +1,34 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 @main
 struct MacRemoteViewerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var model = AppModel()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environment(model)
-                .environment(model.settings)
-                .environment(\.locale, model.settings.language.locale)
-                .onAppear { appDelegate.model = model }
-                .onOpenURL { url in
-                    model.open(urls: [url])
-                }
+                .environment(appDelegate.model)
+                .environment(appDelegate.model.settings)
+                .environment(\.locale, appDelegate.model.settings.language.locale)
         }
+        // 空集合：不要讓 WindowGroup 吃掉 Finder 的開啟事件，改由 AppDelegate 處理。
+        .handlesExternalEvents(matching: [])
         .windowStyle(.automatic)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button(L10n.string(.openVVEllipsis, language: model.settings.language)) {
-                    model.chooseFile()
+                Button(L10n.string(.openVVEllipsis, language: appDelegate.model.settings.language)) {
+                    appDelegate.model.chooseFile()
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
-            CommandMenu(L10n.string(.menuSession, language: model.settings.language)) {
-                Button(L10n.string(.sendCtrlAltDel, language: model.settings.language)) {
-                    model.session?.sendSecureAttention()
+            CommandMenu(L10n.string(.menuSession, language: appDelegate.model.settings.language)) {
+                Button(L10n.string(.sendCtrlAltDel, language: appDelegate.model.settings.language)) {
+                    appDelegate.model.session?.sendSecureAttention()
                 }
-                .disabled(model.session == nil)
-                Button(L10n.string(.releasePointer, language: model.settings.language)) {
-                    model.session?.releaseKeys()
+                .disabled(appDelegate.model.session == nil)
+                Button(L10n.string(.releasePointer, language: appDelegate.model.settings.language)) {
+                    appDelegate.model.session?.releaseKeys()
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
             }
@@ -40,22 +36,37 @@ struct MacRemoteViewerApp: App {
 
         Settings {
             SettingsView()
-                .environment(model)
-                .environment(model.settings)
-                .environment(\.locale, model.settings.language.locale)
+                .environment(appDelegate.model)
+                .environment(appDelegate.model.settings)
+                .environment(\.locale, appDelegate.model.settings.language.locale)
         }
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    var model: AppModel?
+    let model = AppModel()
+    private let incomingFiles = IncomingURLBuffer()
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         preparePortableRuntime()
+        incomingFiles.setHandler { [model] urls in
+            model.open(urls: urls)
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        model?.open(urls: urls)
+        incomingFiles.handle(urls)
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        incomingFiles.handle([URL(fileURLWithPath: filename)])
+        return true
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // 安裝後立刻登錄文件類型，否則 Finder「打開方式」可能看不到這個 App。
+        LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

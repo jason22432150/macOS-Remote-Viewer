@@ -32,6 +32,7 @@ SWIFT = [
     "Core/VVFile/HotKeyParser.swift",
     "Core/VVFile/VVParser.swift",
     "Core/VVFile/SourceFilePolicy.swift",
+    "Core/VVFile/IncomingURLBuffer.swift",
     "Core/VVFile/VVFileImporter.swift",
     "Features/RemoteSession/SessionController.swift",
     "Diagnostics/DiagnosticsLog.swift",

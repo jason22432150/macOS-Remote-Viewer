@@ -69,16 +69,19 @@ swift test
 
 對方打開 DMG 後：
 
-1. 把 `Mac Remote Viewer` 拖到「應用程式」
-2. 退出磁碟映像，從「應用程式」開啟
-3. 第一次：Control-點 App → 打開；或「系統設定 → 隱私權與安全性 → 仍要打開」
-4. 進階：`xattr -cr "/Applications/Mac Remote Viewer.app"`
+1. 把 `Mac Remote Viewer` 拖到同一個視窗裡的 Applications
+2. 退出磁碟映像
+3. macOS 27 沒有 Launchpad。從 Finder「應用程式」打開一次，或 Spotlight 搜尋英文名稱 **Mac Remote Viewer**（排在 Lunport 與 Maccy 之間）。若 Apps 網格還沒出現，關掉 Spotlight 再開一次；必要時登出再登入
+4. 第一次：Control-點 App → 打開；或「系統設定 → 隱私權與安全性 → 仍要打開」
+5. 進階：`xattr -cr "/Applications/Mac Remote Viewer.app"`
 
 目前 bottle 是本機 Homebrew 建置，**只保證 Apple Silicon、與打包機相同的 macOS 大版本**。換成別的 macOS／Intel 會打不開。
 
 ## 使用
 
-- 雙擊、拖放或選單「開啟 .vv…」
+- 第一次請先從「應用程式」打開 App 一次，讓 Launch Services 註冊 `.vv`
+- 之後即可雙擊 PVE 下載的 `.vv`；若仍開錯 App，在 Finder 資訊視窗「打開方式」指定 **Mac Remote Viewer** 並「全部更改」
+- 也可拖放到視窗或 Dock 圖示，或用選單「開啟 .vv…」
 - 快捷鍵依連線檔：全螢幕、釋放游標、`Ctrl+Alt+Ins` 傳送 `Ctrl+Alt+Del`（不是原組合）
 - 剪貼簿由 CocoaSpice／spice-vdagent 自動雙向同步；Guest 需安裝 spice-vdagent
 

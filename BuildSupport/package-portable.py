@@ -293,9 +293,20 @@ def iter_macho_files(app: Path) -> list[Path]:
     return files
 
 
-def adhoc_sign(path: Path, *, entitlements: Path | None = None) -> None:
-    """ad-hoc 簽署；無 Developer ID、不做 timestamp。"""
+def adhoc_sign(
+    path: Path,
+    *,
+    entitlements: Path | None = None,
+    identifier: str | None = None,
+) -> None:
+    """ad-hoc 簽署；無 Developer ID、不做 timestamp。
+
+    App bundle 要帶 identifier，否則 designated requirement 會是空的，
+    Launch Services／Spotlight Apps 有時不會把這份 bundle 當正式 App。
+    """
     args = ["codesign", "--force", "--sign", "-", "--timestamp=none"]
+    if identifier is not None:
+        args.extend(["--identifier", identifier])
     if entitlements is not None:
         args.extend(["--entitlements", str(entitlements)])
     args.append(str(path))
@@ -332,8 +343,15 @@ def write_open_instructions(path: Path, *, version: str, minimum_os: str) -> Non
 安裝：
 
 1. 打開 DMG
-2. 把「Mac Remote Viewer」拖到「應用程式」
-3. 退出（退出磁碟映像）後，從「應用程式」開啟
+2. 把「Mac Remote Viewer」拖到同一個視窗裡的 Applications 資料夾
+3. 退出磁碟映像
+
+macOS 27 沒有 Launchpad。請用下面方式找到它：
+
+- Finder → 應用程式 → 英文名稱「Mac Remote Viewer」
+- Spotlight（Command-空白鍵）搜尋 Mac Remote Viewer
+- Spotlight 的 Apps 網格：英文名稱，排在 Lunport 與 Maccy 之間
+  若剛裝完還沒出現，先從 Finder 打開一次，或關掉 Spotlight 再開
 
 第一次開啟請用其中一種方式：
 
@@ -348,6 +366,10 @@ def write_open_instructions(path: Path, *, version: str, minimum_os: str) -> Non
 - 不需要安裝 Homebrew 或 Xcode
 
 請不要長期從 DMG 裡面直接執行；拖到「應用程式」後再打開。
+
+雙擊 .vv：
+第一次從「應用程式」打開 App 一次後，Finder 才會把 .vv 關聯過來。
+若仍開錯程式，在檔案「顯示簡介 → 打開方式」指定 Mac Remote Viewer，再按「全部更改」。
 """,
         encoding="utf-8",
     )
@@ -479,41 +501,22 @@ def sign_app(app: Path) -> None:
         if binary == main_exe:
             continue
         adhoc_sign(binary)
-    adhoc_sign(app, entitlements=entitlements)
-
-
-def _diskutil_image_from_available() -> bool:
-    """macOS 27 起應使用 diskutil image，不再依賴已棄用的 hdiutil。"""
-    completed = subprocess.run(
-        ["diskutil", "image", "create", "from", "-h"],
-        check=False,
-        capture_output=True,
-        text=True,
+    adhoc_sign(
+        app,
+        entitlements=entitlements,
+        identifier="com.macremoteviewer.app",
     )
-    text = f"{completed.stdout}\n{completed.stderr}"
-    return "<source>" in text and "<destination>" in text
 
 
 def create_compressed_dmg(*, source: Path, destination: Path, volume_name: str) -> None:
-    """從暫存資料夾建立 UDZO 壓縮 DMG。"""
+    """建立可拖放安裝的 UDZO／HFS+ DMG。
+
+    不用 diskutil image 的 APFS：那種映像裡的 Applications 捷徑在 Finder
+    不會顯示成資料夾，拖放後常以為沒裝進去。hdiutil 在 macOS 27 已標示
+    deprecated，但目前仍是唯一能指定 HFS+ 安裝映像的穩定做法。
+    """
     if destination.exists():
         destination.unlink()
-    if _diskutil_image_from_available():
-        run(
-            [
-                "diskutil",
-                "image",
-                "create",
-                "from",
-                "--format",
-                "UDZO",
-                "--volumeName",
-                volume_name,
-                str(source),
-                str(destination),
-            ]
-        )
-        return
     run(
         [
             "hdiutil",
@@ -525,6 +528,8 @@ def create_compressed_dmg(*, source: Path, destination: Path, volume_name: str) 
             "-ov",
             "-format",
             "UDZO",
+            "-fs",
+            "HFS+",
             str(destination),
         ]
     )
