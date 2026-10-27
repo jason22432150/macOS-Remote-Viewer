@@ -39,26 +39,27 @@ struct WelcomeView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        let language = model.settings.language
         VStack(spacing: 20) {
             Image(systemName: "display")
                 .font(.system(size: 48))
                 .foregroundStyle(.tint)
             Text("Mac Remote Viewer")
                 .font(.largeTitle.weight(.semibold))
-            Text("雙擊或拖入 PVE 下載的 .vv 連線檔，即可開啟 SPICE 遠端畫面。")
+            Text(L10n.string(.welcomeSubtitle, language: language))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 420)
-            Button("開啟 .vv…") {
+            Button(L10n.string(.openVVEllipsis, language: language)) {
                 model.chooseFile()
             }
             .keyboardShortcut(.defaultAction)
             if let error = model.welcomeError {
-                Text(error.userMessage)
+                Text(error.userMessage(language: language))
                     .foregroundStyle(.red)
                     .frame(maxWidth: 480)
             }
-            Text("第一版僅支援 SPICE + TLS。票證過期時請重新從 PVE 下載，不會自動更新。")
+            Text(L10n.string(.welcomeLimitation, language: language))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 480)

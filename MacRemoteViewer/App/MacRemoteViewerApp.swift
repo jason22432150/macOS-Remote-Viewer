@@ -11,6 +11,8 @@ struct MacRemoteViewerApp: App {
         WindowGroup {
             ContentView()
                 .environment(model)
+                .environment(model.settings)
+                .environment(\.locale, model.settings.language.locale)
                 .onAppear { appDelegate.model = model }
                 .onOpenURL { url in
                     model.open(urls: [url])
@@ -19,17 +21,17 @@ struct MacRemoteViewerApp: App {
         .windowStyle(.automatic)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("開啟 .vv…") {
+                Button(L10n.string(.openVVEllipsis, language: model.settings.language)) {
                     model.chooseFile()
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
-            CommandMenu("Session") {
-                Button("傳送 Ctrl+Alt+Del") {
+            CommandMenu(L10n.string(.menuSession, language: model.settings.language)) {
+                Button(L10n.string(.sendCtrlAltDel, language: model.settings.language)) {
                     model.session?.sendSecureAttention()
                 }
                 .disabled(model.session == nil)
-                Button("釋放滑鼠／鍵盤") {
+                Button(L10n.string(.releasePointer, language: model.settings.language)) {
                     model.session?.releaseKeys()
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
@@ -39,6 +41,8 @@ struct MacRemoteViewerApp: App {
         Settings {
             SettingsView()
                 .environment(model)
+                .environment(model.settings)
+                .environment(\.locale, model.settings.language.locale)
         }
     }
 }

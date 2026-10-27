@@ -11,10 +11,14 @@ extension UTType {
 final class AppModel {
     var session: SessionController?
     var welcomeError: SessionError?
-    var retainSourceFiles = false
+    let settings: AppSettings
 
     let importer = VVFileImporter()
     private let engine = SpiceEngineAdapter()
+
+    init(settings: AppSettings = AppSettings()) {
+        self.settings = settings
+    }
 
     func open(urls: [URL]) {
         guard let url = urls.first else { return }
@@ -34,7 +38,7 @@ final class AppModel {
         panel.allowedContentTypes = [.virtViewer, .data]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "選擇 PVE 下載的 .vv 連線檔"
+        panel.message = L10n.string(.chooseVVMessage, language: settings.language)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         open(urls: [url])
     }
@@ -48,7 +52,7 @@ final class AppModel {
         session?.cancel()
         let controller = SessionController(
             engine: engine,
-            cleanup: SourceFileCleanup(retainEvenIfRequested: retainSourceFiles),
+            cleanup: SourceFileCleanup(),
             diagnostics: DiagnosticsLog(sessionID: profile.sessionID)
         )
         session = controller

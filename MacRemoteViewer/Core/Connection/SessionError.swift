@@ -26,49 +26,53 @@ public enum SessionError: Error, Equatable, Sendable {
 
     /// 給使用者看的說明；刻意不帶入主機、票證或檔案內容。
     public var userMessage: String {
+        userMessage(language: .zhHant)
+    }
+
+    public func userMessage(language: AppLanguage) -> String {
         switch self {
         case .fileTooLarge:
-            return "連線檔太大，已拒絕解析。"
+            return L10n.string(.errorFileTooLarge, language: language)
         case .invalidEncoding:
-            return "連線檔不是有效的 UTF-8 文字。"
+            return L10n.string(.errorInvalidEncoding, language: language)
         case .missingSection:
-            return "連線檔缺少 [virt-viewer] 區段。"
+            return L10n.string(.errorMissingSection, language: language)
         case .unsupportedType:
-            return "第一版只支援 type=spice 的連線檔。"
+            return L10n.string(.errorUnsupportedType, language: language)
         case .missingField(let name):
-            return "連線檔缺少必要欄位：\(Self.safeFieldName(name))。"
+            return L10n.string(.errorMissingField, language: language, Self.safeFieldName(name))
         case .duplicateField(let name):
-            return "連線檔含有重複的必要欄位：\(Self.safeFieldName(name))。"
+            return L10n.string(.errorDuplicateField, language: language, Self.safeFieldName(name))
         case .invalidPort:
-            return "tls-port 必須是 1 到 65535 的整數。"
+            return L10n.string(.errorInvalidPort, language: language)
         case .plaintextPortNotAllowed:
-            return "此連線檔沒有 tls-port。第一版不會改走明文 port。"
+            return L10n.string(.errorPlaintextPort, language: language)
         case .invalidProxy:
-            return "proxy 必須是 http 或 https 的 CONNECT 位址。"
+            return L10n.string(.errorInvalidProxy, language: language)
         case .invalidBoolean:
-            return "布林欄位只接受 0 或 1。"
+            return L10n.string(.errorInvalidBoolean, language: language)
         case .invalidCA:
-            return "ca 憑證資料格式無效。"
+            return L10n.string(.errorInvalidCA, language: language)
         case .invalidHotKey:
-            return "快捷鍵格式無法辨識。"
+            return L10n.string(.errorInvalidHotKey, language: language)
         case .sourceFileUnavailable:
-            return "無法讀取連線檔。"
+            return L10n.string(.errorSourceFileUnavailable, language: language)
         case .engineUnavailable:
-            return "SPICE 引擎尚未連結。Parser 與 UI 可用，但還不能連到 PVE；需要 UTM 相容的 spice-gtk／GStreamer 靜態依賴。"
+            return L10n.string(.errorEngineUnavailable, language: language)
         case .cancelled:
-            return "連線已取消。"
+            return L10n.string(.errorCancelled, language: language)
         case .network:
-            return "無法經由 proxy 或網路連到遠端。"
+            return L10n.string(.errorNetwork, language: language)
         case .tls:
-            return "TLS 驗證失敗。請確認憑證與 host-subject 來自新下載的連線檔。"
+            return L10n.string(.errorTLS, language: language)
         case .authenticationRejected:
-            return "票證已失效或被拒絕。請重新從 PVE 下載連線檔；本 App 不會自動更新票證。"
+            return L10n.string(.errorAuthenticationRejected, language: language)
         case .guestAgentUnavailable:
-            return "Guest agent 不可用，畫面與輸入仍可使用，但剪貼簿已停用。"
+            return L10n.string(.errorGuestAgentUnavailable, language: language)
         case .disconnected:
-            return "遠端連線已中斷。"
+            return L10n.string(.errorDisconnected, language: language)
         case .unknown:
-            return "連線失敗。"
+            return L10n.string(.errorUnknown, language: language)
         }
     }
 

@@ -31,6 +31,10 @@
 		B00000000000F56A181E63DC /* InputRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000005904A95E5E8B /* InputRouter.swift */; };
 		B000000000007B07AF4C7FDE /* RemoteDisplayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000DA5E4FDF335 /* RemoteDisplayView.swift */; };
 		B00000000000F6EB7DF9ED34 /* CSConnection+PVEConfig.m in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000DC524A525A99 /* CSConnection+PVEConfig.m */; };
+		B00000000000A100PREF0002 /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100PREF0001 /* AppPreferences.swift */; };
+		B00000000000A100SETT0002 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100SETT0001 /* AppSettings.swift */; };
+		B00000000000A100L10N0002 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100L10N0001 /* L10n.swift */; };
+		B00000000000A100FLOG0002 /* FileLogWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100FLOG0001 /* FileLogWriter.swift */; };
 		A10000000000000000000015 /* CocoaSpiceNoUsb in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000014 /* CocoaSpiceNoUsb */; };
 /* End PBXBuildFile section */
 
@@ -59,6 +63,10 @@
 		B000000000005904A95E5E8B /* InputRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Platform/macOS/InputRouter.swift"; sourceTree = "<group>"; };
 		B000000000000DA5E4FDF335 /* RemoteDisplayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Platform/macOS/RemoteDisplayView.swift"; sourceTree = "<group>"; };
 		B00000000000DC524A525A99 /* CSConnection+PVEConfig.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "Engine/CSConnection+PVEConfig.m"; sourceTree = "<group>"; };
+		B00000000000A100PREF0001 /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Settings/AppPreferences.swift"; sourceTree = "<group>"; };
+		B00000000000A100SETT0001 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Settings/AppSettings.swift"; sourceTree = "<group>"; };
+		B00000000000A100L10N0001 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Settings/L10n.swift"; sourceTree = "<group>"; };
+		B00000000000A100FLOG0001 /* FileLogWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Diagnostics/FileLogWriter.swift"; sourceTree = "<group>"; };
 		B00000000000D8709828886A /* MacRemoteViewer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Engine/MacRemoteViewer-Bridging-Header.h"; sourceTree = "<group>"; };
 		B00000000000DC524A525A94 /* CSConnection+PVEConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Engine/CSConnection+PVEConfig.h"; sourceTree = "<group>"; };
 		B0000000000003F96932D73F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "App/Info.plist"; sourceTree = "<group>"; };
@@ -102,6 +110,10 @@
 				B000000000005AE2B288B189 /* SpiceEngine.swift */,
 				B0000000000096B7E5E69E1E /* GuestPointerMapping.swift */,
 				B00000000000C0DE0000A002 /* GuestResolutionPolicy.swift */,
+				B00000000000A100PREF0001 /* AppPreferences.swift */,
+				B00000000000A100SETT0001 /* AppSettings.swift */,
+				B00000000000A100L10N0001 /* L10n.swift */,
+				B00000000000A100FLOG0001 /* FileLogWriter.swift */,
 				B000000000007933A984E918 /* KeyboardMapping.swift */,
 				B00000000000E44BC16ACA0C /* HotKeyParser.swift */,
 				B000000000009E7CC4B7F8A6 /* VVParser.swift */,
@@ -217,6 +229,10 @@
 				B0000000000062CA5ECB69FC /* SpiceEngine.swift in Sources */,
 				B000000000001935B2369D71 /* GuestPointerMapping.swift in Sources */,
 				B00000000000C0DE0000A001 /* GuestResolutionPolicy.swift in Sources */,
+				B00000000000A100PREF0002 /* AppPreferences.swift in Sources */,
+				B00000000000A100SETT0002 /* AppSettings.swift in Sources */,
+				B00000000000A100L10N0002 /* L10n.swift in Sources */,
+				B00000000000A100FLOG0002 /* FileLogWriter.swift in Sources */,
 				B00000000000FCF7D41A077B /* KeyboardMapping.swift in Sources */,
 				B0000000000069626BD3A415 /* HotKeyParser.swift in Sources */,
 				B000000000006AA5A6749ADF /* VVParser.swift in Sources */,

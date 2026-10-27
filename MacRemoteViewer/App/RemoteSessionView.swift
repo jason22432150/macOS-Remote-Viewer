@@ -5,6 +5,8 @@ struct RemoteSessionView: View {
     var controller: SessionController
     var router: InputRouter
 
+    private var language: AppLanguage { model.settings.language }
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -35,10 +37,10 @@ struct RemoteSessionView: View {
 
     private var toolbar: some View {
         HStack {
-            Button("關閉") { model.closeSession() }
+            Button(L10n.string(.close, language: language)) { model.closeSession() }
             Spacer()
-            Button("Ctrl+Alt+Del") { controller.sendSecureAttention() }
-            Button("全螢幕") { NSApp.keyWindow?.toggleFullScreen(nil) }
+            Button(L10n.string(.ctrlAltDel, language: language)) { controller.sendSecureAttention() }
+            Button(L10n.string(.fullscreen, language: language)) { NSApp.keyWindow?.toggleFullScreen(nil) }
         }
         .padding(8)
     }
@@ -48,20 +50,20 @@ struct RemoteSessionView: View {
             switch controller.state {
             case .connecting:
                 ProgressView()
-                Text("連線中…")
+                Text(L10n.string(.connectingEllipsis, language: language))
             case .failed(let error):
                 Image(systemName: "exclamationmark.triangle")
                     .font(.largeTitle)
-                Text(error.userMessage)
+                Text(error.userMessage(language: language))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
                 if error.isRetryableWithNewFile {
-                    Button("開啟新的 .vv") { model.chooseFile() }
+                    Button(L10n.string(.openNewVV, language: language)) { model.chooseFile() }
                 }
-                Button("返回") { model.closeSession() }
+                Button(L10n.string(.back, language: language)) { model.closeSession() }
             case .disconnecting, .disconnected:
-                Text("已斷線")
-                Button("返回") { model.closeSession() }
+                Text(L10n.string(.disconnected, language: language))
+                Button(L10n.string(.back, language: language)) { model.closeSession() }
             default:
                 EmptyView()
             }
@@ -74,19 +76,20 @@ struct RemoteSessionView: View {
         HStack {
             Text(statusText)
             Spacer()
-            if let hint = controller.unknownFieldHint {
-                Text(hint).foregroundStyle(.secondary)
+            if let names = controller.profile?.unknownFieldNames, !names.isEmpty {
+                Text(L10n.string(.ignoredFields, language: language, names.joined(separator: ", ")))
+                    .foregroundStyle(.secondary)
             }
             if let frame = controller.displaySize {
                 Text("\(frame.width)×\(frame.height)")
                     .monospacedDigit()
             }
             if !controller.agent.isConnected {
-                Text("無 guest agent").foregroundStyle(.orange)
+                Text(L10n.string(.noGuestAgent, language: language)).foregroundStyle(.orange)
             } else if !controller.agent.supportsMonitorsConfig {
-                Text("無法自動調整解析度").foregroundStyle(.orange)
+                Text(L10n.string(.cannotAdjustResolution, language: language)).foregroundStyle(.orange)
             } else if !controller.agent.supportsClipboard {
-                Text("剪貼簿不可用").foregroundStyle(.orange)
+                Text(L10n.string(.clipboardUnavailable, language: language)).foregroundStyle(.orange)
             }
         }
         .font(.caption)
@@ -96,13 +99,13 @@ struct RemoteSessionView: View {
 
     private var statusText: String {
         switch controller.state {
-        case .idle: return "待命"
-        case .parsing: return "解析連線檔"
-        case .connecting: return "連線中"
-        case .connected: return "已連線"
-        case .disconnecting: return "中斷中"
-        case .disconnected: return "已斷線"
-        case .failed: return "失敗"
+        case .idle: return L10n.string(.statusIdle, language: language)
+        case .parsing: return L10n.string(.statusParsing, language: language)
+        case .connecting: return L10n.string(.statusConnecting, language: language)
+        case .connected: return L10n.string(.statusConnected, language: language)
+        case .disconnecting: return L10n.string(.statusDisconnecting, language: language)
+        case .disconnected: return L10n.string(.statusDisconnected, language: language)
+        case .failed: return L10n.string(.statusFailed, language: language)
         }
     }
 }
