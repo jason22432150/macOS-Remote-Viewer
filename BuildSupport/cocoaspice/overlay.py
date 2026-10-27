@@ -155,6 +155,8 @@ def overlay_display_initial_frame(checkout: Path) -> None:
 
 /// 把目前 CPU framebuffer 完整上傳到 Metal。必須在 SPICE context 上呼叫。
 - (void)repaintCurrentFramebuffer {
+    // 與 canvas 同一時間點重抓 cursor shape，讓第一幀 snapshot 含 overlay。
+    self.cursor.display = self;
     if (self.isGLEnabled) {
         [self invalidate];
         return;
@@ -197,6 +199,20 @@ def overlay_display_initial_frame(checkout: Path) -> None:
     }
 #endif
     [self copyBuffer:self.canvasBuffer""",
+            ),
+            (
+                """        [self rebuildDisplayVertices];
+    }];
+    // possibly retrigger cursor rebuild
+    self.cursor.display = self;
+}""",
+                """        [self rebuildDisplayVertices];
+        // device 就緒後才重建 cursor texture。太早呼叫時 rebuildCursorWithSize
+        // 會直接 return，hasCursor 維持 NO：滑鼠輸入正常，但 overlay 要等到
+        // guest 下次送 cursor shape 才出現。
+        self.cursor.display = self;
+    }];
+}""",
             ),
         ],
     )

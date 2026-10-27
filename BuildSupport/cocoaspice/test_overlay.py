@@ -98,6 +98,12 @@ DISPLAY_FIXTURE = r"""
 #endif
     dispatch_semaphore_t drawCompletedEvent = dispatch_semaphore_create(0);
     [self copyBuffer:self.canvasBuffer
+
+        [self rebuildDisplayVertices];
+    }];
+    // possibly retrigger cursor rebuild
+    self.cursor.display = self;
+}
 """
 
 RENDERER_FIXTURE = """\
@@ -187,6 +193,11 @@ class OverlayTests(unittest.TestCase):
             renderer_text = renderer.read_text()
             protected_text = protected.read_text()
             self.assertIn("repaintCurrentFramebuffer", display_text)
+            self.assertIn(
+                "    self.cursor.display = self;\n"
+                "    if (self.isGLEnabled) {\n",
+                display_text,
+            )
             self.assertIn("self.canvasIsBusy", display_text)
             self.assertIn("canvasBufferOffset", display_text)
             self.assertNotIn("drawCompletedEvent", display_text)
@@ -201,6 +212,17 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("isNewRenderer", renderer_text)
             self.assertIn("#import \"CSMain.h\"", renderer_text)
             self.assertIn("repaintCurrentFramebuffer", protected_text)
+            self.assertIn(
+                "        [self rebuildDisplayVertices];\n"
+                "        // device 就緒後才重建 cursor texture。太早呼叫時 rebuildCursorWithSize\n"
+                "        // 會直接 return，hasCursor 維持 NO：滑鼠輸入正常，但 overlay 要等到\n"
+                "        // guest 下次送 cursor shape 才出現。\n"
+                "        self.cursor.display = self;\n"
+                "    }];\n",
+                display_text,
+            )
+            self.assertIn("self.cursor.display = self;", display_text)
+            self.assertNotIn("possibly retrigger cursor rebuild", display_text)
 
 
 if __name__ == "__main__":
