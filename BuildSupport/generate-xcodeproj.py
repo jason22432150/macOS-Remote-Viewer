@@ -16,6 +16,7 @@ SWIFT = [
     "Core/Connection/SessionState.swift",
     "Core/Connection/ConnectionProfile.swift",
     "Core/Connection/SpiceEngine.swift",
+    "Core/Connection/GuestPointerMapping.swift",
     "Core/VVFile/HotKeyParser.swift",
     "Core/VVFile/VVParser.swift",
     "Core/VVFile/SourceFilePolicy.swift",

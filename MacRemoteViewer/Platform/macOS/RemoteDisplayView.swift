@@ -21,6 +21,7 @@ struct RemoteDisplayView: NSViewRepresentable {
         nsView.controller = controller
         nsView.router = router
         nsView.attachRendererIfNeeded()
+        nsView.updateViewport()
     }
 }
 
@@ -28,6 +29,7 @@ final class RemoteCanvasView: MTKView {
     weak var controller: SessionController?
     var router: InputRouter?
     private var metalRenderer: CSMetalRenderer?
+    private var mapping: GuestPointerMapping?
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
@@ -46,11 +48,43 @@ final class RemoteCanvasView: MTKView {
             delegate = renderer
         }
         attachRendererIfNeeded()
+        updateViewport()
     }
 
     func attachRendererIfNeeded() {
         guard let metalRenderer else { return }
         controller?.attachRenderer(metalRenderer)
+        updateViewport()
+    }
+
+    /// CocoaSpice 以 drawable 中心繪製；必須把 scale 設成與滑鼠對應相同的 letterbox。
+    func updateViewport() {
+        guard let renderer = metalRenderer,
+              let frame = controller?.displaySize,
+              frame.width > 0,
+              frame.height > 0,
+              drawableSize.width > 0,
+              drawableSize.height > 0
+        else { return }
+        let next = GuestPointerMapping.aspectFit(
+            displaySize: CGSize(width: frame.width, height: frame.height),
+            drawableSize: drawableSize
+        )
+        mapping = next
+        renderer.viewportScale = next.viewportScale
+        renderer.viewportOrigin = next.viewportOrigin
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        DispatchQueue.main.async { [weak self] in
+            self?.updateViewport()
+        }
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateViewport()
     }
 
     func setupTracking() {
@@ -66,6 +100,17 @@ final class RemoteCanvasView: MTKView {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
         attachRendererIfNeeded()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        if router?.captured == true {
+            NSCursor.hide()
+        }
+        handleMouse(event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.unhide()
     }
 
     override func mouseMoved(with event: NSEvent) { handleMouse(event) }
@@ -98,8 +143,9 @@ final class RemoteCanvasView: MTKView {
 
     private func handleMouse(_ event: NSEvent) {
         guard let controller, let router else { return }
-        let size = controller.displaySize.map { CGSize(width: $0.width, height: $0.height) } ?? bounds.size
-        if let mouse = router.mouseEvent(from: event, in: self, displaySize: size) {
+        updateViewport()
+        guard let mapping else { return }
+        if let mouse = router.mouseEvent(from: event, in: self, mapping: mapping) {
             controller.sendMouse(mouse)
         }
     }

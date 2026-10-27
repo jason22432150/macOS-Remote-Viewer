@@ -14,6 +14,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
     private var display: CSDisplay?
     private var clipboardBridge: PVESpiceClipboard?
     private var pendingRenderer: CSRenderer?
+    private var lastGuestPoint: CGPoint?
     private var workerStarted = false
     private var currentGeneration: UInt64 = 1
 
@@ -65,6 +66,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
         display = nil
         clipboardBridge = nil
         pendingRenderer = nil
+        lastGuestPoint = nil
     }
 
     func sendMouse(_ event: MouseEvent) {
@@ -73,12 +75,20 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, @preconcurrency CSConn
         switch event.kind {
         case .move:
             if input.serverModeCursor {
-                input.sendMouseMotion(buttons, relativePoint: event.point)
+                let previous = lastGuestPoint ?? event.point
+                let delta = CGPoint(x: event.point.x - previous.x, y: event.point.y - previous.y)
+                input.sendMouseMotion(buttons, relativePoint: delta)
             } else {
                 input.sendMousePosition(buttons, absolutePoint: event.point)
+                // client 模式必須自己移動 overlay，否則遠端游標會停在舊位置。
+                display?.cursor?.move(to: event.point)
             }
+            lastGuestPoint = event.point
         case .down, .up:
             input.sendMouseButton(buttons, mask: buttons, pressed: event.kind == .down)
+            if !input.serverModeCursor {
+                display?.cursor?.move(to: event.point)
+            }
         case .scroll:
             input.sendMouseScroll(.smooth, buttonMask: buttons, dy: event.scrollDelta)
         }

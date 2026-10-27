@@ -6,20 +6,11 @@ final class InputRouter {
     var captured = true
     private var pressedScancodes: Set<Int> = []
 
-    func mouseEvent(from event: NSEvent, in view: NSView, displaySize: CGSize) -> MouseEvent? {
+    func mouseEvent(from event: NSEvent, in view: NSView, mapping: GuestPointerMapping) -> MouseEvent? {
         let location = view.convert(event.locationInWindow, from: nil)
-        let bounds = view.bounds
-        guard bounds.width > 0, bounds.height > 0, displaySize.width > 0, displaySize.height > 0 else {
+        guard let point = mapping.guestPoint(fromViewPoint: location, bounds: view.bounds) else {
             return nil
         }
-        let scale = min(bounds.width / displaySize.width, bounds.height / displaySize.height)
-        let drawWidth = displaySize.width * scale
-        let drawHeight = displaySize.height * scale
-        let originX = (bounds.width - drawWidth) / 2
-        let originY = (bounds.height - drawHeight) / 2
-        let x = (location.x - originX) / scale
-        let y = displaySize.height - ((location.y - originY) / scale)
-        let point = CGPoint(x: x, y: y)
         let mask = Self.buttonMask(from: event)
 
         switch event.type {
