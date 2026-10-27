@@ -51,6 +51,20 @@ final class AppModel {
         session = nil
     }
 
+    /// 即使尚未寫入任何 log，也先建立資料夾再開啟 Finder。
+    func revealLogFolder() {
+        do {
+            try settings.fileLog.ensureDirectoryExists()
+        } catch {
+            settings.fileLog.write(
+                level: "ERROR",
+                message: "log-directory-unavailable",
+                sessionID: "settings"
+            )
+        }
+        NSWorkspace.shared.open(settings.fileLog.directoryURL)
+    }
+
     func applySettingsToActiveSession() {
         session?.applyResolutionPreference(settings.preferences.resolutionPreference)
     }
@@ -62,7 +76,10 @@ final class AppModel {
             cleanup: SourceFileCleanup(
                 deleteAfterSuccessfulConnect: settings.preferences.deleteVVFileAfterConnect
             ),
-            diagnostics: DiagnosticsLog(sessionID: profile.sessionID),
+            diagnostics: DiagnosticsLog(
+                sessionID: profile.sessionID,
+                fileLog: settings.fileLog
+            ),
             resolutionPreference: settings.preferences.resolutionPreference
         )
         session = controller

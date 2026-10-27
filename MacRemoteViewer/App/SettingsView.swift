@@ -72,9 +72,22 @@ struct SettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+
+            Section(L10n.string(.settingsDiagnostics, language: language)) {
+                Toggle(
+                    L10n.string(.recordLogs, language: language),
+                    isOn: $settings.preferences.loggingEnabled
+                )
+                Text(L10n.string(.recordLogsHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button(L10n.string(.openLogFolder, language: language)) {
+                    model.revealLogFolder()
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 520, minHeight: 480)
+        .frame(minWidth: 520, minHeight: 560)
         .padding(8)
     }
 }

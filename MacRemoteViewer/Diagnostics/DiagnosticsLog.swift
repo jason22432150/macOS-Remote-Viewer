@@ -5,24 +5,35 @@ import OSLog
 public struct DiagnosticsLog: Sendable {
     public let sessionID: String
     private let logger: Logger
+    private let fileLog: FileLogSink?
 
-    public init(sessionID: String, subsystem: String = "local.MacRemoteViewer") {
+    public init(
+        sessionID: String,
+        subsystem: String = "local.MacRemoteViewer",
+        fileLog: FileLogSink? = nil
+    ) {
         self.sessionID = sessionID
         self.logger = Logger(subsystem: subsystem, category: "session")
+        self.fileLog = fileLog
     }
 
     public func info(_ message: String) {
-        logger.info("\(self.redact(message), privacy: .public) session=\(self.sessionID, privacy: .public)")
+        let redacted = redact(message)
+        logger.info("\(redacted, privacy: .public) session=\(self.sessionID, privacy: .public)")
+        fileLog?.write(level: "INFO", message: redacted, sessionID: sessionID)
     }
 
     public func error(_ error: SessionError) {
-        logger.error("error=\(String(describing: error), privacy: .public) session=\(self.sessionID, privacy: .public)")
+        let description = String(describing: error)
+        logger.error("error=\(description, privacy: .public) session=\(self.sessionID, privacy: .public)")
+        fileLog?.write(level: "ERROR", message: "error=\(description)", sessionID: sessionID)
     }
 
     public func compatibilityHint(unknownFields: [String]) {
         guard !unknownFields.isEmpty else { return }
         let names = unknownFields.joined(separator: ",")
         logger.notice("unknown-fields=\(names, privacy: .public) session=\(self.sessionID, privacy: .public)")
+        fileLog?.write(level: "NOTICE", message: "unknown-fields=\(names)", sessionID: sessionID)
     }
 
     public func exportSanitizedLines(sampleSecrets: [String] = []) -> [String] {
@@ -41,17 +52,26 @@ public struct DiagnosticsLog: Sendable {
 
     private func redact(_ message: String) -> String {
         var result = message
+        for regex in Self.redactRegexes {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, range: range, withTemplate: "<redacted>")
+        }
+        return result
+    }
+
+    /// 固定 pattern，編譯失敗應在測試／啟動時立刻暴露，不可默默略過遮蔽。
+    private static let redactRegexes: [NSRegularExpression] = {
         let patterns = [
             #"password=[^\s]+"#,
             #"ticket=[^\s]+"#,
             #"-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----"#
         ]
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern) {
-                let range = NSRange(result.startIndex..., in: result)
-                result = regex.stringByReplacingMatches(in: result, range: range, withTemplate: "<redacted>")
+        return patterns.map { pattern in
+            do {
+                return try NSRegularExpression(pattern: pattern)
+            } catch {
+                preconditionFailure("invalid diagnostics redact pattern: \(pattern)")
             }
         }
-        return result
-    }
+    }()
 }
