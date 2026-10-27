@@ -7,6 +7,17 @@ struct SettingsView: View {
         @Bindable var settings = model.settings
         let language = settings.language
         Form {
+            Section(L10n.string(.settingsMouse, language: language)) {
+                Picker(
+                    L10n.string(.scrollDirection, language: language),
+                    selection: $settings.preferences.scrollWheelDirection
+                ) {
+                    Text(L10n.string(.scrollNatural, language: language)).tag(ScrollWheelDirection.natural)
+                    Text(L10n.string(.scrollReversed, language: language)).tag(ScrollWheelDirection.reversed)
+                }
+                .pickerStyle(.segmented)
+            }
+
             Section(L10n.string(.settingsLanguage, language: language)) {
                 Picker(
                     L10n.string(.language, language: language),

@@ -4,6 +4,8 @@ import AppKit
 @MainActor
 final class InputRouter {
     var captured = true
+    /// 與系統滾輪相反時為 true，來自可持久化的使用者偏好。
+    var invertScrollWheel = false
     private var pressedScancodes: Set<Int> = []
 
     func mouseEvent(from event: NSEvent, in view: NSView, mapping: GuestPointerMapping) -> MouseEvent? {
@@ -27,7 +29,11 @@ final class InputRouter {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             return MouseEvent(kind: .move, point: point, buttonMask: mask)
         case .scrollWheel:
-            return MouseEvent(kind: .scroll, point: point, buttonMask: mask, scrollDelta: event.scrollingDeltaY)
+            let delta = ScrollWheelMapping.guestDelta(
+                event.scrollingDeltaY,
+                inverted: invertScrollWheel
+            )
+            return MouseEvent(kind: .scroll, point: point, buttonMask: mask, scrollDelta: delta)
         default:
             return nil
         }

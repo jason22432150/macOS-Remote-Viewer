@@ -35,6 +35,7 @@
 		B00000000000A100SETT0002 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100SETT0001 /* AppSettings.swift */; };
 		B00000000000A100L10N0002 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100L10N0001 /* L10n.swift */; };
 		B00000000000A100FLOG0002 /* FileLogWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100FLOG0001 /* FileLogWriter.swift */; };
+		B00000000000A100SCRL0002 /* ScrollWheelMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000A100SCRL0001 /* ScrollWheelMapping.swift */; };
 		A10000000000000000000015 /* CocoaSpiceNoUsb in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000014 /* CocoaSpiceNoUsb */; };
 /* End PBXBuildFile section */
 
@@ -67,6 +68,7 @@
 		B00000000000A100SETT0001 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Settings/AppSettings.swift"; sourceTree = "<group>"; };
 		B00000000000A100L10N0001 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Settings/L10n.swift"; sourceTree = "<group>"; };
 		B00000000000A100FLOG0001 /* FileLogWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Diagnostics/FileLogWriter.swift"; sourceTree = "<group>"; };
+		B00000000000A100SCRL0001 /* ScrollWheelMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/Connection/ScrollWheelMapping.swift"; sourceTree = "<group>"; };
 		B00000000000D8709828886A /* MacRemoteViewer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Engine/MacRemoteViewer-Bridging-Header.h"; sourceTree = "<group>"; };
 		B00000000000DC524A525A94 /* CSConnection+PVEConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Engine/CSConnection+PVEConfig.h"; sourceTree = "<group>"; };
 		B0000000000003F96932D73F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "App/Info.plist"; sourceTree = "<group>"; };
@@ -110,6 +112,7 @@
 				B000000000005AE2B288B189 /* SpiceEngine.swift */,
 				B0000000000096B7E5E69E1E /* GuestPointerMapping.swift */,
 				B00000000000C0DE0000A002 /* GuestResolutionPolicy.swift */,
+				B00000000000A100SCRL0001 /* ScrollWheelMapping.swift */,
 				B00000000000A100PREF0001 /* AppPreferences.swift */,
 				B00000000000A100SETT0001 /* AppSettings.swift */,
 				B00000000000A100L10N0001 /* L10n.swift */,
@@ -229,6 +232,7 @@
 				B0000000000062CA5ECB69FC /* SpiceEngine.swift in Sources */,
 				B000000000001935B2369D71 /* GuestPointerMapping.swift in Sources */,
 				B00000000000C0DE0000A001 /* GuestResolutionPolicy.swift in Sources */,
+				B00000000000A100SCRL0002 /* ScrollWheelMapping.swift in Sources */,
 				B00000000000A100PREF0002 /* AppPreferences.swift in Sources */,
 				B00000000000A100SETT0002 /* AppSettings.swift in Sources */,
 				B00000000000A100L10N0002 /* L10n.swift in Sources */,

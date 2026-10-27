@@ -14,12 +14,20 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 560)
+        .onAppear { syncScrollWheel() }
+        .onChange(of: model.settings.preferences.scrollWheelDirection) { _, _ in
+            syncScrollWheel()
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             model.session?.releaseKeys()
         }
+    }
+
+    private func syncScrollWheel() {
+        router.invertScrollWheel = model.settings.preferences.invertScrollWheel
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
