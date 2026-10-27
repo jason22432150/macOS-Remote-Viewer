@@ -1,0 +1,206 @@
+import Foundation
+
+/// virt-viewer INI／GKeyFile 風格解析器。未知欄位只記錄名稱，不執行其中的文字。
+public struct VVParser: Sendable {
+    public static let maxFileBytes = 512 * 1024
+    public static let virtViewerSection = "virt-viewer"
+    public static let criticalFields: Set<String> = [
+        "type", "host", "port", "tls-port", "password", "ca", "host-subject", "proxy"
+    ]
+
+    public init() {}
+
+    public func parse(data: Data, sourceIdentity: SourceFileIdentity? = nil) throws -> ConnectionProfile {
+        guard data.count <= Self.maxFileBytes else {
+            throw SessionError.fileTooLarge(maxBytes: Self.maxFileBytes)
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw SessionError.invalidEncoding
+        }
+        let document = try INIDocument.parse(text)
+        guard let section = document.sections[Self.virtViewerSection] else {
+            throw SessionError.missingSection
+        }
+
+        for name in Self.criticalFields where section.duplicateKeys.contains(name) {
+            throw SessionError.duplicateField(name)
+        }
+
+        let type = try requiredString("type", in: section).lowercased()
+        guard type == "spice" else {
+            throw SessionError.unsupportedType(type)
+        }
+
+        let host = try requiredString("host", in: section)
+        if section.values["port"] != nil && section.values["tls-port"] == nil {
+            throw SessionError.plaintextPortNotAllowed
+        }
+        let tlsPort = try requiredPort("tls-port", in: section)
+        let password = try requiredString("password", in: section)
+        let caPEM = try decodeCA(try requiredString("ca", in: section))
+        let hostSubject = try requiredString("host-subject", in: section)
+        let proxyURL = try optionalProxy(section.values["proxy"])
+        let title = section.values["title"]?.isEmpty == false ? section.values["title"]! : "SPICE Session"
+        let deleteSourceFile = try optionalBool(section.values["delete-this-file"]) ?? false
+
+        let toggleFullscreen = try HotKeyParser.parse(section.values["toggle-fullscreen"] ?? "Shift+F11")
+        let releaseCursor = try HotKeyParser.parse(section.values["release-cursor"] ?? "Ctrl+Alt+R")
+        let secureAttention = try HotKeyParser.parse(section.values["secure-attention"] ?? "Ctrl+Alt+Ins")
+
+        let knownKeys: Set<String> = [
+            "type", "host", "port", "tls-port", "username", "password", "ca", "host-subject",
+            "proxy", "title", "delete-this-file", "toggle-fullscreen", "release-cursor",
+            "secure-attention", "fullscreen", "enable-usbredir", "enable-usb-autoshare",
+            "usb-filter", "tls-ciphers", "secure-channels", "disable-channels",
+            "color-depth", "disable-effects", "version", "versions", "newer-version-url",
+            "unix-path", "enable-smartcard", "smartcard-insert", "smartcard-remove"
+        ]
+        let unknownFieldNames = section.values.keys
+            .filter { !knownKeys.contains($0) }
+            .sorted()
+
+        return ConnectionProfile(
+            title: title,
+            host: host,
+            tlsPort: tlsPort,
+            proxyURL: proxyURL,
+            caPEM: caPEM,
+            hostSubject: hostSubject,
+            ticket: .init(password),
+            deleteSourceFile: deleteSourceFile,
+            toggleFullscreen: toggleFullscreen,
+            releaseCursor: releaseCursor,
+            secureAttention: secureAttention,
+            unknownFieldNames: unknownFieldNames,
+            sourceIdentity: sourceIdentity
+        )
+    }
+
+    private func requiredString(_ key: String, in section: INIDocument.Section) throws -> String {
+        guard let value = section.values[key], !value.isEmpty else {
+            throw SessionError.missingField(key)
+        }
+        return value
+    }
+
+    private func requiredPort(_ key: String, in section: INIDocument.Section) throws -> UInt16 {
+        let raw = try requiredString(key, in: section)
+        guard let value = UInt16(raw), value > 0 else {
+            throw SessionError.invalidPort(key)
+        }
+        return value
+    }
+
+    private func optionalBool(_ raw: String?) throws -> Bool? {
+        guard let raw else { return nil }
+        switch raw {
+        case "1", "true", "True":
+            return true
+        case "0", "false", "False":
+            return false
+        default:
+            throw SessionError.invalidBoolean(raw)
+        }
+    }
+
+    private func optionalProxy(_ raw: String?) throws -> URL? {
+        guard let raw, !raw.isEmpty else { return nil }
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty
+        else {
+            throw SessionError.invalidProxy
+        }
+        return url
+    }
+
+    /// GKeyFile 風格還原 `\n` `\t` `\r` `\s` `\\`，供 PEM 使用。
+    private func decodeCA(_ raw: String) throws -> Data {
+        let pem = INIDocument.unescape(raw)
+        let trimmed = pem.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.contains("BEGIN CERTIFICATE"), trimmed.contains("END CERTIFICATE") else {
+            throw SessionError.invalidCA
+        }
+        guard let data = pem.data(using: .utf8) else {
+            throw SessionError.invalidCA
+        }
+        return data
+    }
+}
+
+/// 保守的 INI 讀取；重複的必要欄位會被記錄，不靜默覆蓋。
+struct INIDocument {
+    struct Section {
+        var values: [String: String] = [:]
+        var duplicateKeys: Set<String> = []
+    }
+
+    var sections: [String: Section] = [:]
+
+    static func parse(_ text: String) throws -> INIDocument {
+        var document = INIDocument()
+        var currentName: String?
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+
+        for rawLine in lines {
+            var line = String(rawLine)
+            if line.hasSuffix("\r") {
+                line.removeLast()
+            }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if trimmed.hasPrefix("#") || trimmed.hasPrefix(";") { continue }
+
+            if trimmed.hasPrefix("["), trimmed.hasSuffix("]"), trimmed.count >= 2 {
+                let name = String(trimmed.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces).lowercased()
+                currentName = name
+                if document.sections[name] == nil {
+                    document.sections[name] = Section()
+                }
+                continue
+            }
+
+            guard let currentName else { continue }
+            guard let separator = trimmed.firstIndex(of: "=") else { continue }
+            let key = String(trimmed[..<separator]).trimmingCharacters(in: .whitespaces).lowercased()
+            let rawValue = String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+            let value = unescape(rawValue)
+
+            var section = document.sections[currentName] ?? Section()
+            if section.values[key] != nil {
+                section.duplicateKeys.insert(key)
+            }
+            section.values[key] = value
+            document.sections[currentName] = section
+        }
+
+        return document
+    }
+
+    static func unescape(_ raw: String) -> String {
+        var result = ""
+        result.reserveCapacity(raw.count)
+        var iterator = raw.makeIterator()
+        while let character = iterator.next() {
+            if character == "\\" {
+                guard let next = iterator.next() else {
+                    result.append(character)
+                    break
+                }
+                switch next {
+                case "n": result.append("\n")
+                case "r": result.append("\r")
+                case "t": result.append("\t")
+                case "s": result.append(" ")
+                case "\\": result.append("\\")
+                default:
+                    result.append(next)
+                }
+            } else {
+                result.append(character)
+            }
+        }
+        return result
+    }
+}

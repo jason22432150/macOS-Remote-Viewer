@@ -1,0 +1,6 @@
+這份 patch 預留給小型 CocoaSpice fork：把 proxy、ca、cert-subject
+與 TLS verify flags 做成 CSConnection 的公開設定入口。
+
+目前原型改用 CSConnection+PVEConfig 類別方法，在 connect 前寫入
+SpiceSession 屬性。正式整合時應把同等能力送回 fork，避免 Swift／ObjC
+以 KVC 存取 spiceSession。

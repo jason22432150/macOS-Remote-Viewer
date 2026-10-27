@@ -1,0 +1,14 @@
+[virt-viewer]
+type=spice
+host=pve.example.test
+proxy=http://pve.example.test:3128
+tls-port=61001
+password=example-ticket-not-secret
+ca=-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKFAKESECRETEXAMPLE\n-----END CERTIFICATE-----
+host-subject=CN=pve.example.test
+title=example-vm
+delete-this-file=1
+toggle-fullscreen=Shift+F11
+release-cursor=Ctrl+Alt+R
+secure-attention=Ctrl+Alt+Ins
+x-unknown-demo=should-be-ignored

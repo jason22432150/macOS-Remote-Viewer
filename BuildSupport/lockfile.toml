@@ -1,0 +1,31 @@
+# 已驗證或目前鎖定的依賴。main 分支不得當成固定規格。
+
+[host]
+cpu = "arm64"
+macos = "27.0.1"
+xcode = "27.1"
+deployment_target = "14.0"
+
+[cocoaspice]
+repository = "https://github.com/utmapp/CocoaSpice"
+revision = "d8d29fc810047a3ddcebb351cdadc8fe4b4f308d"
+date = "2026-09-22"
+product = "CocoaSpiceNoUsb"
+license = "Apache-2.0"
+
+[spice_gtk]
+source = "homebrew"
+formula = "spice-gtk"
+version = "0.43_1"
+note = "已安裝但不足以連結 CocoaSpice。缺少 UTM spice-gtk fork 的 spice_util_set_main_context，以及靜態註冊的 GStreamer plugins。"
+
+[glib]
+source = "homebrew"
+formula = "glib"
+version = "2.90.1"
+
+[gstreamer]
+source = "homebrew"
+formula = "gstreamer"
+version = "1.28.8"
+note = "音訊功能第一版關閉，但仍需連結此依賴。"
