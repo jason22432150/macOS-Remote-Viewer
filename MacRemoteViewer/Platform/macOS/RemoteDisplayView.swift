@@ -24,7 +24,7 @@ struct RemoteDisplayView: NSViewRepresentable {
         nsView.router = router
         nsView.attachRendererIfNeeded()
         nsView.updateViewport()
-        nsView.syncGuestResolution()
+        // 不可在 layout／updateNSView 同步寫入 @Observable，否則 AppKit display cycle 會 SIGTRAP。
         _ = displaySize
     }
 }
@@ -64,10 +64,17 @@ final class RemoteCanvasView: MTKView {
     }
 
     /// 視窗邏輯尺寸變化時請 guest 對齊解析度；agent 未就緒則由 SessionController 暫存。
+    /// 必須延到下一輪 run loop：AppKit layout 期間同步寫入 @Observable 會 SIGTRAP。
+    /// `size` 只做同步 guard；真正送出的是 layout 結束後的 `bounds`，避免用到尚未穩定的 frame。
     func syncGuestResolution(_ size: CGSize? = nil) {
         let canvasSize = size ?? bounds.size
         guard canvasSize.width > 0, canvasSize.height > 0 else { return }
-        controller?.updateViewportSize(canvasSize)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let latest = self.bounds.size
+            guard latest.width > 0, latest.height > 0 else { return }
+            self.controller?.updateViewportSize(latest)
+        }
     }
 
     /// CocoaSpice 以 drawable 中心繪製；必須把 scale 設成與滑鼠對應相同的 letterbox。
@@ -91,6 +98,7 @@ final class RemoteCanvasView: MTKView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         syncGuestResolution(newSize)
+        // 與 guest 解析度分開排隊：letterbox 依賴 MTKView 在 setFrameSize 之後更新的 drawableSize。
         DispatchQueue.main.async { [weak self] in
             self?.updateViewport()
         }
@@ -136,6 +144,7 @@ final class RemoteCanvasView: MTKView {
             window.makeFirstResponder(self)
         }
         attachRendererIfNeeded()
+        // bounds 仍為零時會略過，等後續 setFrameSize 再送。
         syncGuestResolution()
     }
 

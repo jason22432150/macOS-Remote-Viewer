@@ -1,3 +1,4 @@
+import Observation
 import XCTest
 @testable import MacRemoteViewerCore
 
@@ -308,6 +309,50 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertTrue(engine.requestedResolutions.isEmpty)
     }
 
+    /// SwiftUI 在 `updateNSView`／layout 期間會安裝 Observation tracking。
+    /// 第一個呼叫會讀內部 viewport 狀態；若該欄位未被 `@ObservationIgnored`，
+    /// 第二次寫入會觸發 onChange，AppKit display cycle 會 SIGTRAP。
+    func testViewportSizeUpdateDoesNotNotifyObservationTracking() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero)
+        try connect(controller, engine: engine, monitorsConfig: true)
+        let changed = ObservationFlag()
+
+        withObservationTracking {
+            controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        } onChange: {
+            changed.value = true
+        }
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+
+        XCTAssertEqual(
+            engine.requestedResolutions,
+            [CGSize(width: 1280, height: 800), CGSize(width: 1600, height: 900)]
+        )
+        XCTAssertFalse(
+            changed.value,
+            "updateViewportSize 不可讓 SwiftUI 追蹤內部 viewport 狀態"
+        )
+    }
+
+    func testDisplaySizeUpdateStillNotifiesObservationTracking() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine)
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        let changed = ObservationFlag()
+
+        withObservationTracking {
+            _ = controller.displaySize
+        } onChange: {
+            changed.value = true
+        }
+
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1920, height: 1080))
+        XCTAssertTrue(changed.value)
+        XCTAssertEqual(controller.displaySize, RemoteFrame(width: 1920, height: 1080))
+    }
+
     private func connect(
         _ controller: SessionController,
         engine: MockEngine,
@@ -361,6 +406,11 @@ private final class MockEngine: SpiceEngineing {
     func requestResolution(_ size: CGSize) {
         requestedResolutions.append(size)
     }
+}
+
+/// `withObservationTracking` 的 onChange 是 `@Sendable`。測試本體在 `@MainActor` 上序列化存取，故無需鎖。
+private final class ObservationFlag: @unchecked Sendable {
+    var value = false
 }
 
 private final class MockFileAccessor: FileAccessing, @unchecked Sendable {

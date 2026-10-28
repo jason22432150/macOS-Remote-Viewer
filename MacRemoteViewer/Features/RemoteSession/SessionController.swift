@@ -1,5 +1,6 @@
-import Foundation
 import CoreGraphics
+import Foundation
+import Observation
 
 /// 每個工作階段的狀態、取消、channel 事件與清理順序。
 @MainActor
@@ -12,16 +13,18 @@ public final class SessionController: SpiceEngineDelegate {
     public private(set) var cleanupResult: SourceCleanupResult = .skipped
 
     public let diagnostics: DiagnosticsLog
+    /// 設定頁會讀取；必須保持 observable。內部 viewport 同步欄位則忽略，避免 layout 期間 willSet。
     public private(set) var resolutionPreference: GuestResolutionPreference
 
     private let engine: SpiceEngineing
     private let files: FileAccessing
     private let cleanup: SourceFileCleanup
     private let resolutionDebounce: Duration
-    private var didCleanupSource = false
-    private var pendingViewportSize: CGSize?
-    private var lastRequestedFrame: RemoteFrame?
-    private var resolutionTask: Task<Void, Never>?
+    /// 內部同步狀態不可被 SwiftUI 追蹤；layout／`updateNSView` 期間 willSet 會讓 AppKit SIGTRAP。
+    @ObservationIgnored private var didCleanupSource = false
+    @ObservationIgnored private var pendingViewportSize: CGSize?
+    @ObservationIgnored private var lastRequestedFrame: RemoteFrame?
+    @ObservationIgnored private var resolutionTask: Task<Void, Never>?
 
     public init(
         engine: SpiceEngineing,
@@ -99,10 +102,6 @@ public final class SessionController: SpiceEngineDelegate {
         guard pendingViewportSize != size else { return }
         pendingViewportSize = size
         scheduleResolutionSync()
-    }
-
-    public func requestResolution(_ size: CGSize) {
-        updateViewportSize(size)
     }
 
     /// 設定頁變更解析度策略時立刻套用；重設 lastRequested 以免被去重擋下。
