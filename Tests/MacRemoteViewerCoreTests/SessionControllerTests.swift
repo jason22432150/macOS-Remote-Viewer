@@ -155,6 +155,20 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertNil(engine.attachedRenderer)
     }
 
+    func testDetachRendererWritesDiagnostics() {
+        let writer = MemoryFileLogWriter()
+        let sink = FileLogSink(enabled: true, writer: writer)
+        let controller = SessionController(
+            engine: MockEngine(),
+            diagnostics: DiagnosticsLog(sessionID: "session-demo", fileLog: sink)
+        )
+        let renderer = NSObject()
+        controller.attachRenderer(renderer)
+        controller.detachRenderer(renderer)
+        XCTAssertTrue(writer.lines.contains { $0.contains("renderer-detach") })
+        XCTAssertFalse(writer.lines.contains { $0.contains("renderer-attach") })
+    }
+
     func testDisplayUpdateStoresFrameForViewport() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine)

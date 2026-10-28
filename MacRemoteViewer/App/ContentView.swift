@@ -28,7 +28,8 @@ struct ContentView: View {
         }
     }
 
-    /// 只掛載作用中 session 的 Metal 畫面；背景連線保持活著，避免隱藏視圖把 guest 解析度改成 0。
+    /// 所有仍連線的 Metal 畫面都留在視窗裡，只用 zIndex 蓋住背景分頁。
+    /// 不可用 `.id`／opacity 卸載畫面：CocoaSpice 會因此卡住共用 spice thread。
     private var sessionWorkspace: some View {
         VStack(spacing: 0) {
             if model.showsTabBar {
@@ -50,9 +51,16 @@ struct ContentView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
             }
-            if let session = model.session {
-                RemoteSessionView(controller: session, router: router)
-                    .id(session.sessionID)
+            ZStack {
+                ForEach(model.sessions) { session in
+                    RemoteSessionView(
+                        controller: session,
+                        router: router,
+                        isActive: session.sessionID == model.selectedSessionID
+                    )
+                    .zIndex(session.sessionID == model.selectedSessionID ? 1 : 0)
+                    .allowsHitTesting(session.sessionID == model.selectedSessionID)
+                }
             }
         }
     }

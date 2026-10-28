@@ -3,17 +3,24 @@ import MetalKit
 import SwiftUI
 import CocoaSpiceRenderer
 
+/// 所有 MTKView 共用同一顆 Metal device，避免 CSDisplay 因 device 指標不同而拒絕重掛 renderer。
+private enum SharedMetalDevice {
+    static let systemDefault: MTLDevice? = MTLCreateSystemDefaultDevice()
+}
+
 /// 遠端畫面：Metal 呈現 SPICE framebuffer，同時攔截鍵盤滑鼠。
 struct RemoteDisplayView: NSViewRepresentable {
     var controller: SessionController
     var router: InputRouter
     /// 讓 guest 解析度變更時 SwiftUI 會呼叫 `updateNSView`，才能重算 letterbox。
     var displaySize: RemoteFrame?
+    var isActive: Bool = true
 
     func makeNSView(context: Context) -> RemoteCanvasView {
-        let view = RemoteCanvasView(frame: .zero, device: MTLCreateSystemDefaultDevice())
+        let view = RemoteCanvasView(frame: .zero, device: SharedMetalDevice.systemDefault)
         view.controller = controller
         view.router = router
+        view.setActive(isActive)
         view.setupMetal()
         view.setupTracking()
         return view
@@ -22,6 +29,7 @@ struct RemoteDisplayView: NSViewRepresentable {
     func updateNSView(_ nsView: RemoteCanvasView, context: Context) {
         nsView.controller = controller
         nsView.router = router
+        nsView.setActive(isActive)
         nsView.attachRendererIfNeeded()
         nsView.updateViewport()
         // 不可在 layout／updateNSView 同步寫入 @Observable，否則 AppKit display cycle 會 SIGTRAP。
@@ -32,13 +40,30 @@ struct RemoteDisplayView: NSViewRepresentable {
 final class RemoteCanvasView: MTKView {
     weak var controller: SessionController?
     var router: InputRouter?
+    /// 背景分頁仍要繼續 draw，不可 `isPaused`；只是不接收鍵盤滑鼠。
+    private(set) var isActive = true
     private var metalRenderer: CSMetalRenderer?
     private var mapping: GuestPointerMapping?
     /// `NSCursor.hide` / `unhide` 是計數式 API，必須成對呼叫。
     private var isLocalCursorHidden = false
 
-    override var acceptsFirstResponder: Bool { true }
+    override var acceptsFirstResponder: Bool { isActive }
     override var isFlipped: Bool { true }
+
+    func setActive(_ active: Bool) {
+        guard isActive != active else { return }
+        isActive = active
+        if active {
+            window?.makeFirstResponder(self)
+            updateViewport()
+            syncGuestResolution()
+        } else {
+            showLocalCursor()
+            if window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
+        }
+    }
 
     /// 建立 CocoaSpice Metal renderer，並在 display channel 就緒後掛上。
     func setupMetal() {
@@ -97,7 +122,9 @@ final class RemoteCanvasView: MTKView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        syncGuestResolution(newSize)
+        if isActive {
+            syncGuestResolution(newSize)
+        }
         // 與 guest 解析度分開排隊：letterbox 依賴 MTKView 在 setFrameSize 之後更新的 drawableSize。
         DispatchQueue.main.async { [weak self] in
             self?.updateViewport()
@@ -128,7 +155,7 @@ final class RemoteCanvasView: MTKView {
         }
         if newWindow == nil {
             showLocalCursor()
-            // 分頁切走會卸載畫面，但 session 仍連著；必須拿掉 renderer。
+            // 只在分頁關閉、視圖真正離開視窗時卸 renderer；切分頁不可走這條路。
             if let metalRenderer {
                 controller?.detachRenderer(metalRenderer)
             }
@@ -145,7 +172,9 @@ final class RemoteCanvasView: MTKView {
                 name: NSWindow.didResignKeyNotification,
                 object: window
             )
-            window.makeFirstResponder(self)
+            if isActive {
+                window.makeFirstResponder(self)
+            }
         }
         attachRendererIfNeeded()
         // bounds 仍為零時會略過，等後續 setFrameSize 再送。
@@ -153,10 +182,12 @@ final class RemoteCanvasView: MTKView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        guard isActive else { return }
         handleMouse(event)
     }
 
     override func mouseExited(with event: NSEvent) {
+        guard isActive else { return }
         showLocalCursor()
     }
 
@@ -167,6 +198,7 @@ final class RemoteCanvasView: MTKView {
 
     override func mouseMoved(with event: NSEvent) { handleMouse(event) }
     override func mouseDown(with event: NSEvent) {
+        guard isActive else { return }
         window?.makeFirstResponder(self)
         handleMouse(event)
     }
@@ -177,6 +209,7 @@ final class RemoteCanvasView: MTKView {
     /// 右鍵／側鍵按住時 AppKit 改送 *Dragged；不轉發則本機游標已隱藏、guest 也收不到移動。
     override func rightMouseDragged(with event: NSEvent) { handleMouse(event) }
     override func otherMouseDown(with event: NSEvent) {
+        guard isActive else { return }
         window?.makeFirstResponder(self)
         handleMouse(event)
     }
@@ -199,7 +232,7 @@ final class RemoteCanvasView: MTKView {
 
     /// 擷取輸入時把 Cmd+A 等 menu key equivalent 轉給 guest，避免本機選單先吃掉。
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard router?.captured == true, controller != nil else {
+        guard isActive, router?.captured == true, controller != nil else {
             return super.performKeyEquivalent(with: event)
         }
         if isLocalQuitShortcut(event) {
@@ -216,7 +249,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     private func handleMouse(_ event: NSEvent) {
-        guard let controller, let router else { return }
+        guard isActive, let controller, let router else { return }
         updateViewport()
         if let mapping {
             let location = convert(event.locationInWindow, from: nil)
@@ -252,7 +285,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     private func sendKey(_ event: NSEvent) {
-        guard let controller, let router else { return }
+        guard isActive, let controller, let router else { return }
         for key in router.keyEvents(from: event) {
             controller.sendKey(key)
         }
@@ -264,7 +297,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     private func interceptHotKey(_ event: NSEvent) -> Bool {
-        guard let controller, let router, let profile = controller.profile else { return false }
+        guard isActive, let controller, let router, let profile = controller.profile else { return false }
         if router.matches(profile.toggleFullscreen, event: event) {
             window?.toggleFullScreen(nil)
             return true

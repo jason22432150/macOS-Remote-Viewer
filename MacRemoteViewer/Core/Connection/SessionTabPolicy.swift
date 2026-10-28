@@ -21,4 +21,9 @@ public enum SessionTabPolicy {
         let trimmed = profileTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
     }
+
+    /// 切分頁時背景 session 的 Metal 畫面必須留在視窗裡。
+    /// CocoaSpice 的 `copyBuffer` completion 要等下一次 `drawInMTKView`；
+    /// 卸載畫面會 `disableRender` 且不再 draw，共用 spice thread 會卡住所有連線。
+    public static let keepsInactiveSessionDisplaysMounted = true
 }

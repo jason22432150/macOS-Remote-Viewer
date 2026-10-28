@@ -39,4 +39,9 @@ final class SessionTabPolicyTests: XCTestCase {
         XCTAssertEqual(SessionTabPolicy.tabTitle(profileTitle: "   ", fallback: "SPICE Session"), "SPICE Session")
         XCTAssertEqual(SessionTabPolicy.tabTitle(profileTitle: "", fallback: "SPICE Session"), "SPICE Session")
     }
+
+    func testInactiveSessionDisplaysStayMountedWhenSwitchingTabs() {
+        // CocoaSpice copyBuffer 要等下一次 draw；卸載畫面會卡住共用 spice thread。
+        XCTAssertTrue(SessionTabPolicy.keepsInactiveSessionDisplaysMounted)
+    }
 }

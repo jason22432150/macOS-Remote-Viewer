@@ -6,17 +6,17 @@ struct MacRemoteViewerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
+        // 單一 `Window`：Finder 雙擊不可再建 WindowGroup 場景。
+        // 第二扇主窗會對同一 SPICE session 再掛 Metal renderer，畫面會黑掉或卡住。
+        Window("Mac Remote Viewer", id: "main") {
             ContentView()
                 .environment(appDelegate.model)
                 .environment(appDelegate.model.settings)
                 .environment(\.locale, appDelegate.model.settings.language.locale)
-                // 已開啟的視窗優先收下 Finder 事件，避免再拆一扇新窗。
-                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
-        // `*`：冷啟動雙擊 `.vv` 時仍要建立／顯示 WindowGroup。
-        // 空集合會讓 SwiftUI 認為沒有 scene 要處理開檔，App 只出現在 Dock。
-        .handlesExternalEvents(matching: ["*"])
+        // Finder 開檔只走 AppDelegate；SwiftUI 若也收 external event 會重建 ContentView，
+        // 第一個連線的 Metal renderer 會被卸掉，畫面卡住。
+        .handlesExternalEvents(matching: [])
         .windowStyle(.automatic)
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -51,9 +51,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private let incomingFiles = IncomingURLBuffer()
     private var isWaitingToPresentMainWindow = false
+    /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
+    private weak var keptMainWindow: NSWindow?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         preparePortableRuntime()
+        NSWindow.allowsAutomaticWindowTabbing = false
         incomingFiles.setHandler { [model] urls in
             model.open(urls: urls)
         }
@@ -62,11 +65,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         incomingFiles.handle(urls)
         presentMainWindowWhenReady()
+        closeExtraMainWindowsAfterSceneUpdate()
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
         incomingFiles.handle([URL(fileURLWithPath: filename)])
         presentMainWindowWhenReady()
+        closeExtraMainWindowsAfterSceneUpdate()
         return true
     }
 
@@ -88,24 +93,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 開檔回呼可能早於 SwiftUI 建立視窗；沒有可顯示視窗時下一輪再試。
     /// `application(_:open:)` 與 `didFinishLaunching` 會連續觸發，合併成一次 retry。
     private func presentMainWindowWhenReady() {
-        let first = AppWindowPresenter.present(application: NSApp)
+        let first = presentAndRememberMainWindow()
         guard WindowPresentationPolicy.shouldRetryAfterSceneReady(first) else { return }
         guard !isWaitingToPresentMainWindow else { return }
         isWaitingToPresentMainWindow = true
         DispatchQueue.main.async { [self] in
             isWaitingToPresentMainWindow = false
-            _ = AppWindowPresenter.present(application: NSApp)
+            _ = presentAndRememberMainWindow()
         }
     }
+
+    /// `Window(id:)` 仍可能在開檔回呼之後才插入多餘主窗；延後一到兩輪再關。
+    private func closeExtraMainWindowsAfterSceneUpdate() {
+        DispatchQueue.main.async { [self] in
+            logWindowOutcome(
+                AppWindowPresenter.closeExtraMainWindows(
+                    application: NSApp,
+                    keeping: keptMainWindow
+                )
+            )
+            DispatchQueue.main.async { [self] in
+                logWindowOutcome(
+                    AppWindowPresenter.closeExtraMainWindows(
+                        application: NSApp,
+                        keeping: keptMainWindow
+                    )
+                )
+            }
+        }
+    }
+
+    @discardableResult
+    private func presentAndRememberMainWindow() -> WindowPresentationAction {
+        let outcome = AppWindowPresenter.present(application: NSApp, keeping: keptMainWindow)
+        keptMainWindow = outcome.keptWindow
+        logWindowOutcome(outcome)
+        return outcome.action
+    }
+
+    private func logWindowOutcome(_ outcome: WindowPresentationOutcome) {
+        guard outcome.windowCount > 1 || outcome.extraClosedCount > 0 else { return }
+        model.settings.fileLog.write(
+            level: "INFO",
+            message: "window-present count=\(outcome.windowCount) extras-closed=\(outcome.extraClosedCount) remembered=\(outcome.keptWindow != nil)",
+            sessionID: "window"
+        )
+    }
+}
+
+/// 前景決策後要記住哪扇主窗，以及關掉了幾扇多餘窗。
+struct WindowPresentationOutcome {
+    let action: WindowPresentationAction
+    let keptWindow: NSWindow?
+    let windowCount: Int
+    let extraClosedCount: Int
 }
 
 /// 把主視窗叫到前景。雙擊 `.vv` 時 Finder 仍可能保持 active。
 @MainActor
 enum AppWindowPresenter {
     @discardableResult
-    static func present(application: NSApplication) -> WindowPresentationAction {
+    static func present(
+        application: NSApplication,
+        keeping keptWindow: NSWindow?
+    ) -> WindowPresentationOutcome {
         let windows = application.windows
-        let action = WindowPresentationPolicy.action(for: windows.map(candidate(from:)))
+        let candidates = windows.map(candidate(from:))
+        let action = WindowPresentationPolicy.action(for: candidates)
         activate(application)
         switch action {
         case .none:
@@ -116,7 +170,60 @@ enum AppWindowPresenter {
             windows[index].deminiaturize(nil)
             windows[index].makeKeyAndOrderFront(nil)
         }
-        return action
+        return closeExtraMainWindows(
+            windows: windows,
+            candidates: candidates,
+            action: action,
+            keeping: keptWindow
+        )
+    }
+
+    static func closeExtraMainWindows(
+        application: NSApplication,
+        keeping keptWindow: NSWindow?
+    ) -> WindowPresentationOutcome {
+        let windows = application.windows
+        let candidates = windows.map(candidate(from:))
+        return closeExtraMainWindows(
+            windows: windows,
+            candidates: candidates,
+            action: WindowPresentationPolicy.action(for: candidates),
+            keeping: keptWindow
+        )
+    }
+
+    private static func closeExtraMainWindows(
+        windows: [NSWindow],
+        candidates: [WindowPresentationCandidate],
+        action: WindowPresentationAction,
+        keeping keptWindow: NSWindow?
+    ) -> WindowPresentationOutcome {
+        let rememberedIndex = keptWindow.flatMap { kept in
+            windows.firstIndex(where: { $0 === kept })
+        }
+        let keptIndex = WindowPresentationPolicy.keptIndexForClosingExtras(
+            rememberedIndex: rememberedIndex,
+            action: action
+        )
+        var extraClosedCount = 0
+        if let keptIndex {
+            for index in WindowPresentationPolicy.extraMainWindowIndices(in: candidates, keptIndex: keptIndex) {
+                windows[index].close()
+                extraClosedCount += 1
+            }
+        }
+        let nextKept: NSWindow?
+        if let keptIndex {
+            nextKept = windows[keptIndex]
+        } else {
+            nextKept = keptWindow
+        }
+        return WindowPresentationOutcome(
+            action: action,
+            keptWindow: nextKept,
+            windowCount: windows.count,
+            extraClosedCount: extraClosedCount
+        )
     }
 
     private static func candidate(from window: NSWindow) -> WindowPresentationCandidate {

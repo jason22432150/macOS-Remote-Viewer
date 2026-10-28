@@ -103,6 +103,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     public func detachRenderer(_ renderer: AnyObject) {
+        // 雙擊第二個 `.vv` 若拆掉第一個連線的 Metal 畫面，這裡會留下紀錄。
+        diagnostics.info("renderer-detach")
         engine.detachDisplayRenderer(renderer)
     }
 

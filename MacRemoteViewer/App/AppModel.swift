@@ -46,6 +46,11 @@ final class AppModel {
 
     func open(urls: [URL]) {
         guard !urls.isEmpty else { return }
+        settings.fileLog.write(
+            level: "INFO",
+            message: "open-urls count=\(urls.count) existing-sessions=\(workspace.sessions.count)",
+            sessionID: "app"
+        )
         var profiles: [ConnectionProfile] = []
         var lastError: SessionError?
         for url in urls {

@@ -43,8 +43,42 @@ public enum WindowPresentationPolicy {
         return .orderFront(index: candidates[0].offset)
     }
 
-    /// 開檔事件可能早於 SwiftUI 建立 `WindowGroup`，此時下一輪 run loop 再試一次。
+    /// 開檔事件可能早於 SwiftUI 建立主視窗，此時下一輪 run loop 再試一次。
     public static func shouldRetryAfterSceneReady(_ action: WindowPresentationAction) -> Bool {
         action == .none
+    }
+
+    /// Finder 雙擊若再建一扇主窗，多窗會對同一 session 掛第二顆 Metal renderer。
+    public static func extraMainWindowIndices(
+        in windows: [WindowPresentationCandidate],
+        keptIndex: Int
+    ) -> [Int] {
+        windows.enumerated().compactMap { index, window in
+            guard window.canBecomeMain, !window.isPanel, index != keptIndex else {
+                return nil
+            }
+            return index
+        }
+    }
+
+    public static func keptIndex(for action: WindowPresentationAction) -> Int? {
+        switch action {
+        case .none:
+            return nil
+        case .orderFront(let index), .deminiaturizeAndOrderFront(let index):
+            return index
+        }
+    }
+
+    /// 關多餘主窗時沿用「已經在畫面上的那扇」，不可改選最前面那扇。
+    /// Finder 雙擊新窗會排到 `windows[0]`；若改選它，會把原本帶 Metal 的主窗關掉，畫面卡住。
+    public static func keptIndexForClosingExtras(
+        rememberedIndex: Int?,
+        action: WindowPresentationAction
+    ) -> Int? {
+        if let rememberedIndex {
+            return rememberedIndex
+        }
+        return keptIndex(for: action)
     }
 }

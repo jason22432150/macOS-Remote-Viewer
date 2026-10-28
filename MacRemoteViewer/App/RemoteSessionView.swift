@@ -4,6 +4,7 @@ struct RemoteSessionView: View {
     @Environment(AppModel.self) private var model
     var controller: SessionController
     var router: InputRouter
+    var isActive: Bool = true
 
     private var language: AppLanguage { model.settings.language }
 
@@ -14,7 +15,8 @@ struct RemoteSessionView: View {
                 RemoteDisplayView(
                     controller: controller,
                     router: router,
-                    displaySize: controller.displaySize
+                    displaySize: controller.displaySize,
+                    isActive: isActive
                 )
                     .background(Color.black)
                 if showsOverlay {
@@ -37,7 +39,7 @@ struct RemoteSessionView: View {
 
     private var toolbar: some View {
         HStack {
-            Button(L10n.string(.close, language: language)) { model.closeSession() }
+            Button(L10n.string(.close, language: language)) { model.closeSession(controller.sessionID) }
             Spacer()
             Button(L10n.string(.ctrlAltDel, language: language)) { controller.sendSecureAttention() }
             Button(L10n.string(.fullscreen, language: language)) { NSApp.keyWindow?.toggleFullScreen(nil) }
@@ -60,10 +62,10 @@ struct RemoteSessionView: View {
                 if error.isRetryableWithNewFile {
                     Button(L10n.string(.openNewVV, language: language)) { model.chooseFile() }
                 }
-                Button(L10n.string(.back, language: language)) { model.closeSession() }
+                Button(L10n.string(.back, language: language)) { model.closeSession(controller.sessionID) }
             case .disconnecting, .disconnected:
                 Text(L10n.string(.disconnected, language: language))
-                Button(L10n.string(.back, language: language)) { model.closeSession() }
+                Button(L10n.string(.back, language: language)) { model.closeSession(controller.sessionID) }
             default:
                 EmptyView()
             }

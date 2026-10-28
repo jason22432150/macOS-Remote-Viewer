@@ -434,6 +434,41 @@ def overlay_metal_renderer_diagnostics(checkout: Path) -> None:
     )
 
 
+def overlay_metal_renderer_complete_pending_draws(impl: Path) -> None:
+    """copyBuffer completion 綁在下一次 draw；沒 drawable 或 disableRender 時必須立刻放掉。"""
+    _replace_once(
+        impl,
+        [
+            (
+                """    if (renderPassDescriptor == nil || currentDrawable == nil) {
+        return;
+    }""",
+                """    if (renderPassDescriptor == nil || currentDrawable == nil) {
+        // 沒有 drawable 也要完成 copyBuffer callback，否則共用 spice thread 會卡住所有連線。
+        [self _completeDraw];
+        return;
+    }""",
+            ),
+            (
+                """- (void)disableRender {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.renderSourceData = nil;
+        self.renderNeedsUpdate = NO;
+    });
+}""",
+                """- (void)disableRender {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // 先放掉等待中的 copyBuffer completion，再清畫面狀態。
+        [self _completeDraw];
+        self.renderSourceData = nil;
+        self.renderNeedsUpdate = NO;
+    });
+}""",
+            ),
+        ],
+    )
+
+
 def overlay_session_sharing_category(checkout: Path) -> None:
     """`CSSession.m` 私有 `(Sharing)` 與公開 `CSSession+Sharing.h` 同名，會 duplicate category。
 
@@ -498,6 +533,9 @@ def main() -> None:
     overlay_display_initial_frame(checkout)
     overlay_renderer_protected_category(checkout)
     overlay_metal_renderer_diagnostics(checkout)
+    overlay_metal_renderer_complete_pending_draws(
+        checkout / "Sources" / "CocoaSpiceRenderer" / "CSMetalRenderer.m"
+    )
     overlay_session_sharing_category(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 

@@ -11,6 +11,7 @@ from overlay import (
     overlay_csmain,
     overlay_display_initial_frame,
     overlay_gst_ios_init,
+    overlay_metal_renderer_complete_pending_draws,
     overlay_metal_renderer_diagnostics,
     overlay_package_swift,
     overlay_renderer_protected_category,
@@ -338,6 +339,32 @@ class OverlayTests(unittest.TestCase):
             self.assertIn(
                 "initWithRenderSource:(id<CSRenderSource>)renderSource atOffset:(CGPoint)offset NS_DESIGNATED_INITIALIZER",
                 impl_text,
+            )
+
+    def test_metal_renderer_completes_draw_when_disabled_or_missing_drawable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            impl = Path(raw) / "CSMetalRenderer.m"
+            impl.write_text(
+                """    if (renderPassDescriptor == nil || currentDrawable == nil) {
+        return;
+    }
+
+- (void)disableRender {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.renderSourceData = nil;
+        self.renderNeedsUpdate = NO;
+    });
+}
+"""
+            )
+            overlay_metal_renderer_complete_pending_draws(impl)
+            text = impl.read_text()
+            self.assertEqual(text.count("[self _completeDraw];"), 2)
+            self.assertIn("沒有 drawable 也要完成 copyBuffer callback", text)
+            self.assertIn("先放掉等待中的 copyBuffer completion", text)
+            self.assertLess(
+                text.find("[self _completeDraw];\n        self.renderSourceData = nil"),
+                text.find("self.renderSourceData = nil"),
             )
 
     def test_session_private_sharing_category_is_renamed_to_avoid_duplicate(self) -> None:
