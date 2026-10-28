@@ -9,46 +9,78 @@ extension UTType {
 @MainActor
 @Observable
 final class AppModel {
-    var session: SessionController?
     var welcomeError: SessionError?
     let settings: AppSettings
+    let workspace: SessionWorkspace
 
     let importer = VVFileImporter()
-    private let engine = SpiceEngineAdapter()
 
-    init(settings: AppSettings = AppSettings()) {
+    var session: SessionController? { workspace.selectedSession }
+    var sessions: [SessionController] { workspace.sessions }
+    var selectedSessionID: String? { workspace.selectedSessionID }
+    var showsTabBar: Bool { workspace.showsTabBar }
+
+    init(
+        settings: AppSettings = AppSettings(),
+        makeEngine: @escaping () -> SpiceEngineing = { SpiceEngineAdapter() }
+    ) {
         self.settings = settings
+        self.workspace = SessionWorkspace { [settings, makeEngine] profile in
+            SessionController(
+                engine: makeEngine(),
+                cleanup: SourceFileCleanup(
+                    deleteAfterSuccessfulConnect: settings.preferences.deleteVVFileAfterConnect
+                ),
+                diagnostics: DiagnosticsLog(
+                    sessionID: profile.sessionID,
+                    fileLog: settings.fileLog
+                ),
+                resolutionPreference: settings.preferences.resolutionPreference,
+                sessionID: profile.sessionID
+            )
+        }
         settings.onChange = { [weak self] in
             self?.applySettingsToActiveSession()
         }
     }
 
     func open(urls: [URL]) {
-        guard let url = urls.first else { return }
-        welcomeError = nil
-        do {
-            let profile = try importer.importFile(at: url)
-            startSession(with: profile)
-        } catch let error as SessionError {
-            welcomeError = error
-        } catch {
-            welcomeError = .sourceFileUnavailable
+        guard !urls.isEmpty else { return }
+        var profiles: [ConnectionProfile] = []
+        var lastError: SessionError?
+        for url in urls {
+            do {
+                profiles.append(try importer.importFile(at: url))
+            } catch let error as SessionError {
+                lastError = error
+            } catch {
+                lastError = .sourceFileUnavailable
+            }
         }
+        workspace.open(profiles)
+        welcomeError = lastError
     }
 
     func chooseFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.virtViewer, .data]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.message = L10n.string(.chooseVVMessage, language: settings.language)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        open(urls: [url])
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        open(urls: panel.urls)
+    }
+
+    func selectSession(_ sessionID: String) {
+        workspace.select(sessionID)
     }
 
     func closeSession() {
-        session?.cancel()
-        session = nil
+        workspace.closeSelected()
+    }
+
+    func closeSession(_ sessionID: String) {
+        workspace.close(sessionID)
     }
 
     /// 即使尚未寫入任何 log，也先建立資料夾再開啟 Finder。
@@ -66,23 +98,10 @@ final class AppModel {
     }
 
     func applySettingsToActiveSession() {
-        session?.applyResolutionPreference(settings.preferences.resolutionPreference)
+        workspace.applyResolutionPreference(settings.preferences.resolutionPreference)
     }
 
-    private func startSession(with profile: ConnectionProfile) {
-        session?.cancel()
-        let controller = SessionController(
-            engine: engine,
-            cleanup: SourceFileCleanup(
-                deleteAfterSuccessfulConnect: settings.preferences.deleteVVFileAfterConnect
-            ),
-            diagnostics: DiagnosticsLog(
-                sessionID: profile.sessionID,
-                fileLog: settings.fileLog
-            ),
-            resolutionPreference: settings.preferences.resolutionPreference
-        )
-        session = controller
-        controller.open(profile)
+    func releaseKeysOnAll() {
+        workspace.releaseKeysOnAll()
     }
 }

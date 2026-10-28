@@ -5,7 +5,10 @@ import Observation
 /// 每個工作階段的狀態、取消、channel 事件與清理順序。
 @MainActor
 @Observable
-public final class SessionController: SpiceEngineDelegate {
+public final class SessionController: SpiceEngineDelegate, Identifiable {
+    public let sessionID: String
+    /// `sessionID` 建立後不變，可供 `ForEach` 在非 MainActor 讀取。
+    nonisolated public var id: String { sessionID }
     public private(set) var state: SessionState = .idle
     public private(set) var profile: ConnectionProfile?
     public private(set) var agent: AgentCapabilities = AgentCapabilities()
@@ -32,7 +35,8 @@ public final class SessionController: SpiceEngineDelegate {
         cleanup: SourceFileCleanup = SourceFileCleanup(),
         diagnostics: DiagnosticsLog = DiagnosticsLog(sessionID: UUID().uuidString),
         resolutionDebounce: Duration = .milliseconds(400),
-        resolutionPreference: GuestResolutionPreference = .matchWindow
+        resolutionPreference: GuestResolutionPreference = .matchWindow,
+        sessionID: String = UUID().uuidString
     ) {
         self.engine = engine
         self.files = files
@@ -40,6 +44,7 @@ public final class SessionController: SpiceEngineDelegate {
         self.diagnostics = diagnostics
         self.resolutionDebounce = resolutionDebounce
         self.resolutionPreference = resolutionPreference
+        self.sessionID = sessionID
         self.engine.delegate = self
     }
 
@@ -97,6 +102,10 @@ public final class SessionController: SpiceEngineDelegate {
         engine.attachDisplayRenderer(renderer)
     }
 
+    public func detachRenderer(_ renderer: AnyObject) {
+        engine.detachDisplayRenderer(renderer)
+    }
+
     /// 以畫面視圖的邏輯尺寸（points）對齊 guest 解析度；無 vdagent 時略過。
     public func updateViewportSize(_ size: CGSize) {
         guard pendingViewportSize != size else { return }
@@ -109,6 +118,10 @@ public final class SessionController: SpiceEngineDelegate {
         resolutionPreference = preference
         lastRequestedFrame = nil
         flushResolutionIfNeeded()
+    }
+
+    public func setClipboardSharingEnabled(_ enabled: Bool) {
+        engine.setClipboardSharingEnabled(enabled)
     }
 
     public func engineDidConnect() {

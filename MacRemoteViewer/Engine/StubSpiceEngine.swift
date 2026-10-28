@@ -18,5 +18,7 @@ final class StubSpiceEngine: SpiceEngineing {
     func releaseKeys() {}
     func sendCtrlAltDelete() {}
     func attachDisplayRenderer(_ renderer: AnyObject) {}
+    func detachDisplayRenderer(_ renderer: AnyObject) {}
     func requestResolution(_ size: CGSize) {}
+    func setClipboardSharingEnabled(_ enabled: Bool) {}
 }

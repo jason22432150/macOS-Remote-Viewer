@@ -8,10 +8,10 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if let session = model.session {
-                RemoteSessionView(controller: session, router: router)
-            } else {
+            if model.sessions.isEmpty {
                 WelcomeView()
+            } else {
+                sessionWorkspace
             }
         }
         .frame(minWidth: 800, minHeight: 560)
@@ -24,7 +24,36 @@ struct ContentView: View {
             handleDrop(providers)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
-            model.session?.releaseKeys()
+            model.releaseKeysOnAll()
+        }
+    }
+
+    /// 只掛載作用中 session 的 Metal 畫面；背景連線保持活著，避免隱藏視圖把 guest 解析度改成 0。
+    private var sessionWorkspace: some View {
+        VStack(spacing: 0) {
+            if model.showsTabBar {
+                SessionTabBar()
+            }
+            if let error = model.welcomeError {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(error.userMessage(language: model.settings.language))
+                        .foregroundStyle(.red)
+                    Spacer(minLength: 8)
+                    Button {
+                        model.welcomeError = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(L10n.string(.close, language: model.settings.language))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            }
+            if let session = model.session {
+                RemoteSessionView(controller: session, router: router)
+                    .id(session.sessionID)
+            }
         }
     }
 
@@ -47,6 +76,61 @@ struct ContentView: View {
             }
         }
         return true
+    }
+}
+
+/// 兩個以上連線時顯示的分頁列；關閉分頁不會動到其他連線。
+struct SessionTabBar: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(model.sessions) { session in
+                SessionTabItem(
+                    title: SessionTabPolicy.tabTitle(
+                        profileTitle: session.profile?.title ?? "",
+                        fallback: "SPICE"
+                    ),
+                    isSelected: session.sessionID == model.selectedSessionID,
+                    language: model.settings.language,
+                    onSelect: { model.selectSession(session.sessionID) },
+                    onClose: { model.closeSession(session.sessionID) }
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+}
+
+private struct SessionTabItem: View {
+    let title: String
+    let isSelected: Bool
+    let language: AppLanguage
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(title, action: onSelect)
+                .buttonStyle(.plain)
+                .lineLimit(1)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderless)
+            .help(L10n.string(.close, language: language))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(isSelected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.45) : Color.clear)
+        )
     }
 }
 

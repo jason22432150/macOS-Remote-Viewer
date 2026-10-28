@@ -17,6 +17,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private var pendingResolution: CGSize?
     private var lastGuestPoint: CGPoint?
     private var workerStarted = false
+    /// 預設開啟；workspace 會在多 session 時只留給作用中分頁。
+    private var clipboardSharingEnabled = true
 
     func startWorker() throws {
         if workerStarted { return }
@@ -32,9 +34,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         let connection = CSConnection(host: profile.host, port: String(profile.tlsPort))
         connection.audioEnabled = false
         connection.delegate = self
-        connection.session.shareClipboard = true
-        connection.session.pasteboardDelegate = spicePasteboard
-        spicePasteboard.startPolling()
+        applyClipboardSharing(to: connection)
 
         let proxy = profile.proxyURL?.absoluteString
         do {
@@ -127,15 +127,44 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         input.send(.release, code: Int32(ctrl))
     }
 
+    func setClipboardSharingEnabled(_ enabled: Bool) {
+        clipboardSharingEnabled = enabled
+        if let connection {
+            applyClipboardSharing(to: connection)
+        } else if !enabled {
+            spicePasteboard.stopPolling()
+        }
+    }
+
     func attachDisplayRenderer(_ renderer: AnyObject) {
         guard let renderer = renderer as? CSRenderer else { return }
         pendingRenderer = renderer
         attachPendingRenderer()
     }
 
+    func detachDisplayRenderer(_ renderer: AnyObject) {
+        guard let renderer = renderer as? CSRenderer else { return }
+        if pendingRenderer === renderer {
+            pendingRenderer = nil
+        }
+        display?.removeRenderer(renderer)
+    }
+
     private func attachPendingRenderer() {
         guard let display, let pendingRenderer else { return }
+        // CocoaSpice 以 containsObject 去重，可重複呼叫。
+        // 不在成功後清掉 pending：display channel 重建時還要用同一顆 renderer。
         display.addRenderer(pendingRenderer)
+    }
+
+    private func applyClipboardSharing(to connection: CSConnection) {
+        connection.session.shareClipboard = clipboardSharingEnabled
+        connection.session.pasteboardDelegate = clipboardSharingEnabled ? spicePasteboard : nil
+        if clipboardSharingEnabled {
+            spicePasteboard.startPolling()
+        } else {
+            spicePasteboard.stopPolling()
+        }
     }
 
     func requestResolution(_ size: CGSize) {

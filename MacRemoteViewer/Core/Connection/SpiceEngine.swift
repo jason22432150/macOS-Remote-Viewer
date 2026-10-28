@@ -75,5 +75,9 @@ public protocol SpiceEngineing: AnyObject {
     func releaseKeys()
     func sendCtrlAltDelete()
     func attachDisplayRenderer(_ renderer: AnyObject)
+    /// 分頁切走時畫面會被卸載，必須先從 display 拿掉 renderer，避免指向已釋放的 Metal 視圖。
+    func detachDisplayRenderer(_ renderer: AnyObject)
     func requestResolution(_ size: CGSize)
+    /// 多 session 時只讓作用中連線同步剪貼簿。
+    func setClipboardSharingEnabled(_ enabled: Bool)
 }

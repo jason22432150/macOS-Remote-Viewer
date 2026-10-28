@@ -128,6 +128,10 @@ final class RemoteCanvasView: MTKView {
         }
         if newWindow == nil {
             showLocalCursor()
+            // 分頁切走會卸載畫面，但 session 仍連著；必須拿掉 renderer。
+            if let metalRenderer {
+                controller?.detachRenderer(metalRenderer)
+            }
         }
         super.viewWillMove(toWindow: newWindow)
     }

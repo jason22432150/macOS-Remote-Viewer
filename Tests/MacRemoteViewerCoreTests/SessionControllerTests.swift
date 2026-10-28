@@ -145,6 +145,16 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertTrue(engine.attachedRenderer === renderer)
     }
 
+    func testDetachRendererForwardsToEngineAndClearsAttachment() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine)
+        let renderer = NSObject()
+        controller.attachRenderer(renderer)
+        controller.detachRenderer(renderer)
+        XCTAssertTrue(engine.detachedRenderer === renderer)
+        XCTAssertNil(engine.attachedRenderer)
+    }
+
     func testDisplayUpdateStoresFrameForViewport() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine)
@@ -387,6 +397,7 @@ private final class MockEngine: SpiceEngineing {
     var connectError: SessionError?
     var didReleaseKeys = false
     var attachedRenderer: AnyObject?
+    var detachedRenderer: AnyObject?
     var requestedResolutions: [CGSize] = []
 
     func startWorker() throws {}
@@ -403,9 +414,17 @@ private final class MockEngine: SpiceEngineing {
     func releaseKeys() { didReleaseKeys = true }
     func sendCtrlAltDelete() {}
     func attachDisplayRenderer(_ renderer: AnyObject) { attachedRenderer = renderer }
+    func detachDisplayRenderer(_ renderer: AnyObject) {
+        detachedRenderer = renderer
+        if attachedRenderer === renderer {
+            attachedRenderer = nil
+        }
+    }
     func requestResolution(_ size: CGSize) {
         requestedResolutions.append(size)
     }
+
+    func setClipboardSharingEnabled(_ enabled: Bool) {}
 }
 
 /// `withObservationTracking` 的 onChange 是 `@Sendable`。測試本體在 `@MainActor` 上序列化存取，故無需鎖。
