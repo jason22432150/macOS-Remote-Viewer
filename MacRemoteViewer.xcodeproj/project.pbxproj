@@ -29,6 +29,7 @@
 		B000000000006AA5A6749ADF /* VVParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000009E7CC4B7F8A6 /* VVParser.swift */; };
 		B00000000000FEDD308AD96D /* SourceFilePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000F3500A667694 /* SourceFilePolicy.swift */; };
 		B0000000000032ABB625F533 /* IncomingURLBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000497131876028 /* IncomingURLBuffer.swift */; };
+		B00000000000C0DE00001002 /* WindowPresentationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000C0DE00001001 /* WindowPresentationPolicy.swift */; };
 		B00000000000BB9430EBD44A /* VVFileImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000001F2EC22BCEF9 /* VVFileImporter.swift */; };
 		B00000000000D16482EC3322 /* SessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000094D843632FD9 /* SessionController.swift */; };
 		B00000000000E1BD6FEE90B8 /* DiagnosticsLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000004558012E8B67 /* DiagnosticsLog.swift */; };
@@ -65,6 +66,7 @@
 		B000000000009E7CC4B7F8A6 /* VVParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/VVParser.swift"; sourceTree = "<group>"; };
 		B00000000000F3500A667694 /* SourceFilePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/SourceFilePolicy.swift"; sourceTree = "<group>"; };
 		B00000000000497131876028 /* IncomingURLBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/IncomingURLBuffer.swift"; sourceTree = "<group>"; };
+		B00000000000C0DE00001001 /* WindowPresentationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/WindowPresentationPolicy.swift"; sourceTree = "<group>"; };
 		B000000000001F2EC22BCEF9 /* VVFileImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/VVFile/VVFileImporter.swift"; sourceTree = "<group>"; };
 		B0000000000094D843632FD9 /* SessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Features/RemoteSession/SessionController.swift"; sourceTree = "<group>"; };
 		B000000000004558012E8B67 /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Diagnostics/DiagnosticsLog.swift"; sourceTree = "<group>"; };
@@ -129,6 +131,7 @@
 				B000000000009E7CC4B7F8A6 /* VVParser.swift */,
 				B00000000000F3500A667694 /* SourceFilePolicy.swift */,
 				B00000000000497131876028 /* IncomingURLBuffer.swift */,
+				B00000000000C0DE00001001 /* WindowPresentationPolicy.swift */,
 				B000000000001F2EC22BCEF9 /* VVFileImporter.swift */,
 				B0000000000094D843632FD9 /* SessionController.swift */,
 				B000000000004558012E8B67 /* DiagnosticsLog.swift */,
@@ -253,6 +256,7 @@
 				B000000000006AA5A6749ADF /* VVParser.swift in Sources */,
 				B00000000000FEDD308AD96D /* SourceFilePolicy.swift in Sources */,
 				B0000000000032ABB625F533 /* IncomingURLBuffer.swift in Sources */,
+				B00000000000C0DE00001002 /* WindowPresentationPolicy.swift in Sources */,
 				B00000000000BB9430EBD44A /* VVFileImporter.swift in Sources */,
 				B00000000000D16482EC3322 /* SessionController.swift in Sources */,
 				B00000000000E1BD6FEE90B8 /* DiagnosticsLog.swift in Sources */,
