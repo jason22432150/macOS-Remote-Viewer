@@ -389,6 +389,69 @@ def overlay_renderer_protected_category(checkout: Path) -> None:
     )
 
 
+def overlay_metal_renderer_diagnostics(checkout: Path) -> None:
+    """消除 CocoaSpiceRenderer 在 Xcode Issues 出現的協議／initializer 警告。
+
+    公開 header 不能只 forward-declare `CSRenderer` 就去 conform；
+    `_CSRendererSourceData` 的介面多了未實作的 `device:` 參數。
+    """
+    header = checkout / "Sources" / "CocoaSpiceRenderer" / "include" / "CSMetalRenderer.h"
+    impl = checkout / "Sources" / "CocoaSpiceRenderer" / "CSMetalRenderer.m"
+    protocol_header = checkout / "Sources" / "CocoaSpiceRenderer" / "CSRenderer.h"
+    public_protocol_header = checkout / "Sources" / "CocoaSpiceRenderer" / "include" / "CSRenderer.h"
+    for path in (header, impl, protocol_header):
+        if not path.is_file():
+            raise SystemExit(f"找不到 {path}")
+
+    text = protocol_header.read_text()
+    if "#ifndef CSRenderer_h" not in text:
+        protocol_header.write_text(
+            "#ifndef CSRenderer_h\n#define CSRenderer_h\n\n" + text.rstrip() + "\n\n#endif /* CSRenderer_h */\n"
+        )
+    shutil.copyfile(protocol_header, public_protocol_header)
+
+    _replace_once(
+        header,
+        [
+            (
+                "@protocol CSRenderSource;\n@protocol CSRenderer;\n",
+                '#import "CSRenderer.h"\n@protocol CSRenderSource;\n',
+            )
+        ],
+    )
+    _replace_once(
+        impl,
+        [
+            (
+                "- (instancetype)init NS_UNAVAILABLE;\n"
+                "- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource device:(id<MTLDevice>)device;\n"
+                "- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource atOffset:(CGPoint)offset device:(id<MTLDevice>)device NS_DESIGNATED_INITIALIZER;",
+                "- (instancetype)init NS_UNAVAILABLE;\n"
+                "- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource;\n"
+                "- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource atOffset:(CGPoint)offset NS_DESIGNATED_INITIALIZER;",
+            )
+        ],
+    )
+
+
+def overlay_session_sharing_category(checkout: Path) -> None:
+    """`CSSession.m` 私有 `(Sharing)` 與公開 `CSSession+Sharing.h` 同名，會 duplicate category。
+
+    `SharingPrivate` 只讓 `CSSession.m` 編譯期看得到 `-createDefaultShareReadme`；
+    方法仍實作在 `CSSession+Sharing.m` 的公開 `(Sharing)` category。
+    """
+    path = checkout / "Sources" / "CocoaSpice" / "CSSession.m"
+    _replace_once(
+        path,
+        [
+            (
+                "@interface CSSession (Sharing)\n",
+                "@interface CSSession (SharingPrivate)\n",
+            )
+        ],
+    )
+
+
 def overlay_package_swift(checkout: Path) -> None:
     path = checkout / "Package.swift"
     text = path.read_text()
@@ -396,7 +459,9 @@ def overlay_package_swift(checkout: Path) -> None:
     if marker not in text:
         raise SystemExit("找不到 Package.swift 的 CocoaSpice cSettings 結尾")
 
+    # Homebrew GLib／spice-gtk header 的 Doxygen 標記會灌爆 Xcode Issues。
     cflags = pkgconfig_tokens("--cflags", "spice-client-glib-2.0", "glib-2.0", "gstreamer-1.0")
+    cflags.append("-Wno-documentation")
     libs = pkgconfig_tokens("--libs", "spice-client-glib-2.0", "glib-2.0", "gstreamer-1.0")
     replacement = (
         '.headerSearchPath("ExternalHeaders/spice-client-glib-2.0"),\n'
@@ -404,7 +469,22 @@ def overlay_package_swift(checkout: Path) -> None:
         "            linkerSettings: [\n"
         f"                .unsafeFlags({swift_string_list(libs)})]),"
     )
-    text = text.replace(marker, replacement)
+    text = text.replace(marker, replacement, 1)
+
+    renderer_marker = (
+        '            resources: [\n'
+        '                .process("CSShaders.metal")]),'
+    )
+    if renderer_marker not in text:
+        raise SystemExit("找不到 Package.swift 的 CocoaSpiceRenderer resources 結尾")
+    text = text.replace(
+        renderer_marker,
+        '            resources: [\n'
+        '                .process("CSShaders.metal")],\n'
+        "            cSettings: [\n"
+        '                .unsafeFlags(["-Wno-documentation"])]),',
+        1,
+    )
     path.write_text(text)
 
 
@@ -417,6 +497,8 @@ def main() -> None:
     overlay_package_swift(checkout)
     overlay_display_initial_frame(checkout)
     overlay_renderer_protected_category(checkout)
+    overlay_metal_renderer_diagnostics(checkout)
+    overlay_session_sharing_category(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 
 

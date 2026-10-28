@@ -2,9 +2,13 @@
 
 @import CocoaSpiceNoUsb;
 #import <objc/runtime.h>
+// Homebrew GLib／spice-gtk header 的 Doxygen 標記會灌爆 Xcode Issues。
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdocumentation"
 #import <glib.h>
 #import <spice-client.h>
 #import <spice/vd_agent.h>
+#pragma clang diagnostic pop
 
 /// GObject 指標不是 ObjC object，不能加 `__unsafe_unretained`。
 static void *pve_ivarRawPointer(CSConnection *object, const char *name) {

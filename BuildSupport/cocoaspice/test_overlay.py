@@ -11,8 +11,10 @@ from overlay import (
     overlay_csmain,
     overlay_display_initial_frame,
     overlay_gst_ios_init,
+    overlay_metal_renderer_diagnostics,
     overlay_package_swift,
     overlay_renderer_protected_category,
+    overlay_session_sharing_category,
 )
 
 CSMAIN_FIXTURE = """\
@@ -139,6 +141,11 @@ PROTECTED_FIXTURE = """\
 
 PACKAGE_FIXTURE = """\
         .target(
+            name: "CocoaSpiceRenderer",
+            dependencies: [],
+            resources: [
+                .process("CSShaders.metal")]),
+        .target(
             name: "CocoaSpiceNoUsb",
             cSettings: [
                 .headerSearchPath("ExternalHeaders"),
@@ -164,6 +171,47 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 NS_ASSUME_NONNULL_END
+"""
+
+METAL_RENDERER_HEADER_FIXTURE = """\
+@protocol CSRenderSource;
+@protocol CSRenderer;
+
+NS_ASSUME_NONNULL_BEGIN
+@interface CSMetalRenderer : NSObject<MTKViewDelegate, CSRenderer>
+@end
+NS_ASSUME_NONNULL_END
+"""
+
+METAL_RENDERER_IMPL_FIXTURE = """\
+@interface _CSRendererSourceData : NSObject<CSRenderSource>
+- (instancetype)init NS_UNAVAILABLE;
+- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource device:(id<MTLDevice>)device;
+- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource atOffset:(CGPoint)offset device:(id<MTLDevice>)device NS_DESIGNATED_INITIALIZER;
+@end
+"""
+
+CSRENDERER_PROTOCOL_FIXTURE = """\
+#import <Foundation/Foundation.h>
+@protocol CSRenderer <NSObject>
+@property (nonatomic, readonly) id device;
+@end
+"""
+
+SESSION_SHARING_FIXTURE = """\
+@interface CSSession ()
+
+@property (nonatomic, readwrite, nullable) SpiceSession *session;
+@property (nonatomic, readonly) BOOL sessionReadOnly;
+@property (nonatomic, nullable) SpiceMainChannel *main;
+
+@end
+
+@interface CSSession (Sharing)
+
+- (void)createDefaultShareReadme;
+
+@end
 """
 
 
@@ -202,6 +250,9 @@ class OverlayTests(unittest.TestCase):
             self.assertIn(".unsafeFlags([", text)
             self.assertIn("-I", text)
             self.assertIn("linkerSettings", text)
+            self.assertIn("-Wno-documentation", text)
+            self.assertIn('.process("CSShaders.metal")],', text)
+            self.assertEqual(text.count("-Wno-documentation"), 2)
 
     def test_display_initial_frame_repaints_after_renderer_attach(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -262,6 +313,44 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("@interface CSDisplay (RendererProtected)", text)
             self.assertNotIn("@interface CSDisplay (Renderer)\n", text)
             self.assertIn("copyBuffer:", text)
+
+    def test_metal_renderer_imports_protocol_and_matches_initializers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            renderer_dir = root / "Sources" / "CocoaSpiceRenderer"
+            include_dir = renderer_dir / "include"
+            include_dir.mkdir(parents=True)
+            (renderer_dir / "CSRenderer.h").write_text(CSRENDERER_PROTOCOL_FIXTURE)
+            header = include_dir / "CSMetalRenderer.h"
+            impl = renderer_dir / "CSMetalRenderer.m"
+            header.write_text(METAL_RENDERER_HEADER_FIXTURE)
+            impl.write_text(METAL_RENDERER_IMPL_FIXTURE)
+            overlay_metal_renderer_diagnostics(root)
+            header_text = header.read_text()
+            impl_text = impl.read_text()
+            public_protocol = (include_dir / "CSRenderer.h").read_text()
+            private_protocol = (renderer_dir / "CSRenderer.h").read_text()
+            self.assertIn('#import "CSRenderer.h"', header_text)
+            self.assertNotIn("@protocol CSRenderer;", header_text)
+            self.assertIn("#ifndef CSRenderer_h", public_protocol)
+            self.assertIn("#ifndef CSRenderer_h", private_protocol)
+            self.assertNotIn("device:(id<MTLDevice>)device", impl_text)
+            self.assertIn(
+                "initWithRenderSource:(id<CSRenderSource>)renderSource atOffset:(CGPoint)offset NS_DESIGNATED_INITIALIZER",
+                impl_text,
+            )
+
+    def test_session_private_sharing_category_is_renamed_to_avoid_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "Sources" / "CocoaSpice" / "CSSession.m"
+            path.parent.mkdir(parents=True)
+            path.write_text(SESSION_SHARING_FIXTURE)
+            overlay_session_sharing_category(root)
+            text = path.read_text()
+            self.assertIn("@interface CSSession (SharingPrivate)", text)
+            self.assertIn("- (void)createDefaultShareReadme;", text)
+            self.assertNotIn("@interface CSSession (Sharing)\n", text)
 
 
 if __name__ == "__main__":
