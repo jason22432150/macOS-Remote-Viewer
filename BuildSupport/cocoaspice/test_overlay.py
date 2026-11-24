@@ -13,6 +13,7 @@ from overlay import (
     overlay_connection_pve_api,
     overlay_display_initial_frame,
     overlay_gst_ios_init,
+    overlay_horizontal_scroll_compatibility,
     overlay_metal_renderer_complete_pending_draws,
     overlay_metal_renderer_diagnostics,
     overlay_metal_frame_observation,
@@ -397,6 +398,24 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("MTLCommandBufferStatusCompleted", text)
             self.assertIn("if (rendered && frameHandler)", text)
             self.assertIn("[self _completeDraw];", text)
+
+    def test_horizontal_compatibility_preserves_held_shift_and_releases_on_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpice"
+            header = source / "include" / "CSInput.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("/// Sends a mouse button without moving the mouse")
+            impl = source / "CSInput.m"
+            impl.write_text("#import <glib.h>\n    CGFloat                 _scroll_delta_y;\n- (void)releaseKeys {\n    uint32_t i, b;\n    \n    SPICE_DEBUG(\"%s\", __FUNCTION__);\n    for (i = 0; i < SPICE_N_ELEMENTS(self->_key_state); i++) {\n        if (!self->_key_state[i]) {\n            continue;\n        }\n        for (b = 0; b < 32; b++) {\n            unsigned int scancode = i * 32 + b;\n            if (scancode != 0) {\n                [self sendKey:kCSInputKeyRelease code:scancode];\n            }\n        }\n    }\n}\n- (void)sendMouseButton:(CSInputButton)button mask:(CSInputButton)mask pressed:(BOOL)pressed {\n")
+            overlay_horizontal_scroll_compatibility(root)
+            self.assertIn("sendHorizontalScrollCompatibility(_:dx:)", header.read_text())
+            result = impl.read_text()
+            self.assertIn("if (!shiftHeld) spice_inputs_channel_key_press", result)
+            self.assertIn("if (!shiftHeld) spice_inputs_channel_key_release", result)
+            self.assertIn("self->_scroll_delta_x -= ticks", result)
+            self.assertIn("self->_key_state[i] = 0", result)
+            self.assertIn("self->_scroll_delta_y = 0", result)
 
     def test_connection_pve_api_uses_typed_properties_and_tls(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -108,7 +108,7 @@ swift test
 
 ### 相對滑鼠擷取
 
-連線後按工具列「相對滑鼠」，等待 SPICE server 接受模式，再點擊遠端畫面以擷取游標。釋放快捷鍵依 .vv 設定（預設 Ctrl+Alt+R）；切換分頁、視窗失焦、切換回絕對模式或斷線也會釋放。伺服器可能拒絕模式變更，此時不鎖定游標。此功能需實機測試。標準 SPICE Inputs Channel / CocoaSpice 未提供原生水平滾輪，勿將側鍵當作水平滾輪。
+連線後按工具列「相對滑鼠」，等待 SPICE server 接受模式，再點擊遠端畫面以擷取游標。釋放快捷鍵依 .vv 設定（預設 Ctrl+Alt+R）；切換分頁、視窗失焦、切換回絕對模式或斷線也會釋放。伺服器可能拒絕模式變更，此時不鎖定游標。此功能需實機測試。標準 SPICE Inputs Channel / CocoaSpice 未提供原生水平滾輪。設定 → 滑鼠 → 水平滾輪相容模式（預設關閉）可將主要水平方向手勢轉為 Shift＋垂直滾輪；只有支援此快捷操作的 guest 應用程式才會水平捲動。
 
 ### CI 預覽 DMG 與發布關卡
 
@@ -117,3 +117,7 @@ CI 重用該次 Release App 打包，驗證內嵌 dylib、ARM64、Mach-O 最低�
 Swift Core 的 macOS 14 設定不代表打包後 App 支援 macOS 14。打包工具會將 ARM64 Mach-O 宣告的最高最低版本寫回 Info.plist；仍須在乾淨的目標 macOS 實機驗證，才能正式宣告支援版本。
 
 正式發布前須完成第三方授權審查及 PVE 實機測試，再由維護者於 main 手動執行 Draft Release workflow。此 workflow 只建立草稿，不公開發布。
+
+### 發布前實機回歸驗證
+
+請依 [實機驗證清單](docs/runtime-validation.md) 記錄結果。CI 成功僅代表自動測試及打包驗證，不代表已通過 PVE、輸入擷取或效能實測。

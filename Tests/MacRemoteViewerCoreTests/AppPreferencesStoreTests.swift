@@ -21,6 +21,17 @@ final class AppPreferencesStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    func testHorizontalScrollCompatibilityPersistsAndDefaultsOff() throws {
+        XCTAssertFalse(store.load().horizontalScrollCompatibility)
+        var preferences = AppPreferences()
+        preferences.horizontalScrollCompatibility = true
+        try store.save(preferences)
+        XCTAssertTrue(store.load().horizontalScrollCompatibility)
+        let legacy = try JSONSerialization.data(withJSONObject: ["language": "en"])
+        defaults.set(legacy, forKey: UserDefaultsPreferencesStore.defaultKey)
+        XCTAssertFalse(store.load().horizontalScrollCompatibility)
+    }
+
     func testLoadReturnsDefaultsWhenEmpty() {
         let preferences = store.load()
         XCTAssertEqual(preferences.scrollWheelDirection, .natural)

@@ -2,6 +2,30 @@ import XCTest
 @testable import MacRemoteViewerCore
 
 final class ScrollWheelMappingTests: XCTestCase {
+    func testHorizontalCompatibilityIsOptInAndSelectsDominantAxis() {
+        let disabled = ScrollWheelMapping.selectedAxis(horizontal: 8, vertical: 1, horizontalEnabled: false)
+        XCTAssertEqual(disabled.delta, 1)
+        XCTAssertFalse(disabled.isHorizontal)
+        let horizontal = ScrollWheelMapping.selectedAxis(horizontal: -8, vertical: 1, horizontalEnabled: true)
+        XCTAssertEqual(horizontal.delta, -8)
+        XCTAssertTrue(horizontal.isHorizontal)
+        let vertical = ScrollWheelMapping.selectedAxis(horizontal: 2, vertical: -5, horizontalEnabled: true)
+        XCTAssertEqual(vertical.delta, -5)
+        XCTAssertFalse(vertical.isHorizontal)
+        let tie = ScrollWheelMapping.selectedAxis(horizontal: 5, vertical: -5, horizontalEnabled: true)
+        XCTAssertFalse(tie.isHorizontal)
+    }
+
+    func testAxisRejectsNonFiniteAndBoundsLargeDeltas() {
+        let invalid = ScrollWheelMapping.selectedAxis(horizontal: .nan, vertical: .infinity, horizontalEnabled: true)
+        XCTAssertEqual(invalid.delta, 0)
+        XCTAssertFalse(invalid.isHorizontal)
+        let large = ScrollWheelMapping.selectedAxis(horizontal: 10000, vertical: 0, horizontalEnabled: true)
+        XCTAssertEqual(large.delta, 64)
+        XCTAssertTrue(large.isHorizontal)
+        XCTAssertFalse(MouseEvent(kind: .scroll, point: .zero).scrollIsHorizontal)
+    }
+
     func testNaturalDirectionKeepsSign() {
         XCTAssertEqual(ScrollWheelMapping.guestDelta(3.5, inverted: false), 3.5)
         XCTAssertEqual(ScrollWheelMapping.guestDelta(-2, inverted: false), -2)
