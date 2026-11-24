@@ -1235,14 +1235,14 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
     ])
     _replace_once(root / "include" / "CSMetalRenderer.h", [
         ("/// Modify upscaler and downscaler settings",
-         "/// Test-only center pixel (BGRA8), delivered on main after GPU completion.\n"
-         "@property (nonatomic, copy, nullable) void (^smokePixelHandler)(uint32_t pixel);\n\n"
+         "/// Test-only pixel and GPU seconds (zero if unavailable), delivered on main after completion.\n"
+         "@property (nonatomic, copy, nullable) void (^smokePixelHandler)(uint32_t pixel, double gpuSeconds);\n\n"
          "/// Modify upscaler and downscaler settings"),
     ])
     _replace_once(root / "CSMetalRenderer.m", [
         ("""    [self _renderCommand:commandBuffer
               drawSource:sourceData""",
-         """    void (^sampleHandler)(uint32_t) = self.smokePixelHandler;
+         """    void (^sampleHandler)(uint32_t, double) = self.smokePixelHandler;
     id<MTLTexture> drawableTexture = currentDrawable.texture;
     id<MTLBuffer> sampleBuffer = nil;
     if (sampleHandler) [self _setViewportCGSize:CGSizeMake(drawableTexture.width, drawableTexture.height)];
@@ -1286,7 +1286,10 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
             if (rendered && sampleHandler && sampleBuffer) {
                 uint32_t pixel = 0;
                 memcpy(&pixel, sampleBuffer.contents, sizeof(pixel));
-                sampleHandler(pixel);
+                double gpuStart = commandBuffer.GPUStartTime;
+                double gpuEnd = commandBuffer.GPUEndTime;
+                double gpuSeconds = (gpuStart > 0 && gpuEnd > gpuStart) ? gpuEnd - gpuStart : 0;
+                sampleHandler(pixel, gpuSeconds);
             }"""),
     ])
 

@@ -19,6 +19,7 @@ from overlay import (
     overlay_metal_renderer_complete_pending_draws,
     overlay_metal_renderer_diagnostics,
     overlay_metal_frame_observation,
+    overlay_metal_pixel_probe,
     overlay_package_swift,
     overlay_renderer_protected_category,
     overlay_session_sharing_category,
@@ -380,6 +381,32 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("MTLCommandBufferStatusCompleted", text)
             self.assertIn("if (rendered && frameHandler)", text)
             self.assertIn("[self _completeDraw];", text)
+
+    def test_pixel_probe_measures_gpu_interval_after_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpiceRenderer"
+            header = source / "include" / "CSMetalRenderer.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("/// Modify upscaler and downscaler settings")
+            (source / "CSShaders.metal").write_text("colorSample.a = 0xff;")
+            impl = source / "CSMetalRenderer.m"
+            impl.write_text("""    [self _renderCommand:commandBuffer
+              drawSource:sourceData
+    [commandBuffer presentDrawable:currentDrawable];
+
+    // Capture the handler at submission
+            if (rendered && frameHandler) {
+                frameHandler();
+            }""")
+            overlay_metal_pixel_probe(root)
+            text = impl.read_text()
+            self.assertIn("uint32_t pixel, double gpuSeconds", header.read_text())
+            self.assertIn("gpuStart > 0 && gpuEnd > gpuStart", text)
+            self.assertLess(text.index("if (rendered && sampleHandler && sampleBuffer)"),
+                            text.index("commandBuffer.GPUStartTime"))
+            self.assertLess(text.index("commandBuffer.GPUEndTime"),
+                            text.index("sampleHandler(pixel, gpuSeconds);"))
 
     def test_horizontal_compatibility_preserves_held_shift_and_releases_on_worker(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

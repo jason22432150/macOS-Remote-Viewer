@@ -116,7 +116,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     /// Used only by the explicit synthetic-display probe.
-    func setSmokePixelHandler(_ handler: ((UInt32) -> Void)?) {
+    func setSmokePixelHandler(_ handler: ((UInt32, Double) -> Void)?) {
         metalRenderer?.smokePixelHandler = handler
     }
 

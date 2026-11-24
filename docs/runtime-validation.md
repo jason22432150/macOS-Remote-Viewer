@@ -102,3 +102,7 @@ CI #45426107420 的關鍵線索：四 controller 的 wrapper/full probe 實際�
 ## 多 Session 持續渲染及程序資源量測
 
 CI #45427763320 attempt 2 已通過 Native、Wrapper、完整 App 四 Session 並行；四組首幀分別 316/324/277/299 ms。後續 multi probe 在每個 active phase 及關閉第二組後，先等待四（或三）組雙色正確，再清除觀測、進行至少 3 秒持續測量，每組必須再次讀回雙色且有完成樣本；仍禁止非預期非黑色、斷線及 FPS 設定錯誤。`MRV_MULTI_RESOURCES` 記錄該區間 process CPU time delta、wall time、macOS getrusage 累計 peak RSS bytes；`MRV_MULTI_SAMPLES` 記錄成功 GPU pixel readback callback 數，Python 核對五個 phase 共 19 組資料並計算完成率與 CPU%。CPU% 以單核心 100% 為基準，可能超過 100%；RSS 是程序歷史峰值，不是當前記憶體、GPU 記憶體或洩漏證據；讀回完成率不是螢幕呈現 FPS，合成來源每 250 ms 才嘗試更新，且讀回會增加測試負擔。CI 不設定不可靠的硬體效能閾值，保留既有正確性 gate。GPU command buffer 執行時間、無讀回真實 FPS 與長時間 RSS 趨勢仍待後續驗證。
+
+## GPU command buffer 時間量測
+
+CI #45431514695 已通過 19 組持續量測，完整 App 224 個 QXL draw commands 全數消費/釋放。後續 opt-in pixel probe 在 GPU 成功完成且有 readback buffer 時讀取 GPUStartTime/GPUEndTime，與像素一同回傳。每 phase/session 記錄有效/不可用數、總時間及最大時間（ns）；Python 核對 19 組計數與 readback 數一致。零、反向、非有限或超過 60 秒的異常時間戳標記 unavailable；不設 CI 速度閾值。正式 handler nil 不讀 timestamps。此量測包含 pixel blit，不是端到端延遲、螢幕 FPS 或 GPU 使用率；不同 queue 的時間不可直接加總推算 GPU busy。待 CI 確認實際時間戳可用性。

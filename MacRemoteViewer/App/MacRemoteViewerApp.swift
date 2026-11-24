@@ -224,6 +224,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var canvases: [RemoteCanvasView] = []
             var observed = Array(repeating: Set<UInt32>(), count: 4)
             var completedSamples = Array(repeating: 0, count: 4)
+            var timedSamples = Array(repeating: 0, count: 4)
+            var totalGPUSeconds = Array(repeating: 0.0, count: 4)
+            var maxGPUSeconds = Array(repeating: 0.0, count: 4)
             var foreign = Set<Int>()
             var live = Set(0..<4)
             @MainActor func cleanUp() {
@@ -260,8 +263,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     canvas.controller = controller
                     canvas.setActive(i == 0)
                     canvas.setupMetal()
-                    canvas.setSmokePixelHandler { pixel in
+                    canvas.setSmokePixelHandler { pixel, gpuSeconds in
                         completedSamples[i] += 1
+                        if gpuSeconds.isFinite && gpuSeconds > 0 && gpuSeconds < 60 {
+                            timedSamples[i] += 1
+                            totalGPUSeconds[i] += gpuSeconds
+                            maxGPUSeconds[i] = max(maxGPUSeconds[i], gpuSeconds)
+                        }
                         let rgb = pixel & 0x00ffffff
                         // Initial empty black surfaces are allowed, but cannot
                         // satisfy either expected color. Any foreign color fails.
@@ -335,6 +343,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 print("MRV_MULTI_RESOURCES active=\(active) live=\(live.count) elapsed-ms=\(elapsedMS) cpu-ms=\(cpuMS) peak-rss-bytes=\(end.peakRSS)")
                                 for i in live.sorted() {
                                     print("MRV_MULTI_SAMPLES active=\(active) live=\(live.count) session=\(i) count=\(completedSamples[i]) elapsed-ms=\(elapsedMS)")
+                                    let totalNS = Int64((totalGPUSeconds[i] * 1e9).rounded())
+                                    let maxNS = Int64((maxGPUSeconds[i] * 1e9).rounded())
+                                    print("MRV_MULTI_GPU active=\(active) live=\(live.count) session=\(i) valid=\(timedSamples[i]) unavailable=\(completedSamples[i] - timedSamples[i]) total-ns=\(totalNS) max-ns=\(maxNS)")
                                 }
                                 return
                             }
@@ -342,6 +353,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             startCPU = try resourceSnapshot().cpu
                             for i in live {
                                 completedSamples[i] = 0
+                                timedSamples[i] = 0
+                                totalGPUSeconds[i] = 0
+                                maxGPUSeconds[i] = 0
                                 observed[i].removeAll()
                             }
                             sampleStart = ContinuousClock.now
@@ -420,7 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.makeKeyAndOrderFront(nil)
                 for round in 0..<2 {
                     var colors = Set<UInt32>()
-                    canvas.setSmokePixelHandler { pixel in
+                    canvas.setSmokePixelHandler { pixel, _ in
                         let rgb = pixel & 0x00ffffff
                         if colors.count < 16 && colors.insert(rgb).inserted {
                             print("MRV_PIXEL_SAMPLE round=\(round + 1) rgb=\(String(rgb, radix: 16))")

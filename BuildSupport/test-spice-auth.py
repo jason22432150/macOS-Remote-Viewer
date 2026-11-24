@@ -140,6 +140,7 @@ def validate_multi_metrics(lines):
     expected[(2, 3)] = {0, 2, 3}
     resources = {}
     samples = {}
+    gpu = {}
     for line in lines:
         if line.startswith("MRV_MULTI_RESOURCES "):
             match = re.fullmatch(
@@ -162,13 +163,33 @@ def validate_multi_metrics(lines):
             if (key not in expected or session not in expected[key] or
                     (key, session) in samples or count <= 0 or elapsed < 3000):
                 raise AssertionError(f"invalid sample metrics: {line}")
-            samples[(key, session)] = elapsed
+            samples[(key, session)] = (elapsed, count)
             print(f"METRIC phase={active}/{live} session={session} gpu-readback-completions-per-second={1000 * count / elapsed:.2f}")
+        elif line.startswith("MRV_MULTI_GPU "):
+            match = re.fullmatch(
+                r"MRV_MULTI_GPU active=(\d+) live=(\d+) session=(\d+) valid=(\d+) unavailable=(\d+) total-ns=(\d+) max-ns=(\d+)", line)
+            if not match:
+                raise AssertionError("malformed GPU metrics")
+            active, live, session, valid, unavailable, total, maximum = map(int, match.groups())
+            key = ((active, live), session)
+            if key in gpu or valid + unavailable <= 0:
+                raise AssertionError(f"invalid GPU metrics: {line}")
+            if valid:
+                if not 0 < maximum <= total <= valid * maximum + valid:
+                    raise AssertionError(f"inconsistent GPU durations: {line}")
+                print(f"METRIC phase={active}/{live} session={session} gpu-command-mean-ms={total / valid / 1e6:.3f} gpu-command-max-ms={maximum / 1e6:.3f} valid={valid} unavailable={unavailable}")
+            else:
+                if total or maximum:
+                    raise AssertionError(f"duration without timestamps: {line}")
+                print(f"METRIC phase={active}/{live} session={session} gpu-command-timing=unavailable samples={unavailable}")
+            gpu[key] = valid + unavailable
     if set(resources) != set(expected) or set(samples) != {
             (key, session) for key, sessions in expected.items() for session in sessions}:
         raise AssertionError("incomplete multi-session metrics")
-    if any(elapsed != resources[key] for (key, _), elapsed in samples.items()):
+    if any(elapsed != resources[key] for (key, _), (elapsed, _) in samples.items()):
         raise AssertionError("inconsistent phase measurement window")
+    if gpu != {key: count for key, (_, count) in samples.items()}:
+        raise AssertionError("missing or inconsistent GPU timestamp sample counts")
 
 
 def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
