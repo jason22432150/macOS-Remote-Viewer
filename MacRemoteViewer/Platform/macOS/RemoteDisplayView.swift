@@ -16,11 +16,13 @@ struct RemoteDisplayView: NSViewRepresentable {
     /// 讓 guest 解析度變更時 SwiftUI 會呼叫 `updateNSView`，才能重算 letterbox。
     var displaySize: RemoteFrame?
     var isActive: Bool = true
+    var useNativeDisplayPixels = false
 
     func makeNSView(context: Context) -> RemoteCanvasView {
         let view = RemoteCanvasView(frame: .zero, device: SharedMetalDevice.systemDefault)
         view.controller = controller
         view.router = router
+        view.setNativeDisplayPixels(useNativeDisplayPixels)
         view.setActive(isActive)
         view.setupMetal()
         view.setupTracking()
@@ -30,6 +32,7 @@ struct RemoteDisplayView: NSViewRepresentable {
     func updateNSView(_ nsView: RemoteCanvasView, context: Context) {
         nsView.controller = controller
         nsView.router = router
+        nsView.setNativeDisplayPixels(useNativeDisplayPixels)
         nsView.setActive(isActive)
         nsView.attachRendererIfNeeded()
         nsView.updateViewport()
@@ -47,6 +50,7 @@ final class RemoteCanvasView: MTKView {
     private(set) var isActive = true
     private var metalRenderer: CSMetalRenderer?
     private var mapping: GuestPointerMapping?
+    private var useNativeDisplayPixels = false
     /// `NSCursor.hide` / `unhide` 是計數式 API，必須成對呼叫。
     private var isLocalCursorHidden = false
 
@@ -68,6 +72,12 @@ final class RemoteCanvasView: MTKView {
                 window?.makeFirstResponder(nil)
             }
         }
+    }
+
+    func setNativeDisplayPixels(_ enabled: Bool) {
+        guard useNativeDisplayPixels != enabled else { return }
+        useNativeDisplayPixels = enabled
+        syncGuestResolution()
     }
 
     /// 建立 CocoaSpice Metal renderer，並在 display channel 就緒後掛上。
@@ -104,7 +114,10 @@ final class RemoteCanvasView: MTKView {
             guard let self, self.isActive else { return }
             let latest = self.bounds.size
             guard latest.width > 0, latest.height > 0 else { return }
-            self.controller?.updateViewportSize(latest)
+            let target = GuestResolutionPolicy.viewportSize(logicalSize: latest,
+                backingScale: self.window?.backingScaleFactor ?? 1,
+                nativePixels: self.useNativeDisplayPixels)
+            self.controller?.updateViewportSize(target)
         }
     }
 
@@ -141,6 +154,7 @@ final class RemoteCanvasView: MTKView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         updateViewport()
+        syncGuestResolution()
     }
 
     func setupTracking() {

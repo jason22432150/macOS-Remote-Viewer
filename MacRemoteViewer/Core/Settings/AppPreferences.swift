@@ -57,6 +57,7 @@ public struct AppPreferences: Equatable, Sendable, Codable {
     public var deleteVVFileAfterConnect: Bool
     /// 是否依目前視窗邏輯尺寸調整 guest 解析度。
     public var matchGuestResolutionToWindow: Bool
+    public var useNativeDisplayPixels: Bool
     public var manualResolutionWidth: Int?
     public var manualResolutionHeight: Int?
     public var loggingEnabled: Bool
@@ -72,6 +73,7 @@ public struct AppPreferences: Equatable, Sendable, Codable {
         language: AppLanguage = .zhHant,
         deleteVVFileAfterConnect: Bool = true,
         matchGuestResolutionToWindow: Bool = true,
+        useNativeDisplayPixels: Bool = false,
         manualResolutionWidth: Int? = nil,
         manualResolutionHeight: Int? = nil,
         loggingEnabled: Bool = true,
@@ -84,6 +86,7 @@ public struct AppPreferences: Equatable, Sendable, Codable {
         self.language = language
         self.deleteVVFileAfterConnect = deleteVVFileAfterConnect
         self.matchGuestResolutionToWindow = matchGuestResolutionToWindow
+        self.useNativeDisplayPixels = useNativeDisplayPixels
         self.manualResolutionWidth = manualResolutionWidth
         self.manualResolutionHeight = manualResolutionHeight
         self.loggingEnabled = loggingEnabled
@@ -115,6 +118,7 @@ public struct AppPreferences: Equatable, Sendable, Codable {
             Bool.self,
             forKey: .matchGuestResolutionToWindow
         ) ?? fallback.matchGuestResolutionToWindow
+        useNativeDisplayPixels = try container.decodeIfPresent(Bool.self, forKey: .useNativeDisplayPixels) ?? fallback.useNativeDisplayPixels
         manualResolutionWidth = try container.decodeIfPresent(Int.self, forKey: .manualResolutionWidth)
         manualResolutionHeight = try container.decodeIfPresent(Int.self, forKey: .manualResolutionHeight)
         loggingEnabled = try container.decodeIfPresent(Bool.self, forKey: .loggingEnabled) ?? fallback.loggingEnabled

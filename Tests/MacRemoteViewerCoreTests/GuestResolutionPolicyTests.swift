@@ -2,6 +2,13 @@ import XCTest
 @testable import MacRemoteViewerCore
 
 final class GuestResolutionPolicyTests: XCTestCase {
+    func testNativePixelScalingIsOptIn() {
+        let logical = CGSize(width: 1280, height: 800)
+        XCTAssertEqual(GuestResolutionPolicy.viewportSize(logicalSize: logical, backingScale: 2, nativePixels: false), logical)
+        XCTAssertEqual(GuestResolutionPolicy.viewportSize(logicalSize: logical, backingScale: 2, nativePixels: true), CGSize(width: 2560, height: 1600))
+        XCTAssertEqual(GuestResolutionPolicy.viewportSize(logicalSize: logical, backingScale: .nan, nativePixels: true), logical)
+    }
+
     func testRoundsToEvenIntegers() {
         XCTAssertEqual(
             GuestResolutionPolicy.frame(forViewSize: CGSize(width: 1281.4, height: 801.6)),

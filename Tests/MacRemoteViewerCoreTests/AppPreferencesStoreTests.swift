@@ -29,6 +29,7 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertEqual(preferences.language, .zhHant)
         XCTAssertTrue(preferences.deleteVVFileAfterConnect)
         XCTAssertTrue(preferences.matchGuestResolutionToWindow)
+        XCTAssertFalse(preferences.useNativeDisplayPixels)
         XCTAssertNil(preferences.manualFrame)
         XCTAssertTrue(preferences.loggingEnabled)
         XCTAssertEqual(preferences.resolutionPreference, .matchWindow)
@@ -44,6 +45,7 @@ final class AppPreferencesStoreTests: XCTestCase {
         preferences.language = .english
         preferences.deleteVVFileAfterConnect = false
         preferences.loggingEnabled = false
+        preferences.useNativeDisplayPixels = true
         preferences.sideButton4 = .nextPage
         preferences.sideButton5 = .none
         preferences.selectResolutionPreset(RemoteResolutionPreset(width: 1920, height: 1080))
@@ -78,6 +80,7 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertEqual(loaded.trackpadScrollSensitivity, ScrollSensitivity.default)
         XCTAssertTrue(loaded.deleteVVFileAfterConnect)
         XCTAssertTrue(loaded.matchGuestResolutionToWindow)
+        XCTAssertFalse(loaded.useNativeDisplayPixels)
         XCTAssertTrue(loaded.loggingEnabled)
         XCTAssertEqual(loaded.sideButton4, .previousPage)
         XCTAssertEqual(loaded.sideButton5, .nextPage)

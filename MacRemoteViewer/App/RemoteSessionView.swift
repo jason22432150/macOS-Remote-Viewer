@@ -16,7 +16,8 @@ struct RemoteSessionView: View {
                     controller: controller,
                     router: router,
                     displaySize: controller.displaySize,
-                    isActive: isActive
+                    isActive: isActive,
+                    useNativeDisplayPixels: model.settings.preferences.useNativeDisplayPixels
                 )
                     .background(Color.black)
                 if showsOverlay {

@@ -75,6 +75,12 @@ struct SettingsView: View {
                 Text(L10n.string(.matchResolutionToWindowHelp, language: language))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                Toggle(L10n.string(.nativeDisplayPixels, language: language),
+                       isOn: $settings.preferences.useNativeDisplayPixels)
+                    .disabled(!settings.preferences.matchGuestResolutionToWindow)
+                Text(L10n.string(.nativeDisplayPixelsHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Text(L10n.string(.commonResolutions, language: language))
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
                     ForEach(RemoteResolutionPreset.common) { preset in

@@ -58,6 +58,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case matchResolutionToWindow
     case matchResolutionToWindowHelp
     case commonResolutions
+    case nativeDisplayPixels
+    case nativeDisplayPixelsHelp
     case resetResolution
     case resetResolutionHelp
     case recordLogs
@@ -169,6 +171,8 @@ public enum L10n {
         .matchResolutionToWindow: "依目前視窗大小調整遠端解析度",
         .matchResolutionToWindowHelp: "需要 guest 的 spice-vdagent。Windows 的 QXL 驅動通常會立刻改解析度。Linux（尤其 Kali 預設 XFCE）往往只更新可用模式、桌面不套用；App 會自動重試數次，仍未套用時 status bar 會提示，畫面改為本機縮放。可在 guest 執行 xrandr --output Virtual-1 --auto，或改選常用解析度。",
         .commonResolutions: "常用解析度",
+        .nativeDisplayPixels: "使用 Retina 原生像素",
+        .nativeDisplayPixelsHelp: "只在視窗大小同步模式生效。Retina 2× 可能增加約四倍畫面像素，耗用更多頻寬與 GPU 資源。",
         .resetResolution: "重設解析度",
         .resetResolutionHelp: "恢復為依目前應用程式視窗大小自動調整。",
         .recordLogs: "紀錄 log",
@@ -257,6 +261,8 @@ public enum L10n {
         .matchResolutionToWindow: "Match guest resolution to the current window size",
         .matchResolutionToWindowHelp: "Requires spice-vdagent. Windows QXL usually applies the new size immediately. Linux desktops (especially Kali’s default XFCE) often ignore it; the app retries a few times, then shows a status-bar hint and scales locally. In the guest, run xrandr --output Virtual-1 --auto, or pick a preset resolution.",
         .commonResolutions: "Common resolutions",
+        .nativeDisplayPixels: "Use native Retina pixels",
+        .nativeDisplayPixelsHelp: "Applies only when matching the window size. Retina 2× may quadruple framebuffer pixels and increase bandwidth and GPU use.",
         .resetResolution: "Reset resolution",
         .resetResolutionHelp: "Restore automatic matching to the current app window size.",
         .recordLogs: "Record logs",

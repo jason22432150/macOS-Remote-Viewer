@@ -47,6 +47,12 @@ public enum GuestResolutionPolicy {
     public static let minimumHeight = 200
     public static let maximumDimension = 8192
 
+    /// Native pixels are opt-in because Retina commonly quadruples framebuffer area.
+    public static func viewportSize(logicalSize: CGSize, backingScale: CGFloat, nativePixels: Bool) -> CGSize {
+        guard nativePixels, backingScale.isFinite, backingScale > 0 else { return logicalSize }
+        return CGSize(width: logicalSize.width * backingScale, height: logicalSize.height * backingScale)
+    }
+
     /// QXL／部分 guest 不接受奇數邊長；超出範圍則捨棄，避免送出無效 monitors config。
     public static func frame(forViewSize size: CGSize) -> RemoteFrame? {
         guard size.width.isFinite, size.height.isFinite else { return nil }
