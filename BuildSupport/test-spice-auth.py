@@ -67,6 +67,7 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
             if display:
                 rounds = [line for line in lines if line.startswith("MRV_SPICE_DISPLAY_ROUND_OK ")]
                 if len(rounds) != 2 or any(not line.startswith(f"MRV_SPICE_DISPLAY_ROUND_OK {i} 640x480 first-frame-ms=")
+                                           or not line.endswith(" pixels=red,green")
                                            for i, line in enumerate(rounds, 1)):
                     raise AssertionError("did not complete both actual display rounds")
                 for line in rounds:

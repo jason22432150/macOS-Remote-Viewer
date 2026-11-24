@@ -1094,6 +1094,63 @@ def overlay_scanout_ownership(checkout: Path) -> None:
     ])
 
 
+def overlay_metal_pixel_probe(checkout: Path) -> None:
+    """Opt-in GPU drawable readback for the synthetic loopback display test."""
+    root = checkout / "Sources" / "CocoaSpiceRenderer"
+    _replace_once(root / "include" / "CSMetalRenderer.h", [
+        ("/// Modify upscaler and downscaler settings",
+         "/// Test-only center pixel (BGRA8), delivered on main after GPU completion.\\n"
+         "@property (nonatomic, copy, nullable) void (^smokePixelHandler)(uint32_t pixel);\\n\\n"
+         "/// Modify upscaler and downscaler settings"),
+    ])
+    _replace_once(root / "CSMetalRenderer.m", [
+        ("""    [self _renderCommand:commandBuffer
+              drawSource:sourceData""",
+         """    void (^sampleHandler)(uint32_t) = self.smokePixelHandler;
+    id<MTLTexture> drawableTexture = currentDrawable.texture;
+    id<MTLBuffer> sampleBuffer = nil;
+    if (sampleHandler && !view.framebufferOnly &&
+        drawableTexture.pixelFormat == MTLPixelFormatBGRA8Unorm &&
+        drawableTexture.width && drawableTexture.height) {
+        sampleBuffer = [drawableTexture.device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+        if (sampleBuffer) renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+    }
+
+    [self _renderCommand:commandBuffer
+              drawSource:sourceData"""),
+        ("""    [commandBuffer presentDrawable:currentDrawable];
+
+    // Capture the handler at submission""",
+         """    if (sampleBuffer) {
+        id<MTLBlitCommandEncoder> probe = [commandBuffer blitCommandEncoder];
+        if (probe) {
+            [probe copyFromTexture:drawableTexture sourceSlice:0 sourceLevel:0
+                      sourceOrigin:MTLOriginMake(drawableTexture.width / 2, drawableTexture.height / 2, 0)
+                        sourceSize:MTLSizeMake(1, 1, 1)
+                          toBuffer:sampleBuffer destinationOffset:0
+             destinationBytesPerRow:256 destinationBytesPerImage:256];
+            [probe endEncoding];
+        } else {
+            sampleBuffer = nil;
+        }
+    }
+    [commandBuffer presentDrawable:currentDrawable];
+
+    // Capture the handler at submission"""),
+        ("""            if (rendered && frameHandler) {
+                frameHandler();
+            }""",
+         """            if (rendered && frameHandler) {
+                frameHandler();
+            }
+            if (rendered && sampleHandler && sampleBuffer) {
+                uint32_t pixel = 0;
+                memcpy(&pixel, sampleBuffer.contents, sizeof(pixel));
+                sampleHandler(pixel);
+            }"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -1110,6 +1167,7 @@ def main() -> None:
     overlay_metal_frame_observation(checkout)
     overlay_canvas_gpu_lifetime(checkout)
     overlay_scanout_ownership(checkout)
+    overlay_metal_pixel_probe(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)

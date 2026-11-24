@@ -125,6 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.contentView = canvas
                 window.makeKeyAndOrderFront(nil)
                 for round in 0..<2 {
+                    var colors = Set<UInt32>()
+                    canvas.setSmokePixelHandler { pixel in
+                        colors.insert(pixel & 0x00ffffff)
+                    }
                     controller.open(profile)
                     let deadline = ContinuousClock.now + .seconds(15)
                     while ContinuousClock.now < deadline {
@@ -134,15 +138,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         canvas.updateViewport()
                         if controller.state == .connected,
                            controller.displaySize == RemoteFrame(width: 640, height: 480),
-                           controller.hasRenderedFrame { break }
+                           controller.hasRenderedFrame, colors.contains(0x00ff0000),
+                           colors.contains(0x0000ff00) { break }
                         try await Task.sleep(for: .milliseconds(50))
                     }
                     guard controller.state == .connected,
                           controller.displaySize == RemoteFrame(width: 640, height: 480),
-                          controller.hasRenderedFrame, let elapsed = controller.firstFrameMilliseconds else {
+                          controller.hasRenderedFrame, let elapsed = controller.firstFrameMilliseconds,
+                          colors.contains(0x00ff0000), colors.contains(0x0000ff00) else {
                         throw SessionError.displayTimeout
                     }
-                    print("MRV_SPICE_DISPLAY_ROUND_OK \(round + 1) 640x480 first-frame-ms=\(elapsed)")
+                    print("MRV_SPICE_DISPLAY_ROUND_OK \(round + 1) 640x480 first-frame-ms=\(elapsed) pixels=red,green")
+                    canvas.setSmokePixelHandler(nil)
                     controller.cancel()
                     try await Task.sleep(for: .milliseconds(200))
                     guard controller.state == .disconnected, !controller.hasRenderedFrame,

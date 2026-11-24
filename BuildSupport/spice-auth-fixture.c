@@ -126,8 +126,45 @@ static gboolean quit_loop(gpointer data) {
 
 /* Fixed test-only CPU framebuffer. Never expose guest or host desktop memory. */
 enum { WIDTH = 640, HEIGHT = 480 };
-static uint32_t pixels[WIDTH * HEIGHT];
+static struct {
+    uint32_t pixels[WIDTH * HEIGHT];
+    QXLDrawable draw;
+} framebuffer;
+#define pixels framebuffer.pixels
 static QXLInstance qxl;
+/* One outstanding drawable at a time; worker releases it before reuse. */
+static gint draw_state;
+static unsigned next_color;
+static int qxl_get_draw(QXLInstance *instance, QXLCommandExt *command) {
+    (void)instance;
+    if (!g_atomic_int_compare_and_exchange(&draw_state, 1, 2)) return 0;
+    memset(command, 0, sizeof(*command));
+    command->cmd.type = QXL_CMD_DRAW;
+    command->cmd.data = (uintptr_t)&framebuffer.draw;
+    command->group_id = 0;
+    return 1;
+}
+static gboolean update_color(gpointer data) {
+    (void)data;
+    if (g_atomic_int_get(&draw_state) != 0) return G_SOURCE_CONTINUE;
+    QXLDrawable *draw = &framebuffer.draw;
+    memset(draw, 0, sizeof(*draw));
+    draw->release_info.id = (uintptr_t)draw;
+    draw->surface_id = 0;
+    draw->bbox.right = WIDTH;
+    draw->bbox.bottom = HEIGHT;
+    draw->clip.type = SPICE_CLIP_TYPE_NONE;
+    draw->effect = QXL_EFFECT_OPAQUE;
+    draw->type = QXL_DRAW_FILL;
+    for (int i = 0; i < 3; ++i) draw->surfaces_dest[i] = -1;
+    draw->mm_time = (uint32_t)(g_get_monotonic_time() / 1000);
+    draw->u.fill.brush.type = SPICE_BRUSH_TYPE_SOLID;
+    draw->u.fill.brush.u.color = next_color++ % 2 ? 0x0000ff00 : 0x00ff0000;
+    draw->u.fill.rop_descriptor = SPICE_ROPD_OP_PUT;
+    g_atomic_int_set(&draw_state, 1);
+    spice_qxl_wakeup(&qxl);
+    return G_SOURCE_CONTINUE;
+}
 
 static void qxl_attached(QXLInstance *instance) { (void)instance; }
 static void qxl_compression(QXLInstance *instance, int level) { (void)instance; (void)level; }
@@ -146,7 +183,11 @@ static int qxl_no_command(QXLInstance *instance, QXLCommandExt *command) {
     (void)instance; (void)command; return 0;
 }
 static int qxl_notification(QXLInstance *instance) { (void)instance; return 1; }
-static void qxl_release(QXLInstance *instance, QXLReleaseInfoExt info) { (void)instance; (void)info; }
+static void qxl_release(QXLInstance *instance, QXLReleaseInfoExt info) {
+    (void)instance;
+    if (info.info && info.info->id == (uintptr_t)&framebuffer.draw)
+        g_atomic_int_set(&draw_state, 0);
+}
 static void qxl_notify_update(QXLInstance *instance, uint32_t id) { (void)instance; (void)id; }
 static int qxl_flush(QXLInstance *instance) { (void)instance; return 0; }
 static void qxl_async(QXLInstance *instance, uint64_t cookie) { (void)instance; (void)cookie; }
@@ -167,7 +208,7 @@ static QXLInterface display_interface = {
     .attached_worker = qxl_attached,
     .set_compression_level = qxl_compression,
     .get_init_info = qxl_init_info,
-    .get_command = qxl_no_command,
+    .get_command = qxl_get_draw,
     .req_cmd_notification = qxl_notification,
     .release_resource = qxl_release,
     .get_cursor_command = qxl_no_command,
@@ -186,8 +227,8 @@ static int setup_display(SpiceServer *server) {
     if (spice_server_add_interface(server, &qxl.base)) return 1;
     QXLDevMemSlot slot = {0};
     slot.slot_group_id = 0;
-    slot.virt_start = (uintptr_t)pixels;
-    slot.virt_end = (uintptr_t)pixels + sizeof(pixels);
+    slot.virt_start = (uintptr_t)&framebuffer;
+    slot.virt_end = (uintptr_t)&framebuffer + sizeof(framebuffer);
     slot.addr_delta = 0;
     spice_qxl_add_memslot(&qxl, &slot);
     QXLDevSurfaceCreate surface = {0};
@@ -223,10 +264,12 @@ int main(int argc, char **argv) {
     if (with_display && setup_display(server)) return 1;
     GMainLoop *loop = g_main_loop_new(NULL, FALSE);
     guint signal_source = g_unix_signal_add(SIGTERM, quit_loop, loop);
+    guint update_source = with_display ? g_timeout_add(250, update_color, NULL) : 0;
     printf("READY\n");
     fflush(stdout);
     g_main_loop_run(loop);
     g_source_remove(signal_source);
+    if (update_source) g_source_remove(update_source);
     if (with_display) spice_qxl_destroy_primary_surface(&qxl, 0);
     spice_server_destroy(server);
     g_main_loop_unref(loop);
