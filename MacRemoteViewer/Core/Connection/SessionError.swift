@@ -18,6 +18,7 @@ public enum SessionError: Error, Equatable, Sendable {
     case engineUnavailable
     case cancelled
     case network
+    case displayTimeout
     case tls
     case authenticationRejected
     case guestAgentUnavailable
@@ -63,6 +64,8 @@ public enum SessionError: Error, Equatable, Sendable {
             return L10n.string(.errorCancelled, language: language)
         case .network:
             return L10n.string(.errorNetwork, language: language)
+        case .displayTimeout:
+            return L10n.string(.errorDisplayTimeout, language: language)
         case .tls:
             return L10n.string(.errorTLS, language: language)
         case .authenticationRejected:
@@ -78,7 +81,7 @@ public enum SessionError: Error, Equatable, Sendable {
 
     public var isRetryableWithNewFile: Bool {
         switch self {
-        case .authenticationRejected, .tls, .network:
+        case .authenticationRejected, .tls, .network, .displayTimeout:
             return true
         default:
             return false

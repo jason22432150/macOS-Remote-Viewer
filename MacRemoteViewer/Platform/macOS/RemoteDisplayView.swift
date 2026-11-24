@@ -41,7 +41,9 @@ struct RemoteDisplayView: NSViewRepresentable {
 final class RemoteCanvasView: MTKView {
     weak var controller: SessionController?
     var router: InputRouter?
-    /// 背景分頁仍要繼續 draw，不可 `isPaused`；只是不接收鍵盤滑鼠。
+    /// Background tabs keep drawing to drain CocoaSpice copy completions, but at reduced FPS.
+    private static let foregroundFPS = 60
+    private static let backgroundFPS = 15
     private(set) var isActive = true
     private var metalRenderer: CSMetalRenderer?
     private var mapping: GuestPointerMapping?
@@ -55,6 +57,7 @@ final class RemoteCanvasView: MTKView {
         guard isActive != active else { return }
         if !active { releaseKeys() }
         isActive = active
+        preferredFramesPerSecond = active ? Self.foregroundFPS : Self.backgroundFPS
         if active {
             window?.makeFirstResponder(self)
             updateViewport()
@@ -73,6 +76,7 @@ final class RemoteCanvasView: MTKView {
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         isPaused = false
+        preferredFramesPerSecond = isActive ? Self.foregroundFPS : Self.backgroundFPS
         enableSetNeedsDisplay = false
         autoResizeDrawable = true
         if metalRenderer == nil {
@@ -95,9 +99,9 @@ final class RemoteCanvasView: MTKView {
     /// `size` 只做同步 guard；真正送出的是 layout 結束後的 `bounds`，避免用到尚未穩定的 frame。
     func syncGuestResolution(_ size: CGSize? = nil) {
         let canvasSize = size ?? bounds.size
-        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+        guard isActive, canvasSize.width > 0, canvasSize.height > 0 else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.isActive else { return }
             let latest = self.bounds.size
             guard latest.width > 0, latest.height > 0 else { return }
             self.controller?.updateViewportSize(latest)

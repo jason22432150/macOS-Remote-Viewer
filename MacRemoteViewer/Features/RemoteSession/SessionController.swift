@@ -25,6 +25,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     private let files: FileAccessing
     private let cleanup: SourceFileCleanup
     private let connectionTimeout: Duration
+    private let displayTimeout: Duration
+    @ObservationIgnored private var displayTask: Task<Void, Never>?
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     private let resolutionDebounce: Duration
     private let resolutionRetryDelay: Duration
@@ -47,13 +49,15 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         resolutionRetryLimit: Int = 3,
         resolutionPreference: GuestResolutionPreference = .matchWindow,
         sessionID: String = UUID().uuidString,
-        connectionTimeout: Duration = .seconds(30)
+        connectionTimeout: Duration = .seconds(30),
+        displayTimeout: Duration = .seconds(30)
     ) {
         self.engine = engine
         self.files = files
         self.cleanup = cleanup
         self.diagnostics = diagnostics
         self.connectionTimeout = connectionTimeout
+        self.displayTimeout = displayTimeout
         self.resolutionDebounce = resolutionDebounce
         self.resolutionRetryDelay = resolutionRetryDelay
         self.resolutionRetryLimit = resolutionRetryLimit
@@ -164,6 +168,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         connectionTask = nil
         state = .connected
         diagnostics.info("connected")
+        scheduleDisplayTimeoutIfNeeded()
         deleteSourceFileIfNeeded()
         flushResolutionIfNeeded()
     }
@@ -179,6 +184,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         guestDidNotApplyResolution = false
         connectionTask?.cancel()
         connectionTask = nil
+        displayTask?.cancel()
+        displayTask = nil
         agent = AgentCapabilities()
         displaySize = nil
         if case .failed = state { return }
@@ -194,6 +201,9 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
 
     public func engineDidUpdateDisplay(_ frame: RemoteFrame) {
         guard state == .connecting || state == .connected else { return }
+        guard frame.width > 0, frame.height > 0 else { return }
+        displayTask?.cancel()
+        displayTask = nil
         displaySize = frame
         if frame == lastRequestedFrame {
             lastRequestedFrame = nil
@@ -207,6 +217,25 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         // 已送出則交給 lastRequested 去重，避免與 guest 套用中的中間尺寸互打。
         if lastRequestedFrame == nil {
             flushResolutionIfNeeded()
+        }
+    }
+
+    public func engineDidLoseDisplay() {
+        guard state == .connecting || state == .connected else { return }
+        displaySize = nil
+        engine.releaseKeys()
+        scheduleDisplayTimeoutIfNeeded()
+    }
+
+    private func scheduleDisplayTimeoutIfNeeded() {
+        guard state == .connected, displaySize == nil, displayTask == nil,
+              displayTimeout > .zero else { return }
+        let delay = displayTimeout
+        displayTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self, self.state == .connected,
+                  self.displaySize == nil else { return }
+            self.fail(.displayTimeout)
         }
     }
 
@@ -315,6 +344,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     private func resetResolutionSync() {
+        displayTask?.cancel()
+        displayTask = nil
         connectionTask?.cancel()
         connectionTask = nil
         resolutionTask?.cancel()

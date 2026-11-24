@@ -264,6 +264,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         hopToMain(from: connection) { adapter in
             if adapter.display === display {
                 adapter.display = nil
+                adapter.delegate?.engineDidLoseDisplay()
             }
         }
     }

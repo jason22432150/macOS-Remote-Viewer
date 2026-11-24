@@ -79,6 +79,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case errorEngineUnavailable
     case errorCancelled
     case errorNetwork
+    case errorDisplayTimeout
     case errorTLS
     case errorAuthenticationRejected
     case errorGuestAgentUnavailable
@@ -187,6 +188,7 @@ public enum L10n {
         .errorEngineUnavailable: "SPICE 引擎尚未連結。Parser 與 UI 可用，但還不能連到 PVE；需要 UTM 相容的 spice-gtk／GStreamer 靜態依賴。",
         .errorCancelled: "連線已取消。",
         .errorNetwork: "無法經由 proxy 或網路連到遠端。",
+        .errorDisplayTimeout: "已建立連線，但遠端畫面通道未在期限內提供有效畫面尺寸。請重新下載連線檔再試。",
         .errorTLS: "TLS 驗證失敗。請確認憑證與 host-subject 來自新下載的連線檔。",
         .errorAuthenticationRejected: "票證已失效或被拒絕。請重新從 PVE 下載連線檔；本 App 不會自動更新票證。",
         .errorGuestAgentUnavailable: "Guest agent 不可用，畫面與輸入仍可使用，但剪貼簿已停用。",
@@ -272,6 +274,7 @@ public enum L10n {
         .errorEngineUnavailable: "The SPICE engine is not linked. Parsing and the UI work, but PVE connections need UTM-compatible spice-gtk/GStreamer static dependencies.",
         .errorCancelled: "The connection was cancelled.",
         .errorNetwork: "Could not reach the remote session through the proxy or network.",
+        .errorDisplayTimeout: "Connected, but the remote display channel did not provide valid dimensions in time. Download a new connection file and retry.",
         .errorTLS: "TLS verification failed. Confirm the certificate and host-subject come from a newly downloaded connection file.",
         .errorAuthenticationRejected: "The ticket was rejected or has expired. Download a new connection file from PVE; this app will not refresh tickets.",
         .errorGuestAgentUnavailable: "The guest agent is unavailable. Display and input still work, but the clipboard is disabled.",

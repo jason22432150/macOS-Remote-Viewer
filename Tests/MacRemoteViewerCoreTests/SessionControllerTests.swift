@@ -4,6 +4,35 @@ import XCTest
 
 @MainActor
 final class SessionControllerTests: XCTestCase {
+    func testDisplayTimeoutAfterConnectionWithoutValidDimensions() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, displayTimeout: .milliseconds(20))
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 0, height: 0))
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while controller.state == .connected && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(controller.state, .failed(.displayTimeout))
+        XCTAssertTrue(engine.didReleaseKeys)
+    }
+
+    func testDisplayArrivalAndRecoveryCancelTimeout() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, displayTimeout: .milliseconds(20))
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 800, height: 600))
+        engine.delegate?.engineDidLoseDisplay()
+        XCTAssertNil(controller.displaySize)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(controller.state, .connected)
+        XCTAssertEqual(controller.displaySize, RemoteFrame(width: 1024, height: 768))
+    }
+
     func testConnectionTimeoutRejectsLateSuccess() async throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine, connectionTimeout: .milliseconds(20))
