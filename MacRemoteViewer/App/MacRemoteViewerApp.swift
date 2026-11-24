@@ -56,6 +56,14 @@ struct MacRemoteViewerApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private let incomingFiles = IncomingURLBuffer()
+    // AppKit can deliver positional .vv arguments as normal open-file events,
+    // even before applicationDidFinishLaunching. Probe controllers are the
+    // exclusive owners of those files; never also import them into AppModel.
+    private let isIntegrationProbe = ProcessInfo.processInfo.arguments.contains {
+        ["--startup-smoke-test", "--loopback-tls-probe",
+         "--loopback-spice-auth-probe", "--loopback-spice-display-probe",
+         "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe"].contains($0)
+    }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
     private weak var keptMainWindow: NSWindow?
@@ -63,18 +71,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         preparePortableRuntime()
         NSWindow.allowsAutomaticWindowTabbing = false
-        incomingFiles.setHandler { [model] urls in
-            model.open(urls: urls)
+        if !isIntegrationProbe {
+            incomingFiles.setHandler { [model] urls in
+                model.open(urls: urls)
+            }
         }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        guard !isIntegrationProbe else {
+            print("MRV_PROBE_IGNORED_OPEN_URLS count=\(urls.count)")
+            return
+        }
         incomingFiles.handle(urls)
         presentMainWindowWhenReady()
         closeExtraMainWindowsAfterSceneUpdate()
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        guard !isIntegrationProbe else {
+            print("MRV_PROBE_IGNORED_OPEN_FILE")
+            return true
+        }
         incomingFiles.handle([URL(fileURLWithPath: filename)])
         presentMainWindowWhenReady()
         closeExtraMainWindowsAfterSceneUpdate()
@@ -83,9 +101,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 安裝後立刻登錄文件類型，否則 Finder「打開方式」可能看不到這個 App。
-        LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
-        presentMainWindowWhenReady()
         let arguments = ProcessInfo.processInfo.arguments
+        if !isIntegrationProbe {
+            LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
+            presentMainWindowWhenReady()
+        } else if arguments.contains("--startup-smoke-test") {
+            // Startup smoke still requires the actual main window.
+            presentMainWindowWhenReady()
+        }
         if arguments.contains("--startup-smoke-test") {
             runStartupSmokeTest()
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
@@ -161,7 +184,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try await Task.sleep(for: .milliseconds(50))
                 }
-                guard passed else { throw SessionError.displayTimeout }
+                guard passed, model.sessions.isEmpty else {
+                    throw SessionError.displayTimeout
+                }
+                print("MRV_PROBE_WORKSPACE_EMPTY")
                 for controller in controllers { controller.cancel() }
                 try await Task.sleep(for: .milliseconds(500))
                 guard controllers.allSatisfy({ $0.state == .disconnected && $0.displaySize == nil }) else {
@@ -308,6 +334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard controllers[1].state == .disconnected,
                       controllers[1].displaySize == nil, !controllers[1].hasRenderedFrame,
                       foreign.isEmpty else { throw SessionError.cancelled }
+                guard model.sessions.isEmpty else { throw SessionError.cancelled }
+                print("MRV_PROBE_WORKSPACE_EMPTY")
                 print("MRV_MULTI_CLOSE_OK live=3")
                 cleanUp()
                 print("MRV_MULTI_OK")
@@ -526,6 +554,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows _: Bool) -> Bool {
+        guard !isIntegrationProbe else { return false }
         presentMainWindowWhenReady()
         return true
     }

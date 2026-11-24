@@ -204,6 +204,13 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
             if "MRV_GLIB_CRITICAL" in result.stderr or "CRITICAL GLib" in result.stdout:
                 raise AssertionError("multi: GLib critical during concurrent sessions")
             lines = result.stdout.splitlines()
+            if native_probe is None:
+                connect_calls = [line for line in result.stderr.splitlines()
+                                 if line.startswith("MRV_CONN_CONNECT session=")]
+                if len(connect_calls) != 4 or len(set(connect_calls)) != 4:
+                    raise AssertionError(f"probe: expected exactly four unique connect calls, got {len(connect_calls)}")
+                if "MRV_PROBE_WORKSPACE_EMPTY" not in lines:
+                    raise AssertionError("probe: normal workspace must remain empty")
             if native_probe is not None:
                 if "MRV_NATIVE_MULTI_OK" not in lines:
                     raise AssertionError("native multi: missing success marker")
