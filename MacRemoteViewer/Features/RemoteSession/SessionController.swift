@@ -92,7 +92,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
             let delay = connectionTimeout
             connectionTask = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: delay) } catch { return }
-                guard let self, self.state == .connecting else { return }
+                guard !Task.isCancelled, let self, self.state == .connecting else { return }
                 self.fail(.network)
             }
         }
@@ -365,13 +365,14 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
             } catch {
                 return
             }
+            guard !Task.isCancelled else { return }
             self?.flushResolutionIfNeeded()
         }
     }
 
     private func flushResolutionIfNeeded() {
         guard state == .connected else { return }
-        guard agent.supportsMonitorsConfig else { return }
+        guard agent.isConnected, agent.supportsMonitorsConfig else { return }
         guard let frame = GuestResolutionPolicy.targetFrame(
             preference: resolutionPreference,
             windowSize: pendingViewportSize
@@ -412,7 +413,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
             // a replacement from inside the retry callback.
             while !Task.isCancelled {
                 do { try await Task.sleep(for: delay) } catch { return }
-                guard let self, self.state == .connected, self.agent.supportsMonitorsConfig,
+                guard !Task.isCancelled, let self, self.state == .connected, self.agent.isConnected,
+                      self.agent.supportsMonitorsConfig,
                       self.lastRequestedFrame == requested else { return }
                 if self.displaySize == requested {
                     self.resolutionRetryTask = nil

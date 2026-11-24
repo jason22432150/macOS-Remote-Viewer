@@ -154,6 +154,48 @@ final class SessionWorkspaceTests: XCTestCase {
         )
     }
 
+    /// Deterministic controller stress, not a live SPICE server benchmark.
+    func testFourSessionLifecycleStressDoesNotLeakClipboardOrControllers() async throws {
+        let profiles = try (0..<4).map { try Self.profile(title: "stress-\($0)", sessionID: "stress-\($0)") }
+        for round in 0..<100 {
+            let harness = WorkspaceHarness()
+            harness.workspace.open(profiles)
+            for (index, engine) in harness.engines.all.enumerated() {
+                engine.delegate?.engineDidConnect()
+                engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+                engine.delegate?.engineDidUpdateAgent(AgentCapabilities(
+                    isConnected: true, supportsClipboard: true, supportsMonitorsConfig: true))
+                harness.workspace.sessions[index].updateViewportSize(CGSize(width: 1280, height: 800))
+                engine.delegate?.engineDidRenderFrame()
+            }
+            let disconnects = harness.engines.all.map(\.disconnectCount)
+            for index in [0, 2, 1, 3, 0, 3, 2, 1] {
+                harness.workspace.select(profiles[index].sessionID)
+                XCTAssertEqual(harness.engines.all.map(\.clipboardSharingEnabled), (0..<4).map { $0 == index })
+                XCTAssertEqual(harness.engines.all.map(\.disconnectCount), disconnects)
+                XCTAssertTrue(harness.workspace.sessions.allSatisfy { $0.state == .connected })
+            }
+            for index in [2, 1, 3, 0] {
+                weak var closed = harness.workspace.sessions.first { $0.sessionID == profiles[index].sessionID }
+                harness.workspace.close(profiles[index].sessionID)
+                let engine = harness.engines[index]
+                XCTAssertFalse(engine.clipboardSharingEnabled, "round \(round), closed index \(index)")
+                XCTAssertEqual(engine.disconnectCount, disconnects[index] + 1)
+                // The fake engine retains no controller. Cancelled tasks must not keep it alive.
+                XCTAssertNil(closed, "round \(round), closed index \(index)")
+                engine.delegate?.engineDidConnect()
+                engine.delegate?.engineDidRenderFrame()
+                let selected = harness.workspace.selectedSessionID
+                for i in 0..<4 {
+                    XCTAssertEqual(harness.engines[i].clipboardSharingEnabled, selected == profiles[i].sessionID)
+                }
+            }
+            XCTAssertTrue(harness.workspace.sessions.isEmpty)
+            XCTAssertNil(harness.workspace.selectedSessionID)
+            await Task.yield()
+        }
+    }
+
     private static func profile(title: String, sessionID: String) throws -> ConnectionProfile {
         let parsed = try VVParser().parse(data: Data(minimalVV(title: title).utf8))
         return ConnectionProfile(

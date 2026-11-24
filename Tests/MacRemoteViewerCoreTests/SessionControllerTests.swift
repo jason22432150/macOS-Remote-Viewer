@@ -570,6 +570,40 @@ final class SessionControllerTests: XCTestCase {
         ])
     }
 
+    func testRepeatedCancellationAndReopenFencesScheduledWork() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine,
+            resolutionDebounce: .milliseconds(15), resolutionRetryDelay: .milliseconds(15),
+            connectionTimeout: .milliseconds(15), displayTimeout: .milliseconds(15),
+            firstFrameWarningDelay: .milliseconds(15))
+        let profile = try VVParser().parse(data: Data(Self.minimalVV(deleteThisFile: false).utf8))
+        for _ in 0..<100 {
+            controller.open(profile)
+            engine.delegate?.engineDidConnect()
+            engine.delegate?.engineDidUpdateAgent(AgentCapabilities(isConnected: true,
+                supportsClipboard: true, supportsMonitorsConfig: true))
+            controller.updateViewportSize(CGSize(width: 1600, height: 900))
+            controller.cancel()
+            // Late delegate notifications must not revive a cancelled controller.
+            engine.delegate?.engineDidConnect()
+            engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+            engine.delegate?.engineDidRenderFrame()
+            XCTAssertEqual(controller.state, .disconnected)
+            XCTAssertNil(controller.displaySize)
+            XCTAssertFalse(controller.hasRenderedFrame)
+        }
+        controller.open(profile)
+        engine.delegate?.engineDidConnect()
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        engine.delegate?.engineDidRenderFrame()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(controller.state, .connected)
+        XCTAssertTrue(controller.hasRenderedFrame)
+        XCTAssertFalse(controller.firstFrameDelayed)
+        XCTAssertTrue(engine.requestedResolutions.isEmpty)
+        controller.cancel()
+    }
+
     func testCancelDropsPendingResolutionRequest() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine, resolutionDebounce: .zero)

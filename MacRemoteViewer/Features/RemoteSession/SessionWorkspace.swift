@@ -55,6 +55,7 @@ public final class SessionWorkspace {
     public func close(_ sessionID: String) {
         guard let index = sessions.firstIndex(where: { $0.sessionID == sessionID }) else { return }
         let closingSelected = selectedSessionID == sessionID
+        sessions[index].setClipboardSharingEnabled(false)
         sessions[index].cancel()
         sessions.remove(at: index)
         if sessions.isEmpty {

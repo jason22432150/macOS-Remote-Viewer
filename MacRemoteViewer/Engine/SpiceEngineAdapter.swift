@@ -13,7 +13,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private var input: CSInput?
     private var display: CSDisplay?
     private let spicePasteboard = CocoaSpicePasteboard()
-    private var pendingRenderer: CSRenderer?
+    // The view owns its renderer; preserve its registration across reconnects.
+    private weak var pendingRenderer: CSRenderer?
     private var attachedRenderer: CSRenderer?
     private var frameGeneration = UUID()
     private var pendingResolution: CGSize?
@@ -45,7 +46,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         let connection = CSConnection(host: profile.host, port: String(profile.tlsPort))
         connection.audioEnabled = false
         connection.delegate = self
-        applyClipboardSharing(to: connection)
 
         let proxy = profile.proxyURL?.absoluteString
         do {
@@ -62,6 +62,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         }
 
         self.connection = connection
+        applyClipboardSharing(to: connection)
         attachPendingRenderer()
         guard connection.connect() else {
             throw SessionError.network
@@ -82,7 +83,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         relativeMouseRequested = false
         display = nil
         attachedRenderer = nil
-        pendingRenderer = nil
         pendingResolution = nil
     }
 
@@ -183,8 +183,10 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
             clearFrameObserver()
             pendingRenderer = nil
         }
-        if attachedRenderer === renderer { attachedRenderer = nil }
-        display?.removeRenderer(renderer)
+        if attachedRenderer === renderer {
+            attachedRenderer = nil
+            display?.removeRenderer(renderer)
+        }
     }
 
     private func attachPendingRenderer() {
