@@ -63,7 +63,9 @@ jobs:
           test -f "$BOM_PATH"
           test -f "$BOM_PATH.sha256"
           (cd "$(dirname "$BOM_PATH")"; shasum -a 256 -c "$(basename "$BOM_PATH").sha256")
-          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6" and (.components | length > 0)' "$BOM_PATH"
+          python3 -m venv "$RUNNER_TEMP/sbom-venv"
+          "$RUNNER_TEMP/sbom-venv/bin/python" -m pip install 'jsonschema==4.25.1'
+          "$RUNNER_TEMP/sbom-venv/bin/python" BuildSupport/validate-sbom.py "$BOM_PATH"
           MANIFEST="$(find release-artifact -type f -name native-build.json -print)"
           test -f "$MANIFEST"
           gh release create "$TAG" "$DMG_PATH" "$DMG_PATH.sha256" "$BOM_PATH" "$BOM_PATH.sha256" "$MANIFEST" --verify-tag --draft --title "Mac Remote Viewer $TAG" --notes "Ad-hoc signed ARM64 build; not notarized. Review the draft and distribution requirements before publishing."

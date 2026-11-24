@@ -12,7 +12,29 @@ pack = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pack)
 
 
+VALIDATOR_SPEC = importlib.util.spec_from_file_location(
+    "validate_sbom", Path(__file__).with_name("validate-sbom.py"))
+validator = importlib.util.module_from_spec(VALIDATOR_SPEC)
+VALIDATOR_SPEC.loader.exec_module(validator)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_inventory_rejects_wrong_hash_and_missing_file(self):
+        with tempfile.TemporaryDirectory() as raw:
+            app = Path(raw)
+            binary = app / "libtest.dylib"
+            binary.write_bytes(b"binary")
+            component = {"type": "file", "bom-ref": "file:libtest.dylib", "name": "libtest.dylib",
+                         "hashes": [{"alg": "SHA-256", "content": pack.sha256_file(binary)}]}
+            bom = {"components": [component]}
+            with patch.object(validator.subprocess, "check_output", return_value="Mach-O"):
+                validator.verify_inventory(bom, app)
+                component["hashes"][0]["content"] = "0" * 64
+                with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                    validator.verify_inventory(bom, app)
+                with self.assertRaisesRegex(ValueError, "inventory mismatch"):
+                    validator.verify_inventory({"components": []}, app)
+
     def test_rewrite_batches_all_commands_without_stripping_signature(self):
         binary = Path("/tmp/App With Spaces")
         with patch.object(pack, "parse_macho", return_value=(

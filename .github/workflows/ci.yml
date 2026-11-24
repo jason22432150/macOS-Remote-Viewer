@@ -60,6 +60,11 @@ jobs:
 
       - name: Package verified Release app
         run: python3 BuildSupport/package-portable.py --app "$RUNNER_TEMP/mrv-release/Build/Products/Release/Mac Remote Viewer.app"
+      - name: Validate CycloneDX schema and signed bundle inventory
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sbom-venv"
+          "$RUNNER_TEMP/sbom-venv/bin/python" -m pip install 'jsonschema==4.25.1'
+          "$RUNNER_TEMP/sbom-venv/bin/python" BuildSupport/validate-sbom.py dist/*.bom.json --app "dist/work/Mac Remote Viewer.app"
       - name: Verify DMG checksum
         run: |
           cd dist
