@@ -111,7 +111,30 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
         print(f"{name}: authenticated TLS main channels={len(initialized)}")
 
 
-def test_multi(app, root, fixture):
+def compile_native_probe(app, destination):
+    frameworks = app / "Contents" / "Frameworks"
+    names = ("libspice-client-glib-2.0.8.dylib", "libgio-2.0.0.dylib",
+             "libgobject-2.0.0.dylib", "libglib-2.0.0.dylib")
+    libraries = [frameworks / name for name in names]
+    if not all(path.is_file() for path in libraries):
+        raise RuntimeError("native probe: packaged dylibs missing")
+    flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "spice-client-glib-2.0"], text=True))
+    subprocess.run(["xcrun", "clang", "-std=c11", *flags,
+                    str(HERE / "spice-native-multi.c"), "-o", str(destination),
+                    *map(str, libraries), "-Wl,-rpath," + str(frameworks)],
+                   check=True, timeout=60)
+    # Check linkage before executing: probe must not link host copies.
+    linked = subprocess.check_output(["/usr/bin/otool", "-L", str(destination)], text=True)
+    print(linked)
+    if "/opt/homebrew/" in linked or "/usr/local/" in linked:
+        raise RuntimeError("native probe: unexpected host dylib dependency")
+    for name in names:
+        if "@rpath/" + name not in linked:
+            raise RuntimeError(f"native probe: missing packaged dependency {name}")
+
+
+def test_multi(app, root, fixture, native_probe=None):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
     profiles = []
@@ -126,10 +149,11 @@ def test_multi(app, root, fixture):
             sock.close()
         try:
             for i, port in enumerate(ports):
-                profile = root / f"multi-{i}.vv"
+                prefix = "native" if native_probe is not None else "multi"
+                profile = root / f"{prefix}-{i}.vv"
                 profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
                 profiles.append(profile)
-                log = root / f"multi-{i}.log"
+                log = root / f"{prefix}-{i}.log"
                 logs.append(log)
                 output = stack.enter_context(log.open("wb"))
                 server = subprocess.Popen([
@@ -164,8 +188,12 @@ def test_multi(app, root, fixture):
                               if any(term in line for term in ("context", "longjmp", "setjmp", "g_thread_new"))]
                 print("MRV_COROUTINE_IMPORTS")
                 print("\n".join(candidates)[:6000])
-            result = subprocess.run([str(exe), "--loopback-spice-multi-probe",
-                                     *map(str, profiles)], cwd=root, env=env,
+            if native_probe is not None:
+                env["G_DEBUG"] = "fatal-criticals"
+                command = [str(native_probe), str(root / "trusted.pem"), *map(str, ports)]
+            else:
+                command = [str(exe), "--loopback-spice-multi-probe", *map(str, profiles)]
+            result = subprocess.run(command, cwd=root, env=env,
                                     capture_output=True, text=True, timeout=75)
             print(result.stdout[-12000:])
             if result.stderr:
@@ -175,11 +203,15 @@ def test_multi(app, root, fixture):
             if "MRV_GLIB_CRITICAL" in result.stderr or "CRITICAL GLib" in result.stdout:
                 raise AssertionError("multi: GLib critical during concurrent sessions")
             lines = result.stdout.splitlines()
-            phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
-            if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:
-                raise AssertionError("multi: missing foreground/background phases")
-            if "MRV_MULTI_CLOSE_OK live=3" not in lines or "MRV_MULTI_OK" not in lines:
-                raise AssertionError("multi: missing close/isolation success")
+            if native_probe is not None:
+                if "MRV_NATIVE_MULTI_OK" not in lines:
+                    raise AssertionError("native multi: missing success marker")
+            else:
+                phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
+                if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:
+                    raise AssertionError("multi: missing foreground/background phases")
+                if "MRV_MULTI_CLOSE_OK live=3" not in lines or "MRV_MULTI_OK" not in lines:
+                    raise AssertionError("multi: missing close/isolation success")
         finally:
             # Give the peer disconnects a bounded interval to drain on each
             # fixture's GLib loop before requesting orderly VM shutdown.
@@ -210,7 +242,8 @@ def test_multi(app, root, fixture):
             submitted, consumed, released = map(int, counts[0].groups())
             if not 0 < consumed <= submitted or not 0 <= released <= consumed:
                 raise AssertionError(f"{log.stem}: invalid draw lifecycle")
-    print("Real four-session display isolation checks passed.")
+    print("Native four-session channel checks passed." if native_probe is not None
+          else "Real four-session display isolation checks passed.")
 
 
 def main():
@@ -225,7 +258,23 @@ def main():
         test_case(args.app.resolve(), root, fixture, "valid-ticket", tls.TICKET, True)
         test_case(args.app.resolve(), root, fixture, "wrong-ticket", "mrv-ci-other-ticket", False)
         test_case(args.app.resolve(), root, fixture, "display", tls.TICKET, True, display=True)
-        test_multi(args.app.resolve(), root, fixture)
+        # Run both paths independently even if one fails. Do not weaken or
+        # replace the existing production-app integration test.
+        failures = []
+        native_probe = root / "spice-native-multi"
+        try:
+            compile_native_probe(args.app.resolve(), native_probe)
+            test_multi(args.app.resolve(), root, fixture, native_probe=native_probe)
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"native: {exc}")
+            print(f"MRV_NATIVE_FAILURE {exc}", flush=True)
+        try:
+            test_multi(args.app.resolve(), root, fixture)
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"app: {exc}")
+            print(f"MRV_APP_FAILURE {exc}", flush=True)
+        if failures:
+            raise AssertionError("; ".join(failures))
     print("Real SPICE ticket authentication and reconnect checks passed.")
 
 
