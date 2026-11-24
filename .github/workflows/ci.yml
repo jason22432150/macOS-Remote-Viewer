@@ -71,6 +71,10 @@ jobs:
         run: |
           cd dist
           shasum -a 256 -c *.dmg.sha256 *.bom.json.sha256 *.dependency-audit.json.sha256 *.notices.zip.sha256
+      - name: Mount final DMG and verify signed contents
+        run: python3 BuildSupport/verify-dmg.py dist/*.dmg --bom dist/*.bom.json
+      - name: Smoke test copied app from final DMG
+        run: python3 BuildSupport/verify-dmg.py dist/*.dmg --bom dist/*.bom.json --smoke
       - name: Upload ad-hoc signed preview DMG, SBOM and build provenance
         uses: actions/upload-artifact@v4
         with:

@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import MetalKit
+import Darwin
 
 @main
 struct MacRemoteViewerApp: App {
@@ -83,6 +85,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 安裝後立刻登錄文件類型，否則 Finder「打開方式」可能看不到這個 App。
         LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
         presentMainWindowWhenReady()
+        if ProcessInfo.processInfo.arguments.contains("--startup-smoke-test") {
+            runStartupSmokeTest()
+        }
+    }
+
+    /// Explicit test mode only. No .vv, credentials, network connection or guest input.
+    private func runStartupSmokeTest() {
+        Task { @MainActor in
+            do {
+                guard let device = MTLCreateSystemDefaultDevice(),
+                      device.makeCommandQueue() != nil else {
+                    throw SessionError.engineUnavailable
+                }
+                let engine = SpiceEngineAdapter()
+                try engine.startWorker()
+                // Let SwiftUI create and present its main scene before reporting success.
+                let deadline = ContinuousClock.now + .seconds(10)
+                while !NSApp.windows.contains(where: { $0.canBecomeMain && $0.isVisible }) {
+                    guard ContinuousClock.now < deadline else {
+                        throw SessionError.engineUnavailable
+                    }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                // A distinct, machine-readable sentinel, emitted only after all checks.
+                print("MRV_STARTUP_SMOKE_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                print("MRV_STARTUP_SMOKE_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows _: Bool) -> Bool {

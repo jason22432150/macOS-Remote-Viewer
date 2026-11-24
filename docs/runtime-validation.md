@@ -58,3 +58,7 @@ CI 無法證明互動式視窗、遠端 SPICE 連線、GPU 呈現或輸入擷取
 - [ ] 完成所有第三方授權和來源義務審查。
 - [ ] 確認 Developer ID、Hardened Runtime 及公證需求後再正式發布。
 - [ ] 記錄尚未通過的項目、重現步驟和修正 Commit；未測試不得標示通過。
+
+## CI 掛載及啟動 Smoke Test
+
+CI 以唯讀方式掛載最終 DMG，比對內嵌與獨立 SBOM、檢查 Applications 捷徑、版本、Mach-O SHA-256 與 App 簽章。另一個步驟從 DMG 複製 App 至暫存目錄，清除 DYLD/GST/OPENSSL 環境覆寫並以 `--startup-smoke-test` 啟動。測試須確認 Metal device／command queue、SPICE worker 啟動請求及可見主視窗後才回傳成功訊號；40 秒內未退出即失敗。這個模式不連線 PVE，不證明 GLib/GStreamer 初始化已完全完成、不驗證 GPU 實際呈現，也不是無 Homebrew 的乾淨 Mac 實測。CI Runner 的圖形與 Metal 裝置可用性可能影響結果。

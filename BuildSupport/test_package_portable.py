@@ -24,7 +24,31 @@ audit = importlib.util.module_from_spec(AUDIT_SPEC)
 AUDIT_SPEC.loader.exec_module(audit)
 
 
+DMG_SPEC = importlib.util.spec_from_file_location(
+    "verify_dmg", Path(__file__).with_name("verify-dmg.py"))
+dmg = importlib.util.module_from_spec(DMG_SPEC)
+DMG_SPEC.loader.exec_module(dmg)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_mounted_dmg_rejects_bad_install_shortcut_and_changed_bom(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / dmg.APP_NAME).mkdir()
+            bom = root / "external.bom.json"
+            bom.write_text("{}")
+            link = root / "Applications"
+            link.symlink_to("/tmp")
+            with self.assertRaisesRegex(ValueError, "Applications shortcut"):
+                dmg.verify_mounted(root, bom)
+            link.unlink()
+            link.symlink_to("/Applications")
+            (root / "如何開啟.txt").write_text("instructions")
+            (root / "NOTICE.md").write_text("notices")
+            (root / "bom.json").write_text('{"changed": true}')
+            with self.assertRaisesRegex(ValueError, "embedded SBOM differs"):
+                dmg.verify_mounted(root, bom)
+
     def test_osv_pagination_and_query_failure_are_explicit(self):
         kegs = [("example", "1.2_3", Path("/tmp"), "homebrew/core")]
         with patch.object(audit, "query_batch", side_effect=[
