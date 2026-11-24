@@ -109,7 +109,7 @@ struct RemoteSessionView: View {
             }
             Spacer()
             if let names = controller.profile?.unknownFieldNames, !names.isEmpty {
-                Text(L10n.string(.ignoredFields, language: language, names.joined(separator: ", ")))
+                Text(L10n.string(.ignoredFieldCount, language: language, String(names.count)))
                     .foregroundStyle(.secondary)
             }
             if let milliseconds = controller.firstFrameMilliseconds {

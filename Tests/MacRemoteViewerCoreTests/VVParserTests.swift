@@ -128,6 +128,23 @@ final class VVParserTests: XCTestCase {
         }
     }
 
+    func testRejectsEmbeddedNULBeforeParsing() {
+        let content = minimalVV().replacingOccurrences(of: "host=pve.example.test",
+            with: "host=pve.example.test\u{0000}suffix")
+        XCTAssertThrowsError(try parser.parse(data: Data(content.utf8))) { error in
+            XCTAssertEqual(error as? SessionError, .invalidEncoding)
+        }
+    }
+
+    func testManyUnknownFieldsAndDuplicateCriticalField() throws {
+        let extras = (0..<4000).map { "unknown-\($0)=value" }.joined(separator: "\n")
+        let profile = try parser.parse(data: Data(minimalVV(extra: extras).utf8))
+        XCTAssertEqual(profile.unknownFieldNames.count, 4000)
+        XCTAssertThrowsError(try parser.parse(data: Data(minimalVV(extra: extras + "\nhost=other.example").utf8))) {
+            XCTAssertEqual($0 as? SessionError, .duplicateField("host"))
+        }
+    }
+
     func testUnknownFieldsAreNotExecuted() throws {
         let profile = try parser.parse(data: Data(minimalVV(extra: "command=rm -rf /\nurl=https://evil.example\n").utf8))
         XCTAssertTrue(profile.unknownFieldNames.contains("command"))

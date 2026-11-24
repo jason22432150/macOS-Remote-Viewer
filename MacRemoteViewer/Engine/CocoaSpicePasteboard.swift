@@ -6,16 +6,24 @@ import CocoaSpiceNoUsb
 /// The GLib worker never waits synchronously for the main thread.
 /// Each activation has a generation; queued writes from old tabs are discarded.
 final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sendable {
+    private struct PendingWrite: Sendable {
+        let generation: UInt64
+        let body: @MainActor @Sendable (NSPasteboard) -> Void
+    }
+
     private struct Snapshot: Sendable {
         var enabled = false
         var generation: UInt64 = 0
         var changeCount = -1
         var items: [String: Data] = [:]
+        var pendingWrite: PendingWrite?
+        var drainScheduled = false
     }
 
     private let snapshot = OSAllocatedUnfairLock(initialState: Snapshot())
     @MainActor private var pollTask: Task<Void, Never>?
     private static let maxItemBytes = 16 * 1024 * 1024
+    private static let maxSnapshotBytes = 32 * 1024 * 1024
 
     @MainActor func startPolling() {
         guard !snapshot.withLock({ $0.enabled }) else { return }
@@ -39,6 +47,7 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
             $0.enabled = false
             $0.generation &+= 1
             $0.items.removeAll()
+            $0.pendingWrite = nil
             $0.changeCount = -1
         }
         pollTask?.cancel()
@@ -87,10 +96,29 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
     }
 
     private func enqueueWrite(_ body: @escaping @MainActor @Sendable (NSPasteboard) -> Void) {
-        guard let generation = snapshot.withLock({ $0.enabled ? $0.generation : nil }) else { return }
+        // Each write replaces the entire pasteboard. Coalesce pending writes
+        // to the newest value and keep at most one queued main-actor drain.
+        let schedule = snapshot.withLock { state -> Bool in
+            guard state.enabled else { return false }
+            state.pendingWrite = PendingWrite(generation: state.generation, body: body)
+            guard !state.drainScheduled else { return false }
+            state.drainScheduled = true
+            return true
+        }
+        guard schedule else { return }
         Task { @MainActor [weak self] in
-            guard let self, self.snapshot.withLock({ $0.enabled && $0.generation == generation }) else { return }
-            body(NSPasteboard.general)
+            guard let self else { return }
+            let write = self.snapshot.withLock { state -> PendingWrite? in
+                defer {
+                    state.pendingWrite = nil
+                    state.drainScheduled = false
+                }
+                guard state.enabled, let write = state.pendingWrite,
+                      write.generation == state.generation else { return nil }
+                return write
+            }
+            guard let write else { return }
+            write.body(NSPasteboard.general)
             self.refresh(announce: false)
         }
     }
@@ -104,15 +132,22 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
         }) else { return }
 
         var items: [String: Data] = [:]
+        var totalBytes = 0
         if let string = pasteboard.string(forType: .string), string.utf8.count <= Self.maxItemBytes {
-            items[NSPasteboard.PasteboardType.string.rawValue] = Data(string.utf8)
+            let data = Data(string.utf8)
+            items[NSPasteboard.PasteboardType.string.rawValue] = data
+            totalBytes += data.count
         }
         let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, .init("public.jpeg"), .init("com.microsoft.bmp")]
         for type in imageTypes where pasteboard.types?.contains(type) == true {
-            if let data = pasteboard.data(forType: type), data.count <= Self.maxItemBytes {
+            if let data = pasteboard.data(forType: type), data.count <= Self.maxItemBytes,
+               data.count <= Self.maxSnapshotBytes - totalBytes {
                 items[type.rawValue] = data
+                totalBytes += data.count
             }
         }
+        // Do not publish a mixed snapshot if another process changed the board.
+        guard pasteboard.changeCount == count else { return }
         let immutableItems = items
         let changed = snapshot.withLock { state -> Bool in
             guard state.enabled, state.generation == generation else { return false }

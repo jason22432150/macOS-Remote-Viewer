@@ -31,6 +31,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case guestDidNotApplyResolution
     case clipboardUnavailable
     case ignoredFields
+    case ignoredFieldCount
     case menuSession
     case sendCtrlAltDel
     case releasePointer
@@ -149,6 +150,7 @@ public enum L10n {
         .guestDidNotApplyResolution: "遠端未套用解析度",
         .clipboardUnavailable: "剪貼簿不可用",
         .ignoredFields: "忽略未支援欄位：%@",
+        .ignoredFieldCount: "忽略 %@ 個未支援欄位",
         .menuSession: "工作階段",
         .sendCtrlAltDel: "傳送 Ctrl+Alt+Del",
         .releasePointer: "釋放滑鼠／鍵盤",
@@ -191,7 +193,7 @@ public enum L10n {
         .clipboardAndResolutionHelp: "連線後由 SPICE vdagent 自動同步剪貼簿。Guest 需安裝 spice-vdagent。",
         .keyboardHelp: "部分鍵盤的 F11 需要搭配 Fn。釋放游標預設為 Ctrl+Alt+R。",
         .errorFileTooLarge: "連線檔太大，已拒絕解析。",
-        .errorInvalidEncoding: "連線檔不是有效的 UTF-8 文字。",
+        .errorInvalidEncoding: "連線檔不是有效的 UTF-8 文字，或包含不允許的 NUL 字元。",
         .errorMissingSection: "連線檔缺少 [virt-viewer] 區段。",
         .errorUnsupportedType: "第一版只支援 type=spice 的連線檔。",
         .errorMissingField: "連線檔缺少必要欄位：%@。",
@@ -244,6 +246,7 @@ public enum L10n {
         .guestDidNotApplyResolution: "Guest did not apply resolution",
         .clipboardUnavailable: "Clipboard unavailable",
         .ignoredFields: "Ignoring unsupported fields: %@",
+        .ignoredFieldCount: "Ignoring %@ unsupported fields",
         .menuSession: "Session",
         .sendCtrlAltDel: "Send Ctrl+Alt+Del",
         .releasePointer: "Release mouse and keyboard",
@@ -286,7 +289,7 @@ public enum L10n {
         .clipboardAndResolutionHelp: "Clipboard is synced automatically by SPICE vdagent after connecting. The guest needs spice-vdagent.",
         .keyboardHelp: "Some keyboards need Fn for F11. The default cursor-release shortcut is Ctrl+Alt+R.",
         .errorFileTooLarge: "The connection file is too large and was not parsed.",
-        .errorInvalidEncoding: "The connection file is not valid UTF-8 text.",
+        .errorInvalidEncoding: "The connection file is not valid UTF-8 text or contains a forbidden NUL character.",
         .errorMissingSection: "The connection file is missing the [virt-viewer] section.",
         .errorUnsupportedType: "The first release only supports connection files with type=spice.",
         .errorMissingField: "The connection file is missing a required field: %@.",

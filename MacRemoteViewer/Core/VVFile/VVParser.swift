@@ -15,7 +15,9 @@ public struct VVParser: Sendable {
         guard data.count <= Self.maxFileBytes else {
             throw SessionError.fileTooLarge(maxBytes: Self.maxFileBytes)
         }
-        guard let text = String(data: data, encoding: .utf8) else {
+        // C/GLib APIs consume NUL-terminated strings. Reject embedded NULs
+        // rather than silently truncating host, credentials or certificate subjects.
+        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
             throw SessionError.invalidEncoding
         }
         let document = try INIDocument.parse(text)
@@ -198,12 +200,11 @@ struct INIDocument {
             let rawValue = String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
             let value = unescape(rawValue)
 
-            var section = document.sections[currentName] ?? Section()
-            if section.values[key] != nil {
-                section.duplicateKeys.insert(key)
+            // Mutate through the dictionary's modify accessor instead of copying
+            // the section's full values dictionary on every line.
+            if document.sections[currentName, default: Section()].values.updateValue(value, forKey: key) != nil {
+                document.sections[currentName, default: Section()].duplicateKeys.insert(key)
             }
-            section.values[key] = value
-            document.sections[currentName] = section
         }
 
         return document
