@@ -17,21 +17,14 @@ public struct VVFileImporter: Sendable {
                 files.stopAccessing(url)
             }
         }
-        let before = try? files.identity(of: url)
         let data: Data
+        let identity: SourceFileIdentity?
         do {
-            data = try files.read(from: url)
+            (data, identity) = try files.readIdentified(from: url)
         } catch let error as SessionError {
             throw error
         } catch {
             throw SessionError.sourceFileUnavailable
-        }
-        let identity: SourceFileIdentity?
-        do {
-            let after = try files.identity(of: url)
-            identity = before == after && after.size == UInt64(data.count) ? after : nil
-        } catch {
-            identity = nil
         }
         return try parser.parse(data: data, sourceIdentity: identity)
     }

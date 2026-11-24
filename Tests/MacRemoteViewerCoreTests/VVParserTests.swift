@@ -90,6 +90,37 @@ final class VVParserTests: XCTestCase {
         }
     }
 
+    func testImporterRejectsSymlink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("target.vv")
+        try Data(minimalVV().utf8).write(to: target)
+        let link = root.appendingPathComponent("link.vv")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertThrowsError(try VVFileImporter().importFile(at: link)) { error in
+            XCTAssertEqual(error as? SessionError, .sourceFileUnavailable)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    func testDescriptorIdentityCleanupPreservesReplacement() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("connection.vv")
+        let files = FoundationFileAccessor()
+        try Data(minimalVV().utf8).write(to: url)
+        let original = try XCTUnwrap(files.readIdentified(from: url).1)
+        try FileManager.default.moveItem(at: url, to: root.appendingPathComponent("old.vv"))
+        try Data("replacement".utf8).write(to: url)
+        XCTAssertEqual(files.removeMatchingItem(at: url, identity: original), .replacedFilePreserved)
+        XCTAssertEqual(try Data(contentsOf: url), Data("replacement".utf8))
+        let replacement = try files.identity(of: url)
+        XCTAssertEqual(files.removeMatchingItem(at: url, identity: replacement), .deleted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
     func testRejectsOversizedFile() {
         let payload = Data(repeating: 0x41, count: VVParser.maxFileBytes + 1)
         XCTAssertThrowsError(try parser.parse(data: payload)) { error in
