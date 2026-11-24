@@ -3,6 +3,7 @@
 import argparse
 import importlib.util
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -92,8 +93,16 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
         initialized = [line for line in lines if line.startswith("MAIN_INITIALIZED ")]
         if display:
             display_channels = [line for line in lines if line.startswith("DISPLAY_INITIALIZED ")]
-            if display_channels != ["DISPLAY_INITIALIZED tls=1"] * 2 or "PRIMARY_CREATED 640x480" not in lines:
-                raise AssertionError(f"unexpected display channels: {display_channels}")
+            if (display_channels != ["DISPLAY_INITIALIZED tls=1"] * 2
+                    or "PRIMARY_CREATED 640x480" not in lines or "VM_STARTED" not in lines):
+                raise AssertionError(f"unexpected display channels or lifecycle: {display_channels}")
+            counts = [re.fullmatch(r"DRAW_COUNTS submitted=(\d+) consumed=(\d+) released=(\d+)", line)
+                      for line in lines if line.startswith("DRAW_COUNTS ")]
+            if len(counts) != 1 or counts[0] is None:
+                raise AssertionError("missing QXL worker counters")
+            submitted, consumed, released = map(int, counts[0].groups())
+            if not 0 < consumed <= submitted or not 0 <= released <= consumed:
+                raise AssertionError(f"invalid QXL worker counters: {submitted}/{consumed}/{released}")
         if success and initialized != ["MAIN_INITIALIZED tls=1"] * (2 if display else 3):
             raise AssertionError(f"{name}: unexpected TLS main-channel initializations: {initialized}")
         if not success and initialized:

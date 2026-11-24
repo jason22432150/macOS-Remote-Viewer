@@ -305,6 +305,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (with_display && setup_display(server)) return 1;
+    // A primary surface can be sent while the virtual machine is stopped.
+    // The red worker will not consume QXL commands until VM start.
+    if (with_display) {
+        spice_server_vm_start(server);
+        printf("VM_STARTED\n");
+        fflush(stdout);
+    }
     GMainLoop *loop = g_main_loop_new(NULL, FALSE);
     guint signal_source = g_unix_signal_add(SIGTERM, quit_loop, loop);
     guint update_source = with_display ? g_timeout_add(250, update_color, NULL) : 0;
@@ -314,7 +321,9 @@ int main(int argc, char **argv) {
     g_source_remove(signal_source);
     if (update_source) g_source_remove(update_source);
     if (with_display) {
+        // Destroy while running so the worker can flush pending commands.
         spice_qxl_destroy_primary_surface(&qxl, 0);
+        spice_server_vm_stop(server);
         printf("DRAW_COUNTS submitted=%d consumed=%d released=%d\n",
                g_atomic_int_get(&submitted_draws), g_atomic_int_get(&consumed_draws),
                g_atomic_int_get(&released_draws));

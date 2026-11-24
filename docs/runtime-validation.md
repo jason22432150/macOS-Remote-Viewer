@@ -78,3 +78,5 @@ SPICE fixture 另提供固定 640×480 CPU Primary Surface（QXL interface）；
 Display fixture 每 250 ms 送出一個 QXL_DRAW_FILL，輪流填滿紅色與綠色；同時最多 16 個未釋放 command，且最多一個等待 worker 消費；收到 release 才能重用對應記憶體。Metal overlay 僅在明確設定 smokePixelHandler 時從已渲染的 BGRA8 drawable 中心以 GPU blit 讀回一個像素，完成後比對 RGB。每輪須同時觀察兩種預期顏色才算成功；一般 App 未設定 handler，不配置讀回 buffer。這仍是中心像素驗證，並非完整畫面像素比對、實體螢幕掃描輸出、GL Scanout 或真實 Guest 測試。
 
 動態測試改採 QXL_DRAW_COPY + immutable red/green direct bitmap，避免以單色 brush fill 作為唯一更新路徑。fixture 會記錄提交、worker 消費、release 次數及退出狀態；App 記錄有限的實際 RGB 樣本、GPU 讀回不可用狀態與首幀診斷。正常 shader 的非 alpha surface 使用 normalized alpha 1.0。紅／綠都必須符合原本精確 RGB 條件；不允許以超時、黑畫面或僅 GPU completion 代替。
+
+CI #45392068111 顯示已建立 Main/Display Channel、完成 GPU draw 與黑色像素讀回，但 QXL submitted=1、consumed=0。SPICE red worker 在 VM 尚未 running 時不消費 QXL 命令。fixture 在建立 QXL primary surface 後、啟動 GLib loop 前呼叫 `spice_server_vm_start`；結束時先銷毀 surface，再 `spice_server_vm_stop`。測試保留雙色 RGB 驗證，並要求伺服器 VM_STARTED marker 與實際消費計數，不將僅送出初始 surface 視為動態更新成功。
