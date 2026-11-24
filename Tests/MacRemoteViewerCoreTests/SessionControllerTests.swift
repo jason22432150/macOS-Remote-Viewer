@@ -90,7 +90,7 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertTrue(files.removed.isEmpty)
     }
 
-    func testUserPreferenceDeletesFileEvenWithoutDeleteThisFileFlag() throws {
+    func testUserPreferenceRespectsExplicitKeepFileFlag() throws {
         let files = MockFileAccessor()
         let url = URL(fileURLWithPath: "/tmp/example.vv")
         files.identities[url] = SourceFileIdentity(
@@ -112,8 +112,8 @@ final class SessionControllerTests: XCTestCase {
         )
         controller.open(profile)
         engine.delegate?.engineDidConnect()
-        XCTAssertEqual(controller.cleanupResult, .deleted)
-        XCTAssertEqual(files.removed, [url.path])
+        XCTAssertEqual(controller.cleanupResult, .skipped)
+        XCTAssertTrue(files.removed.isEmpty)
     }
 
     func testFailedConnectionKeepsSourceFile() throws {

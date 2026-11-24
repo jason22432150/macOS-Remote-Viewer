@@ -24,6 +24,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     private let engine: SpiceEngineing
     private let files: FileAccessing
     private let cleanup: SourceFileCleanup
+    private let connectionTimeout: Duration
+    @ObservationIgnored private var connectionTask: Task<Void, Never>?
     private let resolutionDebounce: Duration
     private let resolutionRetryDelay: Duration
     private let resolutionRetryLimit: Int
@@ -44,12 +46,14 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         resolutionRetryDelay: Duration = .seconds(2),
         resolutionRetryLimit: Int = 3,
         resolutionPreference: GuestResolutionPreference = .matchWindow,
-        sessionID: String = UUID().uuidString
+        sessionID: String = UUID().uuidString,
+        connectionTimeout: Duration = .seconds(30)
     ) {
         self.engine = engine
         self.files = files
         self.cleanup = cleanup
         self.diagnostics = diagnostics
+        self.connectionTimeout = connectionTimeout
         self.resolutionDebounce = resolutionDebounce
         self.resolutionRetryDelay = resolutionRetryDelay
         self.resolutionRetryLimit = resolutionRetryLimit
@@ -62,8 +66,19 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         cancel()
         self.profile = profile
         didCleanupSource = false
+        cleanupResult = .skipped
+        agent = AgentCapabilities()
+        displaySize = nil
         diagnostics.compatibilityHint(unknownFields: profile.unknownFieldNames)
         state = .connecting
+        if connectionTimeout > .zero {
+            let delay = connectionTimeout
+            connectionTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: delay) } catch { return }
+                guard let self, self.state == .connecting else { return }
+                self.fail(.network)
+            }
+        }
         do {
             try engine.startWorker()
             try engine.connect(profile: profile)
@@ -83,8 +98,10 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         default:
             state = .disconnecting
         }
-        engine.disconnect()
         engine.releaseKeys()
+        engine.disconnect()
+        agent = AgentCapabilities()
+        displaySize = nil
         if state == .disconnecting {
             state = .disconnected
         }
@@ -141,6 +158,9 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     public func engineDidConnect() {
+        guard state == .connecting else { return }
+        connectionTask?.cancel()
+        connectionTask = nil
         state = .connected
         diagnostics.info("connected")
         deleteSourceFileIfNeeded()
@@ -155,19 +175,26 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         lastRequestedFrame = nil
         resolutionRetryCount = 0
         guestDidNotApplyResolution = false
-        if state != .failed(.disconnected) {
-            state = .disconnected
-        }
+        connectionTask?.cancel()
+        connectionTask = nil
+        agent = AgentCapabilities()
+        displaySize = nil
+        if case .failed = state { return }
+        state = .disconnected
+        engine.disconnect()
         diagnostics.info("disconnected")
     }
 
     public func engineDidFail(_ error: SessionError) {
+        guard state == .connecting || state == .connected else { return }
         fail(error)
     }
 
     public func engineDidUpdateDisplay(_ frame: RemoteFrame) {
+        guard state == .connecting || state == .connected else { return }
         displaySize = frame
         if frame == lastRequestedFrame {
+            lastRequestedFrame = nil
             resolutionRetryTask?.cancel()
             resolutionRetryTask = nil
             resolutionRetryCount = 0
@@ -182,6 +209,14 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     public func engineDidUpdateAgent(_ capabilities: AgentCapabilities) {
+        guard state == .connecting || state == .connected else { return }
+        if !capabilities.isConnected || !capabilities.supportsMonitorsConfig {
+            resolutionRetryTask?.cancel()
+            resolutionRetryTask = nil
+            lastRequestedFrame = nil
+            resolutionRetryCount = 0
+            guestDidNotApplyResolution = false
+        }
         let gainedMonitorsConfig = !agent.supportsMonitorsConfig && capabilities.supportsMonitorsConfig
         agent = capabilities
         if !capabilities.isConnected || !capabilities.supportsClipboard {
@@ -200,7 +235,10 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     private func fail(_ error: SessionError) {
         resetResolutionSync()
         state = .failed(error)
+        agent = AgentCapabilities()
+        displaySize = nil
         diagnostics.error(error)
+        engine.releaseKeys()
         engine.disconnect()
     }
 
@@ -278,6 +316,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     private func resetResolutionSync() {
+        connectionTask?.cancel()
+        connectionTask = nil
         resolutionTask?.cancel()
         resolutionTask = nil
         resolutionRetryTask?.cancel()

@@ -20,6 +20,8 @@ public struct VVFileImporter: Sendable {
         let data: Data
         do {
             data = try files.read(from: url)
+        } catch let error as SessionError {
+            throw error
         } catch {
             throw SessionError.sourceFileUnavailable
         }
@@ -27,13 +29,7 @@ public struct VVFileImporter: Sendable {
         do {
             identity = try files.identity(of: url)
         } catch {
-            identity = SourceFileIdentity(
-                path: url.path,
-                fileNumber: 0,
-                volumeIdentifier: 0,
-                size: UInt64(data.count),
-                modificationTime: 0
-            )
+            identity = nil
         }
         return try parser.parse(data: data, sourceIdentity: identity)
     }

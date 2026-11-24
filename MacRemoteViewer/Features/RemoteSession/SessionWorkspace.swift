@@ -30,8 +30,10 @@ public final class SessionWorkspace {
     public func open(_ profiles: [ConnectionProfile]) {
         guard !profiles.isEmpty else { return }
         let previous = selectedSession
+        previous?.setClipboardSharingEnabled(false)
         for profile in profiles {
             let controller = makeSession(profile)
+            controller.setClipboardSharingEnabled(false)
             controller.open(profile)
             sessions.append(controller)
         }
@@ -91,8 +93,9 @@ public final class SessionWorkspace {
     /// F14：只有作用中分頁同步剪貼簿，避免背景 VM 收到本機複製內容。
     private func syncClipboardSharing() {
         let selected = selectedSessionID
-        for session in sessions {
-            session.setClipboardSharingEnabled(session.sessionID == selected)
+        for session in sessions where session.sessionID != selected {
+            session.setClipboardSharingEnabled(false)
         }
+        sessions.first { $0.sessionID == selected }?.setClipboardSharingEnabled(true)
     }
 }

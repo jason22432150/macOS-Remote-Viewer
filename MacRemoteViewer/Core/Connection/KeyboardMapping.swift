@@ -27,7 +27,10 @@ public enum KeyboardMapping {
             99: 0x3D, 100: 0x42, 101: 0x43, 103: 0x57, 109: 0x44, 111: 0x58,
             118: 0x3E, 120: 0x3C, 122: 0x3B, 123: 0x14B, 124: 0x14D, 125: 0x150,
             126: 0x148, 114: 0x152, 115: 0x147, 116: 0x149, 117: 0x153, 119: 0x14F,
-            121: 0x151
+            121: 0x151, 65: 0x53, 67: 0x37, 69: 0x4E, 71: 0x45,
+            75: 0x135, 76: 0x11C, 78: 0x4A, 81: 0x59,
+            82: 0x52, 83: 0x4F, 84: 0x50, 85: 0x51, 86: 0x4B,
+            87: 0x4C, 88: 0x4D, 89: 0x47, 91: 0x48, 92: 0x49
         ]
         return map[keyCode]
     }
@@ -39,7 +42,8 @@ public enum KeyboardMapping {
         option: Bool,
         shift: Bool,
         command: Bool,
-        pressedScancodes: inout Set<Int>
+        pressedScancodes: inout Set<Int>,
+        individualModifierDown: Bool? = nil
     ) -> [KeyEvent] {
         if macKeyCode == 57 {
             return [
@@ -56,7 +60,7 @@ public enum KeyboardMapping {
         case 55, 54: isDown = command
         default: return []
         }
-        return apply(scancode: scancode, isDown: isDown, pressedScancodes: &pressedScancodes)
+        return apply(scancode: scancode, isDown: individualModifierDown ?? isDown, pressedScancodes: &pressedScancodes)
     }
 
     /// 在一般 keyDown／keyUp 前補齊 modifier，避免 flagsChanged 被系統吃掉時 Ctrl+A 只送出 A。

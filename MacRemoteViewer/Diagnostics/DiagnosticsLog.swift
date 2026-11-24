@@ -24,14 +24,16 @@ public struct DiagnosticsLog: Sendable {
     }
 
     public func error(_ error: SessionError) {
-        let description = String(describing: error)
+        let description = error.userMessage(language: .english)
         logger.error("error=\(description, privacy: .public) session=\(self.sessionID, privacy: .public)")
         fileLog?.write(level: "ERROR", message: "error=\(description)", sessionID: sessionID)
     }
 
     public func compatibilityHint(unknownFields: [String]) {
         guard !unknownFields.isEmpty else { return }
-        let names = unknownFields.joined(separator: ",")
+        let names = unknownFields.prefix(32).map { name in
+            String(name.prefix(64).map { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") ? $0 : "-" })
+        }.joined(separator: ",")
         logger.notice("unknown-fields=\(names, privacy: .public) session=\(self.sessionID, privacy: .public)")
         fileLog?.write(level: "NOTICE", message: "unknown-fields=\(names)", sessionID: sessionID)
     }

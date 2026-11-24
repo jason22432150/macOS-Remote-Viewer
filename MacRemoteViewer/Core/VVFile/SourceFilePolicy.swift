@@ -12,7 +12,21 @@ public struct FoundationFileAccessor: FileAccessing {
     public init() {}
 
     public func read(from url: URL) throws -> Data {
-        try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard url.isFileURL else { throw SessionError.sourceFileUnavailable }
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw SessionError.sourceFileUnavailable
+        }
+        guard (values.fileSize ?? 0) <= VVParser.maxFileBytes else {
+            throw SessionError.fileTooLarge(maxBytes: VVParser.maxFileBytes)
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: VVParser.maxFileBytes + 1) ?? Data()
+        guard data.count <= VVParser.maxFileBytes else {
+            throw SessionError.fileTooLarge(maxBytes: VVParser.maxFileBytes)
+        }
+        return data
     }
 
     public func identity(of url: URL) throws -> SourceFileIdentity {
@@ -48,7 +62,7 @@ public struct FoundationFileAccessor: FileAccessing {
 }
 
 /// 成功建立工作階段後，依使用者偏好刪除匯入的 `.vv`。
-/// `.vv` 的 `delete-this-file` 仍會解析保存，但刪除與否以 App 設定為準。
+/// 只有使用者允許且連線檔明確要求刪除時才清理。
 public struct SourceFileCleanup: Sendable {
     public var deleteAfterSuccessfulConnect: Bool
 
@@ -60,10 +74,11 @@ public struct SourceFileCleanup: Sendable {
         profile: ConnectionProfile,
         files: FileAccessing
     ) -> SourceCleanupResult {
-        guard deleteAfterSuccessfulConnect else {
+        guard deleteAfterSuccessfulConnect, profile.deleteSourceFile else {
             return .skipped
         }
-        guard let identity = profile.sourceIdentity else {
+        guard let identity = profile.sourceIdentity, identity.fileNumber != 0,
+              identity.volumeIdentifier != 0 else {
             return .skipped
         }
         let url = URL(fileURLWithPath: identity.path)
@@ -78,7 +93,7 @@ public struct SourceFileCleanup: Sendable {
             guard current.fileNumber == identity.fileNumber,
                   current.volumeIdentifier == identity.volumeIdentifier,
                   current.size == identity.size,
-                  abs(current.modificationTime - identity.modificationTime) < 1
+                  current.modificationTime == identity.modificationTime
             else {
                 return .replacedFilePreserved
             }

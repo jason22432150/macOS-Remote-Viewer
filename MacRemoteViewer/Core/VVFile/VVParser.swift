@@ -5,7 +5,7 @@ public struct VVParser: Sendable {
     public static let maxFileBytes = 512 * 1024
     public static let virtViewerSection = "virt-viewer"
     public static let criticalFields: Set<String> = [
-        "type", "host", "port", "tls-port", "password", "ca", "host-subject", "proxy"
+        "type", "host", "port", "tls-port", "password", "ca", "host-subject", "proxy", "delete-this-file"
     ]
 
     public init() {}
@@ -117,7 +117,7 @@ public struct VVParser: Sendable {
 
     /// GKeyFile 風格還原 `\n` `\t` `\r` `\s` `\\`，供 PEM 使用。
     private func decodeCA(_ raw: String) throws -> Data {
-        let pem = INIDocument.unescape(raw)
+        let pem = raw
         let trimmed = pem.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.contains("BEGIN CERTIFICATE"), trimmed.contains("END CERTIFICATE") else {
             throw SessionError.invalidCA
