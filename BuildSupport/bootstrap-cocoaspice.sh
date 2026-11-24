@@ -7,7 +7,11 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/ThirdParty/CocoaSpice"
 REPO="https://github.com/utmapp/CocoaSpice.git"
-REVISION="d8d29fc810047a3ddcebb351cdadc8fe4b4f308d"
+REVISION="$(python3 -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["cocoaspice"]["revision"])' "$ROOT/BuildSupport/lockfile.toml")"
+case "$REVISION" in
+  *[!0-9a-f]*) echo "Invalid locked CocoaSpice revision" >&2; exit 1 ;;
+esac
+[ "${#REVISION}" -eq 40 ] || exit 1
 
 mkdir -p "$ROOT/ThirdParty"
 
@@ -21,6 +25,7 @@ git -C "$DEST" checkout --force "$REVISION"
 git -C "$DEST" reset --hard "$REVISION"
 git -C "$DEST" clean -fdx
 
+[ "$(git -C "$DEST" rev-parse HEAD)" = "$REVISION" ] || exit 1
 python3 "$ROOT/BuildSupport/cocoaspice/overlay.py" "$DEST"
 
 echo "CocoaSpice 已就緒：$DEST @$REVISION"

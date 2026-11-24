@@ -1,4 +1,5 @@
-# 已驗證或目前鎖定的依賴。main 分支不得當成固定規格。
+# 原生依賴基準：CI 45338041090（macOS 15 / Xcode 16.4 / SDK 15.5）。
+# host 為原開發環境紀錄；不代表所有版本均可運行。
 
 [host]
 cpu = "arm64"
@@ -28,5 +29,5 @@ version = "2.90.1"
 [gstreamer]
 source = "homebrew"
 formula = "gstreamer"
-version = "1.28.8"
+version = "1.28.9"
 note = "音訊功能第一版關閉，但仍需連結此依賴。"

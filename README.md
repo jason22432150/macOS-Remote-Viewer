@@ -101,3 +101,7 @@ swift test
 ### 連線檔安全清理
 
 連線檔須為一般檔案，不接受 symlink 或 FIFO。成功連線且允許刪除時，程式會先在同目錄建立私有 `.macremoteviewer-cleanup-*` 暫存目錄，原子移動檔案並核對 inode / device / size / mtime 後才刪除。若原路徑被其他檔案占用而無法安全還原，暫存目錄會保留原檔，請手動檢查（Finder 可用 Command+Shift+. 顯示隱藏檔）。此機制不保證抵抗具有相同使用者權限的惡意程式。
+
+### 建置相依版本驗證
+
+`python3 BuildSupport/check-dependencies.py --strict`：核對實際 Homebrew 連結版本是否符合 lockfile，發現版本漂移即失敗，不自動降級或修改系統。開發者可不加 `--strict` 取得差異報告；更新鎖定版本前須重新驗證 CI。CocoaSpice bootstrap 直接使用 lockfile 的 Git revision。此檢查鎖定三個直接原生依賴，並記錄全部已安裝 formula，尚非完整可重現的傳遞依賴安裝器。

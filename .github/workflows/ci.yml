@@ -37,6 +37,8 @@ jobs:
           test "$(uname -m)" = arm64
       - name: Install native dependencies
         run: brew install pkgconf spice-gtk glib gstreamer
+      - name: Check locked native dependencies and record environment
+        run: python3 BuildSupport/check-dependencies.py --strict --output "$RUNNER_TEMP/native-build.json"
       - name: Prepare CocoaSpice and linker settings
         run: |
           ./BuildSupport/bootstrap-cocoaspice.sh
