@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// virt-viewer INI／GKeyFile 風格解析器。未知欄位只記錄名稱，不執行其中的文字。
 public struct VVParser: Sendable {
@@ -117,15 +118,45 @@ public struct VVParser: Sendable {
 
     /// GKeyFile 風格還原 `\n` `\t` `\r` `\s` `\\`，供 PEM 使用。
     private func decodeCA(_ raw: String) throws -> Data {
-        let pem = raw
-        let trimmed = pem.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.contains("BEGIN CERTIFICATE"), trimmed.contains("END CERTIFICATE") else {
-            throw SessionError.invalidCA
+        try Self.validatedCA(raw)
+    }
+
+    /// Structural validation of every PEM certificate. This is not server trust
+    /// evaluation: SPICE still performs CA-chain and subject verification.
+    public static func validatedCA(_ raw: String) throws -> Data {
+        let begin = "-----BEGIN CERTIFICATE-----"
+        let end = "-----END CERTIFICATE-----"
+        var lines: [String] = []
+        var body: [String]? = nil
+        var certificates = 0
+        for rawLine in raw.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if line == begin {
+                guard body == nil else { throw SessionError.invalidCA }
+                body = []
+            } else if line == end {
+                guard let parts = body, !parts.isEmpty,
+                      let der = Data(base64Encoded: parts.joined()),
+                      SecCertificateCreateWithData(nil, der as CFData) != nil else {
+                    throw SessionError.invalidCA
+                }
+                lines.append(begin)
+                let encoded = der.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
+                lines.append(encoded)
+                lines.append(end)
+                certificates += 1
+                body = nil
+            } else {
+                guard body != nil, line.utf8.allSatisfy({
+                    (65...90).contains($0) || (97...122).contains($0) ||
+                    (48...57).contains($0) || $0 == 43 || $0 == 47 || $0 == 61
+                }) else { throw SessionError.invalidCA }
+                body?.append(line)
+            }
         }
-        guard let data = pem.data(using: .utf8) else {
-            throw SessionError.invalidCA
-        }
-        return data
+        guard body == nil, certificates > 0 else { throw SessionError.invalidCA }
+        return Data((lines.joined(separator: "\n") + "\n").utf8)
     }
 }
 

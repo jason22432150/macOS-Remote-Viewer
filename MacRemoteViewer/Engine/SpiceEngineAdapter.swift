@@ -31,6 +31,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     func connect(profile: ConnectionProfile) throws {
+        guard let pem = String(data: profile.caPEM, encoding: .utf8) else { throw SessionError.invalidCA }
+        let validatedCA = try VVParser.validatedCA(pem)
         disconnect()
         let connection = CSConnection(host: profile.host, port: String(profile.tlsPort))
         connection.audioEnabled = false
@@ -43,7 +45,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
                 profile.host,
                 tlsPort: String(profile.tlsPort),
                 proxy: proxy,
-                ca: profile.caPEM,
+                ca: validatedCA,
                 certSubject: profile.hostSubject,
                 password: profile.ticket.value
             )

@@ -30,6 +30,20 @@ final class VVParserTests: XCTestCase {
         XCTAssertFalse(pem.contains("\\n"))
     }
 
+    func testRejectsMalformedX509PEM() {
+        let malformed = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+        XCTAssertThrowsError(try VVParser.validatedCA(malformed)) { error in
+            XCTAssertEqual(error as? SessionError, .invalidCA)
+        }
+    }
+
+    func testRejectsExtraTextAfterCertificate() throws {
+        let profile = try parser.parse(data: Data(minimalVV().utf8))
+        let pem = try XCTUnwrap(String(data: profile.caPEM, encoding: .utf8))
+        XCTAssertThrowsError(try VVParser.validatedCA(pem + "unexpected payload"))
+        XCTAssertNoThrow(try VVParser.validatedCA(pem + pem))
+    }
+
     func testRejectsMissingSection() {
         XCTAssertThrowsError(try parser.parse(data: Data("type=spice\n".utf8))) { error in
             XCTAssertEqual(error as? SessionError, .missingSection)
@@ -106,7 +120,7 @@ final class VVParserTests: XCTestCase {
         }
         lines.append(contentsOf: [
             "password=example-ticket-not-secret",
-            "ca=-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----",
+            "ca=-----BEGIN CERTIFICATE-----\\nMIIBizCCATGgAwIBAgIUL0QU9hTtHKAkePzKdhK6O29VxIEwCgYIKoZIzj0EAwIwGzEZMBcGA1UEAwwQcHZlLmV4YW1wbGUudGVzdDAeFw0yNjExMjQwNTQwMjBaFw0zNjExMjEwNTQwMjBaMBsxGTAXBgNVBAMMEHB2ZS5leGFtcGxlLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAS58TUSpXMsnqt28K3DxsPeuGopROR9GqJdlU7E02qTpiHxgxhBKcJ/ITF5LrbhpgnAG6T80/49tExftl21vZ5so1MwUTAdBgNVHQ4EFgQU4v3tpNGL8ZZZOBfHCAVMDehGdGAwHwYDVR0jBBgwFoAU4v3tpNGL8ZZZOBfHCAVMDehGdGAwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA0Gk8MiagBJ2gxgCszKUZrsRaPyYGQCNZGamYd5SAXhgIhAL5w+WStJ0cw88VFewjwIYczmaMsSUiwrq65kjqatWEZ\\n-----END CERTIFICATE-----",
             "host-subject=CN=pve.example.test",
             extra
         ])
