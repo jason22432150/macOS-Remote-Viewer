@@ -36,6 +36,7 @@ struct RemoteSessionView: View {
     private func syncMouseInput() {
         let preferences = model.settings.preferences
         router.invertScrollWheel = preferences.invertScrollWheel
+        router.horizontalScrollCompatibility = preferences.horizontalScrollCompatibility
         router.mouseWheelSensitivity = preferences.mouseWheelSensitivity
         router.trackpadScrollSensitivity = preferences.trackpadScrollSensitivity
         router.sideButton4 = preferences.sideButton4

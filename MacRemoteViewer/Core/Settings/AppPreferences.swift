@@ -44,6 +44,7 @@ public enum ScrollSensitivity: Sendable {
 /// 可持久化的使用者偏好。
 public struct AppPreferences: Equatable, Sendable, Codable {
     public var scrollWheelDirection: ScrollWheelDirection
+    public var horizontalScrollCompatibility: Bool
     /// 傳統滑鼠滾輪（line-based）倍率，1 為目前預設。
     public var mouseWheelSensitivity: Double {
         didSet { mouseWheelSensitivity = ScrollSensitivity.clamp(mouseWheelSensitivity) }
@@ -68,6 +69,7 @@ public struct AppPreferences: Equatable, Sendable, Codable {
 
     public init(
         scrollWheelDirection: ScrollWheelDirection = .natural,
+        horizontalScrollCompatibility: Bool = false,
         mouseWheelSensitivity: Double = ScrollSensitivity.default,
         trackpadScrollSensitivity: Double = ScrollSensitivity.default,
         language: AppLanguage = .zhHant,
@@ -81,6 +83,7 @@ public struct AppPreferences: Equatable, Sendable, Codable {
         sideButton5: MouseSideButtonAction = .nextPage
     ) {
         self.scrollWheelDirection = scrollWheelDirection
+        self.horizontalScrollCompatibility = horizontalScrollCompatibility
         self.mouseWheelSensitivity = ScrollSensitivity.clamp(mouseWheelSensitivity)
         self.trackpadScrollSensitivity = ScrollSensitivity.clamp(trackpadScrollSensitivity)
         self.language = language
@@ -101,6 +104,7 @@ public struct AppPreferences: Equatable, Sendable, Codable {
             ScrollWheelDirection.self,
             forKey: .scrollWheelDirection
         ) ?? fallback.scrollWheelDirection
+        horizontalScrollCompatibility = try container.decodeIfPresent(Bool.self, forKey: .horizontalScrollCompatibility) ?? fallback.horizontalScrollCompatibility
         mouseWheelSensitivity = ScrollSensitivity.clamp(
             try container.decodeIfPresent(Double.self, forKey: .mouseWheelSensitivity)
                 ?? fallback.mouseWheelSensitivity

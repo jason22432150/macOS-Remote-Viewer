@@ -6,6 +6,7 @@ final class InputRouter {
     var captured = true
     /// 與系統滾輪相反時為 true，來自可持久化的使用者偏好。
     var invertScrollWheel = false
+    var horizontalScrollCompatibility = false
     /// 傳統滑鼠滾輪倍率，1 為預設。
     var mouseWheelSensitivity: Double = 1
     /// 觸控板雙指／精準滾動倍率，1 為預設。
@@ -60,15 +61,21 @@ final class InputRouter {
             return MouseEvent(kind: .move, point: point, buttonMask: mask,
                               relativeDelta: CGPoint(x: event.deltaX, y: event.deltaY))
         case .scrollWheel:
+            let flags = event.modifierFlags
+            let allowHorizontal = horizontalScrollCompatibility &&
+                flags.intersection([.control, .option, .command]).isEmpty
+            let axis = ScrollWheelMapping.selectedAxis(horizontal: event.scrollingDeltaX,
+                vertical: event.scrollingDeltaY, horizontalEnabled: allowHorizontal)
             let delta = ScrollWheelMapping.guestDelta(
-                event.scrollingDeltaY,
+                axis.delta,
                 inverted: invertScrollWheel,
                 hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas,
                 mouseWheelSensitivity: mouseWheelSensitivity,
                 trackpadScrollSensitivity: trackpadScrollSensitivity
             )
             guard delta.isFinite, delta != 0 else { return nil }
-            return MouseEvent(kind: .scroll, point: point, buttonMask: mask, scrollDelta: delta)
+            return MouseEvent(kind: .scroll, point: point, buttonMask: mask, scrollDelta: delta,
+                              scrollIsHorizontal: axis.isHorizontal)
         default:
             return nil
         }

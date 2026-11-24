@@ -116,6 +116,16 @@ public enum ScrollWheelMapping {
         return directed * CGFloat(clampSensitivity(userScale) * baseScale)
     }
 
+    /// Select a single axis: avoid turning diagonal trackpad gestures into
+    /// simultaneous unmodified and Shift-modified wheel commands.
+    public static func selectedAxis(horizontal: CGFloat, vertical: CGFloat,
+                                    horizontalEnabled: Bool) -> (delta: CGFloat, isHorizontal: Bool) {
+        let x = horizontal.isFinite ? horizontal : 0
+        let y = vertical.isFinite ? vertical : 0
+        let useX = horizontalEnabled && abs(x) > abs(y)
+        return (min(max(useX ? x : y, -64), 64), useX)
+    }
+
     /// 非法或超出範圍的靈敏度回到可操作區間，避免 0 或極大值讓滾動失效。
     public static func clampSensitivity(_ value: Double) -> Double {
         guard !value.isNaN else { return defaultSensitivity }

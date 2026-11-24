@@ -30,6 +30,12 @@ struct SettingsView: View {
                     language: language
                 )
 
+                Toggle(L10n.string(.horizontalScrollCompatibility, language: language),
+                       isOn: $settings.preferences.horizontalScrollCompatibility)
+                Text(L10n.string(.horizontalScrollCompatibilityHelp, language: language))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
                 SideButtonActionPicker(
                     title: L10n.string(.sideButton4, language: language),
                     selection: $settings.preferences.sideButton4,

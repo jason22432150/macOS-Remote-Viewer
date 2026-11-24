@@ -42,6 +42,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case settingsDiagnostics
     case scrollDirection
     case scrollNatural
+    case horizontalScrollCompatibility
+    case horizontalScrollCompatibilityHelp
     case scrollReversed
     case mouseWheelSensitivity
     case mouseWheelSensitivityHelp
@@ -158,6 +160,8 @@ public enum L10n {
         .settingsDiagnostics: "診斷",
         .scrollDirection: "滾輪方向",
         .scrollNatural: "與系統相同",
+        .horizontalScrollCompatibility: "水平滾輪相容模式",
+        .horizontalScrollCompatibilityHelp: "以 Shift＋垂直滾輪模擬主要為水平方向的手勢；預設關閉。遠端應用程式必須支援此快捷操作，並非原生水平滾輪。",
         .scrollReversed: "反向",
         .mouseWheelSensitivity: "滑鼠滾輪靈敏度",
         .mouseWheelSensitivityHelp: "調整傳統滑鼠滾輪（一格一線）送到遠端的幅度。1× 為目前預設。",
@@ -251,6 +255,8 @@ public enum L10n {
         .settingsDiagnostics: "Diagnostics",
         .scrollDirection: "Scroll wheel direction",
         .scrollNatural: "Match system",
+        .horizontalScrollCompatibility: "Horizontal scroll compatibility",
+        .horizontalScrollCompatibilityHelp: "Emulate mainly horizontal gestures with Shift+vertical wheel; off by default. Requires guest app support and is not native horizontal scrolling.",
         .scrollReversed: "Reversed",
         .mouseWheelSensitivity: "Mouse wheel sensitivity",
         .mouseWheelSensitivityHelp: "Scales traditional mouse-wheel notches sent to the guest. 1× is the current default.",

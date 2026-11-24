@@ -615,6 +615,91 @@ def overlay_package_swift(checkout: Path) -> None:
     path.write_text(text)
 
 
+def overlay_horizontal_scroll_compatibility(checkout: Path) -> None:
+    """Shift+wheel compatibility, atomic on the GLib context and preserving held Shift."""
+    source = checkout / "Sources" / "CocoaSpice"
+    header = source / "include" / "CSInput.h"
+    impl = source / "CSInput.m"
+    _replace_once(header, [
+        ("/// Sends a mouse button without moving the mouse",
+         "/// Opt-in Shift+wheel compatibility; not a native horizontal scroll event.\n"
+         "- (void)sendHorizontalScrollCompatibility:(CSInputButton)buttonMask dx:(CGFloat)dx "
+         "NS_SWIFT_NAME(sendHorizontalScrollCompatibility(_:dx:));\n\n"
+         "/// Sends a mouse button without moving the mouse"),
+    ])
+    _replace_once(impl, [
+        ("    CGFloat                 _scroll_delta_y;",
+         "    CGFloat                 _scroll_delta_y;\n    CGFloat                 _scroll_delta_x;"),
+        ("- (void)sendMouseButton:(CSInputButton)button mask:(CSInputButton)mask pressed:(BOOL)pressed {",
+         """- (void)sendHorizontalScrollCompatibility:(CSInputButton)buttonMask dx:(CGFloat)dx {
+    if (!isfinite(dx) || !self.channel || self.disableInputs) return;
+    gint button_state = cs_button_mask_to_spice(buttonMask);
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceInputsChannel *inputs = self.channel;
+        if (!inputs || self.disableInputs) return;
+        // Physical modifiers are tracked on this same context. Avoid Ctrl/Alt/Super combinations.
+        const unsigned int modifiers[] = {0x1d, 0x11d, 0x38, 0x138, 0x15b, 0x15c};
+        for (unsigned int i = 0; i < G_N_ELEMENTS(modifiers); i++) {
+            unsigned int key = modifiers[i];
+            if (self->_key_state[key / 32] & (1u << (key % 32))) {
+                self->_scroll_delta_x = 0;
+                return;
+            }
+        }
+        self->_scroll_delta_x += CLAMP(dx, -64.0, 64.0);
+        int ticks = (int)self->_scroll_delta_x;
+        if (!ticks) return;
+        self->_scroll_delta_x -= ticks;
+        BOOL shiftHeld = (self->_key_state[0x2a / 32] & (1u << (0x2a % 32))) ||
+                         (self->_key_state[0x36 / 32] & (1u << (0x36 % 32)));
+        if (!shiftHeld) spice_inputs_channel_key_press(inputs, 0x2a);
+        int button = ticks < 0 ? SPICE_MOUSE_BUTTON_UP : SPICE_MOUSE_BUTTON_DOWN;
+        for (int i = 0; i < ABS(ticks); i++) {
+            spice_inputs_channel_button_press(inputs, button, button_state);
+            spice_inputs_channel_button_release(inputs, button, button_state);
+        }
+        if (!shiftHeld) spice_inputs_channel_key_release(inputs, 0x2a);
+    }];
+}
+
+- (void)sendMouseButton:(CSInputButton)button mask:(CSInputButton)mask pressed:(BOOL)pressed {"""),
+        ("""- (void)releaseKeys {
+    uint32_t i, b;
+    
+    SPICE_DEBUG("%s", __FUNCTION__);
+    for (i = 0; i < SPICE_N_ELEMENTS(self->_key_state); i++) {
+        if (!self->_key_state[i]) {
+            continue;
+        }
+        for (b = 0; b < 32; b++) {
+            unsigned int scancode = i * 32 + b;
+            if (scancode != 0) {
+                [self sendKey:kCSInputKeyRelease code:scancode];
+            }
+        }
+    }
+}""",
+         """- (void)releaseKeys {
+    // Read and clear key state on the same GLib context as queued key presses.
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceInputsChannel *inputs = self.channel;
+        for (unsigned int i = 0; i < SPICE_N_ELEMENTS(self->_key_state); i++) {
+            for (unsigned int b = 0; b < 32; b++) {
+                unsigned int key = i * 32 + b;
+                if (inputs && key && (self->_key_state[i] & (1u << b))) {
+                    spice_inputs_channel_key_release(inputs, key);
+                }
+            }
+            self->_key_state[i] = 0;
+        }
+        self->_scroll_delta_x = 0;
+        self->_scroll_delta_y = 0;
+    }];
+}"""),
+        ("#import <glib.h>", "#import <glib.h>\n#import <math.h>"),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -630,6 +715,7 @@ def main() -> None:
     )
     overlay_metal_frame_observation(checkout)
     overlay_connection_pve_api(checkout)
+    overlay_horizontal_scroll_compatibility(checkout)
     overlay_session_sharing_category(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 

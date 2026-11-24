@@ -305,6 +305,11 @@ final class RemoteCanvasView: MTKView {
             releaseKeys()
             return
         }
+        // A requested/accepted relative mode is not a capture until the user clicks.
+        if controller.relativeMouseRequested && controller.usesServerMouseMode && !isRelativeCaptured {
+            showLocalCursor()
+            return
+        }
         updateViewport()
         if let mapping {
             let location = convert(event.locationInWindow, from: nil)

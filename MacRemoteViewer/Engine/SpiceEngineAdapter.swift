@@ -120,7 +120,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
             }
             input.sendMouseButton(button, mask: mask, pressed: event.kind == .down)
         case .scroll:
-            input.sendMouseScroll(.smooth, buttonMask: CSInputButton(rawValue: UInt(pressedMouseMask)), dy: event.scrollDelta)
+            guard event.scrollDelta.isFinite else { return }
+            let mask = CSInputButton(rawValue: UInt(pressedMouseMask))
+            let delta = min(max(event.scrollDelta, -64), 64)
+            if event.scrollIsHorizontal {
+                input.sendHorizontalScrollCompatibility(mask, dx: delta)
+            } else {
+                input.sendMouseScroll(.smooth, buttonMask: mask, dy: delta)
+            }
         }
     }
 
