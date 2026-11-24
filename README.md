@@ -105,3 +105,11 @@ swift test
 ### 建置相依版本驗證
 
 `python3 BuildSupport/check-dependencies.py --strict`：核對實際 Homebrew 連結版本是否符合 lockfile，發現版本漂移即失敗，不自動降級或修改系統。開發者可不加 `--strict` 取得差異報告；更新鎖定版本前須重新驗證 CI。CocoaSpice bootstrap 直接使用 lockfile 的 Git revision。此檢查鎖定三個直接原生依賴，並記錄全部已安裝 formula，尚非完整可重現的傳遞依賴安裝器。
+
+### CI 預覽 DMG 與發布關卡
+
+CI 重用該次 Release App 打包，驗證內嵌 dylib、ARM64、Mach-O 最低版本、ad-hoc 簽章與 DMG checksum。從 Actions 對應執行紀錄下載 `MacRemoteViewer-arm64-preview` artifact（保留 14 天）。這不是正式 GitHub Release，也未經 Apple 公證。依賴版本與 SDK 資訊記錄在 `native-build.json`。
+
+Swift Core 的 macOS 14 設定不代表打包後 App 支援 macOS 14。打包工具會將 ARM64 Mach-O 宣告的最高最低版本寫回 Info.plist；仍須在乾淨的目標 macOS 實機驗證，才能正式宣告支援版本。
+
+正式發布前須完成第三方授權審查及 PVE 實機測試，再由維護者於 main 手動執行 Draft Release workflow。此 workflow 只建立草稿，不公開發布。

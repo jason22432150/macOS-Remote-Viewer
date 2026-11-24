@@ -1,0 +1,64 @@
+name: Draft Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (vMAJOR.MINOR.PATCH)"
+        required: true
+        type: string
+      ci_run_id:
+        description: "Successful CI run ID for the tagged main commit"
+        required: true
+        type: string
+      reviewed_distribution:
+        description: "Licensing, PVE runtime tests and distribution readiness reviewed"
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  draft:
+    if: github.ref == 'refs/heads/main' && inputs.reviewed_distribution
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      RUN_ID: ${{ inputs.ci_run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Verify existing tag and successful CI provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/$TAG")"
+          git merge-base --is-ancestor "$TAG_SHA" HEAD
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
+          jq -e --arg sha "$TAG_SHA" '.conclusion == "success" and .head_sha == $sha and .head_branch == "main" and .path == ".github/workflows/ci.yml"' "$RUNNER_TEMP/run.json"
+      - name: Download the verified build artifact
+        run: gh run download "$RUN_ID" --name MacRemoteViewer-arm64-preview --dir release-artifact
+      - name: Validate package and create a draft only
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG="MacRemoteViewer-$(echo "$TAG" | cut -c2-)-arm64.dmg"
+          DMG_PATH="$(find release-artifact -type f -name "$DMG" -print)"
+          test -f "$DMG_PATH"
+          test -f "$DMG_PATH.sha256"
+          (cd "$(dirname "$DMG_PATH")"; shasum -a 256 -c "$DMG.sha256")
+          hdiutil verify "$DMG_PATH"
+          MANIFEST="$(find release-artifact -type f -name native-build.json -print)"
+          test -f "$MANIFEST"
+          gh release create "$TAG" "$DMG_PATH" "$DMG_PATH.sha256" "$MANIFEST" --verify-tag --draft --title "Mac Remote Viewer $TAG" --notes "Ad-hoc signed ARM64 build; not notarized. Review the draft and distribution requirements before publishing."
