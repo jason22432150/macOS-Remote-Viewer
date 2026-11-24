@@ -134,6 +134,43 @@ def compile_native_probe(app, destination):
             raise RuntimeError(f"native probe: missing packaged dependency {name}")
 
 
+def validate_multi_metrics(lines):
+    """Require one sustained, measurable window per phase; no CI speed threshold."""
+    expected = {(i, 4): set(range(4)) for i in range(4)}
+    expected[(2, 3)] = {0, 2, 3}
+    resources = {}
+    samples = {}
+    for line in lines:
+        if line.startswith("MRV_MULTI_RESOURCES "):
+            match = re.fullmatch(
+                r"MRV_MULTI_RESOURCES active=(\d+) live=(\d+) elapsed-ms=(\d+) cpu-ms=(\d+) peak-rss-bytes=(\d+)", line)
+            if not match:
+                raise AssertionError("malformed resource metrics")
+            active, live, elapsed, cpu, rss = map(int, match.groups())
+            key = (active, live)
+            if key not in expected or key in resources or elapsed < 3000 or rss <= 0:
+                raise AssertionError(f"invalid resource metrics: {line}")
+            resources[key] = elapsed
+            print(f"METRIC phase={active}/{live} process-cpu-percent={100 * cpu / elapsed:.1f} peak-rss-MiB={rss / 1048576:.2f}")
+        elif line.startswith("MRV_MULTI_SAMPLES "):
+            match = re.fullmatch(
+                r"MRV_MULTI_SAMPLES active=(\d+) live=(\d+) session=(\d+) count=(\d+) elapsed-ms=(\d+)", line)
+            if not match:
+                raise AssertionError("malformed sample metrics")
+            active, live, session, count, elapsed = map(int, match.groups())
+            key = (active, live)
+            if (key not in expected or session not in expected[key] or
+                    (key, session) in samples or count <= 0 or elapsed < 3000):
+                raise AssertionError(f"invalid sample metrics: {line}")
+            samples[(key, session)] = elapsed
+            print(f"METRIC phase={active}/{live} session={session} gpu-readback-completions-per-second={1000 * count / elapsed:.2f}")
+    if set(resources) != set(expected) or set(samples) != {
+            (key, session) for key, sessions in expected.items() for session in sessions}:
+        raise AssertionError("incomplete multi-session metrics")
+    if any(elapsed != resources[key] for (key, _), elapsed in samples.items()):
+        raise AssertionError("inconsistent phase measurement window")
+
+
 def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
@@ -195,7 +232,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
                 mode = "--loopback-spice-wrapper-probe" if wrapper_only else "--loopback-spice-multi-probe"
                 command = [str(exe), mode, *map(str, profiles)]
             result = subprocess.run(command, cwd=root, env=env,
-                                    capture_output=True, text=True, timeout=75)
+                                    capture_output=True, text=True, timeout=110)
             print(result.stdout[-12000:])
             if result.stderr:
                 print(result.stderr[-16000:])
@@ -223,6 +260,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
                     raise AssertionError("multi: missing foreground/background phases")
                 if "MRV_MULTI_CLOSE_OK live=3" not in lines or "MRV_MULTI_OK" not in lines:
                     raise AssertionError("multi: missing close/isolation success")
+                validate_multi_metrics(lines)
         finally:
             # Give the peer disconnects a bounded interval to drain on each
             # fixture's GLib loop before requesting orderly VM shutdown.

@@ -223,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var controllers: [SessionController] = []
             var canvases: [RemoteCanvasView] = []
             var observed = Array(repeating: Set<UInt32>(), count: 4)
+            var completedSamples = Array(repeating: 0, count: 4)
             var foreign = Set<Int>()
             var live = Set(0..<4)
             @MainActor func cleanUp() {
@@ -260,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     canvas.setActive(i == 0)
                     canvas.setupMetal()
                     canvas.setSmokePixelHandler { pixel in
+                        completedSamples[i] += 1
                         let rgb = pixel & 0x00ffffff
                         // Initial empty black surfaces are allowed, but cannot
                         // satisfy either expected color. Any foreign color fails.
@@ -278,12 +280,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Open all four before yielding to the main actor.
                 for i in 0..<4 { controllers[i].open(profiles[i]) }
 
+                // getrusage on macOS reports cumulative process CPU time and
+                // peak resident bytes (not current RSS or GPU memory).
+                @MainActor func resourceSnapshot() throws -> (cpu: Double, peakRSS: Int64) {
+                    var usage = rusage()
+                    guard Darwin.getrusage(RUSAGE_SELF, &usage) == 0 else {
+                        throw SessionError.unknown(code: "getrusage")
+                    }
+                    let user = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1_000_000
+                    let system = Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
+                    return (user + system, Int64(usage.ru_maxrss))
+                }
+
                 @MainActor func validatePhase(active: Int) async throws {
                     for i in live { canvases[i].setActive(i == active) }
                     // Reset observations for each phase: require fresh draws, not
                     // cached success from the previous foreground selection.
                     for i in live { observed[i].removeAll() }
-                    let deadline = ContinuousClock.now + .seconds(12)
+                    let deadline = ContinuousClock.now + .seconds(16)
+                    var sampleStart: ContinuousClock.Instant?
+                    var startCPU = 0.0
                     while ContinuousClock.now < deadline {
                         guard foreign.isEmpty else { throw SessionError.unknown(code: "foreign-color") }
                         for i in live {
@@ -299,12 +315,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             canvases[i].attachRendererIfNeeded()
                             canvases[i].updateViewport()
                         }
-                        if live.allSatisfy({ i in
+                        let ready = live.allSatisfy { i in
                             controllers[i].state == .connected &&
                             controllers[i].displaySize == RemoteFrame(width: 640, height: 480) &&
-                            controllers[i].hasRenderedFrame && observed[i] == expected[i] &&
+                            controllers[i].hasRenderedFrame &&
                             canvases[i].preferredFramesPerSecond == (i == active ? 60 : 15)
-                        }) { return }
+                        }
+                        if !ready {
+                            sampleStart = nil
+                        } else if let start = sampleStart {
+                            let duration = start.duration(to: ContinuousClock.now)
+                            if duration >= .seconds(3),
+                               live.allSatisfy({ observed[$0] == expected[$0] && completedSamples[$0] > 0 }) {
+                                let end = try resourceSnapshot()
+                                let seconds = Double(duration.components.seconds) +
+                                    Double(duration.components.attoseconds) / 1e18
+                                let elapsedMS = Int(seconds * 1000)
+                                let cpuMS = Int(max(0, end.cpu - startCPU) * 1000)
+                                print("MRV_MULTI_RESOURCES active=\(active) live=\(live.count) elapsed-ms=\(elapsedMS) cpu-ms=\(cpuMS) peak-rss-bytes=\(end.peakRSS)")
+                                for i in live.sorted() {
+                                    print("MRV_MULTI_SAMPLES active=\(active) live=\(live.count) session=\(i) count=\(completedSamples[i]) elapsed-ms=\(elapsedMS)")
+                                }
+                                return
+                            }
+                        } else if live.allSatisfy({ observed[$0] == expected[$0] }) {
+                            startCPU = try resourceSnapshot().cpu
+                            for i in live {
+                                completedSamples[i] = 0
+                                observed[i].removeAll()
+                            }
+                            sampleStart = ContinuousClock.now
+                        }
                         try await Task.sleep(for: .milliseconds(50))
                     }
                     for i in live.sorted() {
