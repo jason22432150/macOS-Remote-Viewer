@@ -67,6 +67,15 @@ final class VVParserTests: XCTestCase {
         }
     }
 
+    func testImporterRejectsOversizedRegularFile() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".vv")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(repeating: 65, count: VVParser.maxFileBytes + 1).write(to: url)
+        XCTAssertThrowsError(try VVFileImporter().importFile(at: url)) { error in
+            XCTAssertEqual(error as? SessionError, .fileTooLarge(maxBytes: VVParser.maxFileBytes))
+        }
+    }
+
     func testRejectsOversizedFile() {
         let payload = Data(repeating: 0x41, count: VVParser.maxFileBytes + 1)
         XCTAssertThrowsError(try parser.parse(data: payload)) { error in

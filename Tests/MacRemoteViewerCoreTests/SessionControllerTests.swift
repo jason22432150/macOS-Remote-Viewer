@@ -4,6 +4,28 @@ import XCTest
 
 @MainActor
 final class SessionControllerTests: XCTestCase {
+    func testConnectionTimeoutRejectsLateSuccess() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, connectionTimeout: .milliseconds(20))
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(controller.state, .failed(.network))
+        engine.delegate?.engineDidConnect()
+        engine.delegate?.engineDidDisconnect()
+        XCTAssertEqual(controller.state, .failed(.network))
+    }
+
+    func testInvalidSourceIdentityIsPreserved() throws {
+        let files = MockFileAccessor()
+        let url = URL(fileURLWithPath: "/tmp/example.vv")
+        let identity = SourceFileIdentity(path: url.path, fileNumber: 0, volumeIdentifier: 0,
+                                          size: 100, modificationTime: 10)
+        files.identities[url] = identity
+        let profile = try VVParser().parse(data: Data(Self.minimalVV().utf8), sourceIdentity: identity)
+        XCTAssertEqual(SourceFileCleanup().deleteIfNeeded(profile: profile, files: files), .skipped)
+        XCTAssertTrue(files.removed.isEmpty)
+    }
+
     func testSuccessfulConnectDeletesMatchingSourceFile() throws {
         let files = MockFileAccessor()
         let url = URL(fileURLWithPath: "/tmp/example.vv")

@@ -17,6 +17,7 @@ public struct VVFileImporter: Sendable {
                 files.stopAccessing(url)
             }
         }
+        let before = try? files.identity(of: url)
         let data: Data
         do {
             data = try files.read(from: url)
@@ -27,7 +28,8 @@ public struct VVFileImporter: Sendable {
         }
         let identity: SourceFileIdentity?
         do {
-            identity = try files.identity(of: url)
+            let after = try files.identity(of: url)
+            identity = before == after ? after : nil
         } catch {
             identity = nil
         }

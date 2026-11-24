@@ -31,9 +31,7 @@ public struct DiagnosticsLog: Sendable {
 
     public func compatibilityHint(unknownFields: [String]) {
         guard !unknownFields.isEmpty else { return }
-        let names = unknownFields.prefix(32).map { name in
-            String(name.prefix(64).map { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") ? $0 : "-" })
-        }.joined(separator: ",")
+        let names = "count:\(unknownFields.count)"
         logger.notice("unknown-fields=\(names, privacy: .public) session=\(self.sessionID, privacy: .public)")
         fileLog?.write(level: "NOTICE", message: "unknown-fields=\(names)", sessionID: sessionID)
     }

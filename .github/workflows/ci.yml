@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift toolchain
+        run: swift --version
+      - name: Core tests
+        run: swift test
+      - name: CocoaSpice overlay tests
+        run: python3 -m unittest discover -s BuildSupport/cocoaspice -p 'test_*.py'
+
+  app:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode
+        run: xcodebuild -version
+      - name: Install native dependencies
+        run: brew install pkgconf spice-gtk glib gstreamer
+      - name: Prepare CocoaSpice and linker settings
+        run: |
+          ./BuildSupport/bootstrap-cocoaspice.sh
+          ./BuildSupport/generate-xcconfig.sh
+      - name: Build native app
+        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
