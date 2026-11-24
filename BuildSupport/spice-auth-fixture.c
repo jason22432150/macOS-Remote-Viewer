@@ -125,29 +125,40 @@ static gboolean quit_loop(gpointer data) {
 }
 
 /* Fixed test-only CPU framebuffer. Never expose guest or host desktop memory. */
-enum { WIDTH = 640, HEIGHT = 480 };
+enum { WIDTH = 640, HEIGHT = 480, DRAW_SLOTS = 16 };
 static struct {
     uint32_t pixels[WIDTH * HEIGHT];
-    QXLDrawable draw;
+    QXLDrawable draws[DRAW_SLOTS];
 } framebuffer;
 #define pixels framebuffer.pixels
 static QXLInstance qxl;
-/* One outstanding drawable at a time; worker releases it before reuse. */
-static gint draw_state;
+/* Bounded pool: SPICE may retain a drawable until a later update supersedes it. */
+static gint draw_states[DRAW_SLOTS];
 static unsigned next_color;
 static int qxl_get_draw(QXLInstance *instance, QXLCommandExt *command) {
     (void)instance;
-    if (!g_atomic_int_compare_and_exchange(&draw_state, 1, 2)) return 0;
-    memset(command, 0, sizeof(*command));
-    command->cmd.type = QXL_CMD_DRAW;
-    command->cmd.data = (uintptr_t)&framebuffer.draw;
-    command->group_id = 0;
-    return 1;
+    for (int i = 0; i < DRAW_SLOTS; ++i) {
+        if (!g_atomic_int_compare_and_exchange(&draw_states[i], 1, 2)) continue;
+        memset(command, 0, sizeof(*command));
+        command->cmd.type = QXL_CMD_DRAW;
+        command->cmd.data = (uintptr_t)&framebuffer.draws[i];
+        command->group_id = 0;
+        return 1;
+    }
+    return 0;
 }
 static gboolean update_color(gpointer data) {
     (void)data;
-    if (g_atomic_int_get(&draw_state) != 0) return G_SOURCE_CONTINUE;
-    QXLDrawable *draw = &framebuffer.draw;
+    // The GLib main loop is the only producer. Do not queue another command
+    // while a previous one is still pending consumption.
+    int slot = -1;
+    for (int i = 0; i < DRAW_SLOTS; ++i) {
+        int state = g_atomic_int_get(&draw_states[i]);
+        if (state == 1) return G_SOURCE_CONTINUE;
+        if (state == 0 && slot < 0) slot = i;
+    }
+    if (slot < 0) return G_SOURCE_CONTINUE;
+    QXLDrawable *draw = &framebuffer.draws[slot];
     memset(draw, 0, sizeof(*draw));
     draw->release_info.id = (uintptr_t)draw;
     draw->surface_id = 0;
@@ -161,7 +172,7 @@ static gboolean update_color(gpointer data) {
     draw->u.fill.brush.type = SPICE_BRUSH_TYPE_SOLID;
     draw->u.fill.brush.u.color = next_color++ % 2 ? 0x0000ff00 : 0x00ff0000;
     draw->u.fill.rop_descriptor = SPICE_ROPD_OP_PUT;
-    g_atomic_int_set(&draw_state, 1);
+    g_atomic_int_set(&draw_states[slot], 1);
     spice_qxl_wakeup(&qxl);
     return G_SOURCE_CONTINUE;
 }
@@ -185,8 +196,13 @@ static int qxl_no_command(QXLInstance *instance, QXLCommandExt *command) {
 static int qxl_notification(QXLInstance *instance) { (void)instance; return 1; }
 static void qxl_release(QXLInstance *instance, QXLReleaseInfoExt info) {
     (void)instance;
-    if (info.info && info.info->id == (uintptr_t)&framebuffer.draw)
-        g_atomic_int_set(&draw_state, 0);
+    if (!info.info) return;
+    for (int i = 0; i < DRAW_SLOTS; ++i) {
+        if (info.info->id == (uintptr_t)&framebuffer.draws[i]) {
+            g_atomic_int_set(&draw_states[i], 0);
+            return;
+        }
+    }
 }
 static void qxl_notify_update(QXLInstance *instance, uint32_t id) { (void)instance; (void)id; }
 static int qxl_flush(QXLInstance *instance) { (void)instance; return 0; }

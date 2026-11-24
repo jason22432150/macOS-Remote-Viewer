@@ -1099,8 +1099,8 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
     root = checkout / "Sources" / "CocoaSpiceRenderer"
     _replace_once(root / "include" / "CSMetalRenderer.h", [
         ("/// Modify upscaler and downscaler settings",
-         "/// Test-only center pixel (BGRA8), delivered on main after GPU completion.\\n"
-         "@property (nonatomic, copy, nullable) void (^smokePixelHandler)(uint32_t pixel);\\n\\n"
+         "/// Test-only center pixel (BGRA8), delivered on main after GPU completion.\n"
+         "@property (nonatomic, copy, nullable) void (^smokePixelHandler)(uint32_t pixel);\n\n"
          "/// Modify upscaler and downscaler settings"),
     ])
     _replace_once(root / "CSMetalRenderer.m", [
