@@ -110,3 +110,7 @@ CI #45431514695 已通過 19 組持續量測，完整 App 224 個 QXL draw comma
 ## 局部 framebuffer 更新
 
 CI #45437464697 全部通過；19 組 GPU timestamps 無 unavailable，phase 平均 1.210–3.405 ms，最大 14.613 ms；完整 App 233 draws 全消費/釋放。新增獨立 partial fixture：第一個 full draw 為藍色，後續 QXL_DRAW_COPY 僅傳入 160×120 bitmap 至中央 (240,180)，交替紅綠；原 full draw modes 保留。新增 opt-in region callback 在同一 GPU command buffer 中取中心及四個 1/4、3/4 位置，只有此模式分配 1280 bytes，既有 center readback 仍 256 bytes。兩輪 TLS reconnect 均須取得紅/綠中心及四藍色外圍，拒絕非預期樣本並檢查正常 workspace 為空，Python 確認至少四次 partial commands。僅為五點取樣，不能證明每一像素正確、完全無撕裂或所有 dirty-rect/GL scanout 情況。正式使用兩 handler 均 nil，不增加 readback；待 CI 確認。
+
+## 真實 SwiftUI workspace 分頁整合
+
+CI #45441275158 attempt 3：partial 兩輪五點正確、5 個局部命令，6/6 draw consumed/released；full multi 227/227。新增獨立 `--loopback-spice-workspace-probe`，用隔離 AppModel 及 NSHostingView 承載 production ContentView（SessionTabBar/ZStack/RemoteSessionView/RemoteDisplayView），正常 app workspace 保持空白，四個合成 loopback TLS profiles 明確檢查，避免 AppKit 重複匯入。從 NSView hierarchy 發現真實 representable 的 RemoteCanvasView，記錄 identity；不由 probe 手動 setActive/attach renderer。以正式 tab 按鈕相同 Model API 切換 8 次，每次要求所有 live session 連線及原 canvas identity、active state/60:15 設定，選中 canvas 再次取得該 session 雙色；關背景 tab 保持選擇、關選中末 tab 選鄰近前 tab，最後全部關閉並檢查 canvas 移除及 controller 清理。Python 驗證全部 marker、恰好四個 connect、各 server 一次 TLS Main/Display 及資源計數。獨立新 fixture，保留舊三層及局部測試。此非實體滑鼠點擊/螢幕 compositor 呈現測試，背景 canvas 不要求每次真的 draw（被遮擋可能無 drawable），亦不宣稱 memory leak 已排除。待 CI 驗證。

@@ -207,7 +207,7 @@ def validate_multi_metrics(lines):
         raise AssertionError("missing or inconsistent GPU timestamp sample counts")
 
 
-def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
+def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
     profiles = []
@@ -222,7 +222,8 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
             sock.close()
         try:
             for i, port in enumerate(ports):
-                prefix = "native" if native_probe is not None else ("wrapper" if wrapper_only else "multi")
+                prefix = ("native" if native_probe is not None else "wrapper" if wrapper_only
+                          else "workspace" if workspace else "multi")
                 profile = root / f"{prefix}-{i}.vv"
                 profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
                 profiles.append(profile)
@@ -265,7 +266,8 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
                 env["G_DEBUG"] = "fatal-criticals"
                 command = [str(native_probe), str(root / "trusted.pem"), *map(str, ports)]
             else:
-                mode = "--loopback-spice-wrapper-probe" if wrapper_only else "--loopback-spice-multi-probe"
+                mode = ("--loopback-spice-wrapper-probe" if wrapper_only else
+                        "--loopback-spice-workspace-probe" if workspace else "--loopback-spice-multi-probe")
                 command = [str(exe), mode, *map(str, profiles)]
             result = subprocess.run(command, cwd=root, env=env,
                                     capture_output=True, text=True, timeout=110)
@@ -290,6 +292,16 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
             elif wrapper_only:
                 if "MRV_WRAPPER_MULTI_OK" not in lines:
                     raise AssertionError("wrapper multi: missing success marker")
+            elif workspace:
+                switches = [line for line in lines if line.startswith("MRV_WORKSPACE_SWITCH_OK ")]
+                expected = [f"MRV_WORKSPACE_SWITCH_OK step={step} selected={selected} live=4"
+                            for step, selected in enumerate((0, 1, 2, 3, 0, 2, 1, 3))]
+                if switches != expected:
+                    raise AssertionError("workspace: incomplete SwiftUI selection checks")
+                for marker in ("MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3",
+                               "MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2", "MRV_WORKSPACE_OK"):
+                    if lines.count(marker) != 1:
+                        raise AssertionError(f"workspace: missing {marker}")
             else:
                 phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
                 if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:
@@ -329,6 +341,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
                 raise AssertionError(f"{log.stem}: invalid draw lifecycle")
     print("Native four-session channel checks passed." if native_probe is not None
           else ("Wrapper four-session channel checks passed." if wrapper_only
+                else "Real SwiftUI workspace checks passed." if workspace
                 else "Real four-session display isolation checks passed."))
 
 
@@ -365,6 +378,11 @@ def main():
         except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             failures.append(f"app: {exc}")
             print(f"MRV_APP_FAILURE {exc}", flush=True)
+        try:
+            test_multi(args.app.resolve(), root, fixture, workspace=True)
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"workspace: {exc}")
+            print(f"MRV_WORKSPACE_FAILURE {exc}", flush=True)
         if failures:
             raise AssertionError("; ".join(failures))
     print("Real SPICE ticket authentication and reconnect checks passed.")

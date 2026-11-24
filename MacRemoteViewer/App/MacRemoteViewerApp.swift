@@ -63,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ["--startup-smoke-test", "--loopback-tls-probe",
          "--loopback-spice-auth-probe", "--loopback-spice-display-probe",
          "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
-         "--loopback-spice-partial-probe"].contains($0)
+         "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -129,11 +129,190 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackSpiceWrapperProbe(files: arguments[(index + 1)...].map {
                 URL(fileURLWithPath: $0)
             })
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-workspace-probe") {
+            guard arguments.count == index + 5 else { Darwin.exit(2) }
+            runLoopbackSpiceWorkspaceProbe(files: arguments[(index + 1)...].map {
+                URL(fileURLWithPath: $0)
+            })
         } else if let index = arguments.firstIndex(of: "--loopback-spice-multi-probe") {
             guard arguments.count == index + 5 else { Darwin.exit(2) }
             runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
                 URL(fileURLWithPath: $0)
             })
+        }
+    }
+
+    /// Host the production SwiftUI workspace in an isolated test window. The
+    /// normal application scene remains empty; no second renderer per session.
+    private func runLoopbackSpiceWorkspaceProbe(files: [URL]) {
+        Task { @MainActor in
+            let workspaceModel = AppModel()
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 960, height: 720),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: ContentView()
+                .environment(workspaceModel)
+                .environment(workspaceModel.settings)
+                .environment(\.locale, workspaceModel.settings.language.locale))
+            window.contentView = host
+            let expected: [Set<UInt32>] = [
+                [0xff0000, 0x00ff00], [0x0000ff, 0xffff00],
+                [0x00ffff, 0xff00ff], [0xffffff, 0x808080],
+            ]
+            var observed = Array(repeating: Set<UInt32>(), count: 4)
+            var foreign = Set<Int>()
+            var identities: [String: ObjectIdentifier] = [:]
+            var original: [SessionController] = []
+            var live = Set(0..<4)
+
+            @MainActor func canvases(in view: NSView) -> [RemoteCanvasView] {
+                if let canvas = view as? RemoteCanvasView { return [canvas] }
+                return view.subviews.flatMap { canvases(in: $0) }
+            }
+            @MainActor func cleanup() {
+                for canvas in canvases(in: host) { canvas.setSmokePixelHandler(nil) }
+                for session in workspaceModel.sessions { workspaceModel.closeSession(session.sessionID) }
+                window.orderOut(nil)
+            }
+
+            do {
+                let profiles = try files.map { file in
+                    let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                    let profile = try VVParser().parse(data: data)
+                    guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                          profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
+                        throw SessionError.cancelled
+                    }
+                    return profile
+                }
+                guard profiles.count == 4, Set(profiles.map(\.tlsPort)).count == 4,
+                      Set(profiles.map(\.sessionID)).count == 4, model.sessions.isEmpty else {
+                    throw SessionError.cancelled
+                }
+                window.makeKeyAndOrderFront(nil)
+                workspaceModel.workspace.open(profiles)
+                original = workspaceModel.sessions
+                guard original.count == 4 else { throw SessionError.cancelled }
+
+                // Discover actual NSViewRepresentable children; do not create or
+                // attach a renderer manually, and never setActive from the probe.
+                let mountDeadline = ContinuousClock.now + .seconds(15)
+                while ContinuousClock.now < mountDeadline {
+                    let views = canvases(in: host)
+                    if views.count == 4 && Set(views.compactMap { $0.controller?.sessionID }).count == 4 {
+                        for view in views {
+                            guard let id = view.controller?.sessionID,
+                                  let i = original.firstIndex(where: { $0.sessionID == id }) else {
+                                throw SessionError.cancelled
+                            }
+                            identities[id] = ObjectIdentifier(view)
+                            view.setSmokePixelHandler { pixel, _ in
+                                let rgb = pixel & 0x00ffffff
+                                if expected[i].contains(rgb) { observed[i].insert(rgb) }
+                                else if rgb != 0 { foreign.insert(i) }
+                            }
+                        }
+                        break
+                    }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                guard identities.count == 4 else { throw SessionError.displayTimeout }
+
+                @MainActor func validateSelection(_ selected: Int) async throws {
+                    let selectedID = original[selected].sessionID
+                    let deadline = ContinuousClock.now + .seconds(10)
+                    var armed = false
+                    while ContinuousClock.now < deadline {
+                        guard foreign.isEmpty, model.sessions.isEmpty,
+                              workspaceModel.selectedSessionID == selectedID,
+                              workspaceModel.sessions.count == live.count else {
+                            throw SessionError.cancelled
+                        }
+                        for i in live {
+                            if case .failed = original[i].state { throw SessionError.network }
+                            if original[i].state == .disconnected { throw SessionError.disconnected }
+                        }
+                        let views = canvases(in: host)
+                        let ids = Set(views.compactMap { $0.controller?.sessionID })
+                        let expectedIDs = Set(live.map { original[$0].sessionID })
+                        var ready = views.count == live.count && ids == expectedIDs
+                        for view in views {
+                            guard let id = view.controller?.sessionID, expectedIDs.contains(id) else {
+                                ready = false
+                                continue
+                            }
+                            guard identities[id] == ObjectIdentifier(view) else {
+                                print("MRV_WORKSPACE_RECREATED")
+                                throw SessionError.cancelled
+                            }
+                            let active = id == selectedID
+                            if view.window !== window || view.isActive != active ||
+                                view.preferredFramesPerSecond != (active ? 60 : 15) {
+                                ready = false
+                            }
+                        }
+                        ready = ready && live.allSatisfy {
+                            original[$0].state == .connected &&
+                            original[$0].displaySize == RemoteFrame(width: 640, height: 480)
+                        }
+                        if ready {
+                            if !armed {
+                                observed[selected].removeAll()
+                                armed = true
+                            } else if observed[selected] == expected[selected] && original[selected].hasRenderedFrame {
+                                return
+                            }
+                        } else {
+                            armed = false
+                        }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    print("MRV_WORKSPACE_TIMEOUT selected=\(selected) live=\(live.count) views=\(canvases(in: host).count) colors=\(observed[selected].count)")
+                    throw SessionError.displayTimeout
+                }
+
+                // Use exactly the model API used by the production tab buttons.
+                for (step, selected) in [0, 1, 2, 3, 0, 2, 1, 3].enumerated() {
+                    workspaceModel.selectSession(original[selected].sessionID)
+                    try await validateSelection(selected)
+                    print("MRV_WORKSPACE_SWITCH_OK step=\(step) selected=\(selected) live=4")
+                }
+                // Closing a background session must retain selection and views.
+                workspaceModel.closeSession(original[1].sessionID)
+                live.remove(1)
+                try await validateSelection(3)
+                guard original[1].state == .disconnected, original[1].displaySize == nil else {
+                    throw SessionError.cancelled
+                }
+                print("MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3")
+                // Closing selected last tab selects its immediate predecessor.
+                workspaceModel.closeSession(original[3].sessionID)
+                live.remove(3)
+                try await validateSelection(2)
+                guard original[3].state == .disconnected, original[3].displaySize == nil else {
+                    throw SessionError.cancelled
+                }
+                print("MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2")
+                cleanup()
+                let deadline = ContinuousClock.now + .seconds(5)
+                while !canvases(in: host).isEmpty && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                guard workspaceModel.sessions.isEmpty, workspaceModel.selectedSessionID == nil,
+                      canvases(in: host).isEmpty, model.sessions.isEmpty,
+                      original.allSatisfy({ $0.state == .disconnected && $0.displaySize == nil }) else {
+                    throw SessionError.cancelled
+                }
+                print("MRV_PROBE_WORKSPACE_EMPTY")
+                print("MRV_WORKSPACE_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                print("MRV_WORKSPACE_FAILED error=\(error)")
+                cleanup()
+                fflush(nil)
+                Darwin.exit(1)
+            }
         }
     }
 
