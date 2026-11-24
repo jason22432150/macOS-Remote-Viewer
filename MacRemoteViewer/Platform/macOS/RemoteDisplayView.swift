@@ -52,6 +52,7 @@ final class RemoteCanvasView: MTKView {
 
     func setActive(_ active: Bool) {
         guard isActive != active else { return }
+        if !active { releaseKeys() }
         isActive = active
         if active {
             window?.makeFirstResponder(self)
@@ -110,11 +111,12 @@ final class RemoteCanvasView: MTKView {
               frame.height > 0,
               drawableSize.width > 0,
               drawableSize.height > 0
-        else { return }
+        else { mapping = nil; return }
         let next = GuestPointerMapping.aspectFit(
             displaySize: CGSize(width: frame.width, height: frame.height),
             drawableSize: drawableSize
         )
+        guard mapping != next else { return }
         mapping = next
         renderer.viewportScale = next.viewportScale
         renderer.viewportOrigin = next.viewportOrigin
@@ -154,6 +156,7 @@ final class RemoteCanvasView: MTKView {
             )
         }
         if newWindow == nil {
+            releaseKeys()
             showLocalCursor()
             // 只在分頁關閉、視圖真正離開視窗時卸 renderer；切分頁不可走這條路。
             if let metalRenderer {
@@ -193,6 +196,7 @@ final class RemoteCanvasView: MTKView {
 
     /// 失去 key window 時立刻顯示本機游標，避免 NSCursor.hide 殘留到其他 App。
     @objc private func windowDidResignKey(_ notification: Notification) {
+        releaseKeys()
         showLocalCursor()
     }
 
@@ -200,6 +204,10 @@ final class RemoteCanvasView: MTKView {
     override func mouseDown(with event: NSEvent) {
         guard isActive else { return }
         window?.makeFirstResponder(self)
+        if router?.captured == false {
+            router?.captured = true
+            return
+        }
         handleMouse(event)
     }
     override func mouseUp(with event: NSEvent) { handleMouse(event) }
@@ -249,7 +257,8 @@ final class RemoteCanvasView: MTKView {
     }
 
     private func handleMouse(_ event: NSEvent) {
-        guard isActive, let controller, let router else { return }
+        guard isActive, let controller, let router, router.captured,
+              controller.state == .connected else { return }
         updateViewport()
         if let mapping {
             let location = convert(event.locationInWindow, from: nil)
@@ -285,7 +294,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     private func sendKey(_ event: NSEvent) {
-        guard isActive, let controller, let router else { return }
+        guard isActive, let controller, let router, router.captured else { return }
         for key in router.keyEvents(from: event) {
             controller.sendKey(key)
         }
@@ -303,9 +312,7 @@ final class RemoteCanvasView: MTKView {
             return true
         }
         if router.matches(profile.releaseCursor, event: event) {
-            router.captured = false
-            showLocalCursor()
-            window?.makeFirstResponder(nil)
+            releaseCapture()
             return true
         }
         if router.matches(profile.secureAttention, event: event) {
@@ -315,10 +322,18 @@ final class RemoteCanvasView: MTKView {
         return false
     }
 
+    func releaseCapture() {
+        router?.captured = false
+        releaseKeys()
+        showLocalCursor()
+        window?.makeFirstResponder(nil)
+    }
+
     private func releaseKeys() {
         guard let controller, let router else { return }
         for event in router.releaseAll() {
             controller.sendKey(event)
         }
+        controller.releaseKeys()
     }
 }

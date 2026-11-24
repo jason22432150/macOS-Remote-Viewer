@@ -69,6 +69,20 @@ final class KeyboardMappingTests: XCTestCase {
         XCTAssertEqual(events, [KeyEvent(pressed: true, scancode: 0x1D)])
     }
 
+    func testReleasingLeftShiftWhileRightShiftRemainsDown() {
+        var pressed: Set<Int> = [0x2A, 0x36]
+        let events = KeyboardMapping.flagsChangedEvents(macKeyCode: 56, control: false,
+            option: false, shift: true, command: false, pressedScancodes: &pressed,
+            individualModifierDown: false)
+        XCTAssertEqual(events, [KeyEvent(pressed: false, scancode: 0x2A)])
+        XCTAssertEqual(pressed, [0x36])
+    }
+
+    func testKeypadMappings() {
+        XCTAssertEqual(KeyboardMapping.xtScancode(forMacKeyCode: 82), 0x52)
+        XCTAssertEqual(KeyboardMapping.xtScancode(forMacKeyCode: 76), 0x11C)
+    }
+
     func testLetterAUsesXTScancode() {
         XCTAssertEqual(KeyboardMapping.xtScancode(forMacKeyCode: 0), 0x1E)
     }

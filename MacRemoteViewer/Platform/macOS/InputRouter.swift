@@ -95,7 +95,8 @@ final class InputRouter {
                 option: flags.contains(.option),
                 shift: flags.contains(.shift),
                 command: flags.contains(.command),
-                pressedScancodes: &pressedScancodes
+                pressedScancodes: &pressedScancodes,
+                individualModifierDown: Self.individualModifierDown(event)
             )
         }
 
@@ -160,6 +161,20 @@ final class InputRouter {
         case .unnamed:
             return false
         }
+    }
+
+    // NX device-dependent modifier bits distinguish the physical left/right keys.
+    private static func individualModifierDown(_ event: NSEvent) -> Bool? {
+        let pairs: [UInt16: (UInt, UInt)] = [
+            59: (0x0001, 0x2000), 62: (0x2000, 0x0001),
+            56: (0x0002, 0x0004), 60: (0x0004, 0x0002),
+            55: (0x0008, 0x0010), 54: (0x0010, 0x0008),
+            58: (0x0020, 0x0040), 61: (0x0040, 0x0020)
+        ]
+        guard let (own, other) = pairs[event.keyCode] else { return nil }
+        let raw = event.modifierFlags.rawValue
+        guard raw & (own | other) != 0 else { return nil }
+        return raw & own != 0
     }
 
     private static func isButtonUp(_ event: NSEvent) -> Bool {

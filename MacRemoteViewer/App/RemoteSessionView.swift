@@ -3,7 +3,7 @@ import SwiftUI
 struct RemoteSessionView: View {
     @Environment(AppModel.self) private var model
     var controller: SessionController
-    var router: InputRouter
+    @State private var router = InputRouter()
     var isActive: Bool = true
 
     private var language: AppLanguage { model.settings.language }
@@ -26,6 +26,17 @@ struct RemoteSessionView: View {
             statusBar
         }
         .navigationTitle(controller.profile?.title ?? "SPICE")
+        .onAppear { syncMouseInput() }
+        .onChange(of: model.settings.preferences) { _, _ in syncMouseInput() }
+    }
+
+    private func syncMouseInput() {
+        let preferences = model.settings.preferences
+        router.invertScrollWheel = preferences.invertScrollWheel
+        router.mouseWheelSensitivity = preferences.mouseWheelSensitivity
+        router.trackpadScrollSensitivity = preferences.trackpadScrollSensitivity
+        router.sideButton4 = preferences.sideButton4
+        router.sideButton5 = preferences.sideButton5
     }
 
     private var showsOverlay: Bool {
@@ -42,6 +53,7 @@ struct RemoteSessionView: View {
             Button(L10n.string(.close, language: language)) { model.closeSession(controller.sessionID) }
             Spacer()
             Button(L10n.string(.ctrlAltDel, language: language)) { controller.sendSecureAttention() }
+                .disabled(controller.state != .connected)
             Button(L10n.string(.fullscreen, language: language)) { NSApp.keyWindow?.toggleFullScreen(nil) }
         }
         .padding(8)

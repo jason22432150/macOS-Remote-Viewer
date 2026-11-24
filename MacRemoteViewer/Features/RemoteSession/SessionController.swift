@@ -122,6 +122,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     public func sendSecureAttention() {
+        guard state == .connected else { return }
         engine.sendCtrlAltDelete()
     }
 
@@ -168,6 +169,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     public func engineDidDisconnect() {
+        guard state == .connecting || state == .connected else { return }
         resolutionTask?.cancel()
         resolutionTask = nil
         resolutionRetryTask?.cancel()

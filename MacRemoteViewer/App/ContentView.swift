@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
-    @State private var router = InputRouter()
 
     var body: some View {
         Group {
@@ -15,11 +14,6 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 560)
-        .onAppear { syncMouseInput() }
-        // 監看整包 preferences，之後新增滑鼠相關欄位時不必再漏接 onChange。
-        .onChange(of: model.settings.preferences) { _, _ in
-            syncMouseInput()
-        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
@@ -55,7 +49,6 @@ struct ContentView: View {
                 ForEach(model.sessions) { session in
                     RemoteSessionView(
                         controller: session,
-                        router: router,
                         isActive: session.sessionID == model.selectedSessionID
                     )
                     .zIndex(session.sessionID == model.selectedSessionID ? 1 : 0)
@@ -63,15 +56,6 @@ struct ContentView: View {
                 }
             }
         }
-    }
-
-    private func syncMouseInput() {
-        let preferences = model.settings.preferences
-        router.invertScrollWheel = preferences.invertScrollWheel
-        router.mouseWheelSensitivity = preferences.mouseWheelSensitivity
-        router.trackpadScrollSensitivity = preferences.trackpadScrollSensitivity
-        router.sideButton4 = preferences.sideButton4
-        router.sideButton5 = preferences.sideButton5
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {

@@ -31,8 +31,12 @@ struct MacRemoteViewerApp: App {
                 }
                 .disabled(appDelegate.model.session == nil)
                 Button(L10n.string(.releasePointer, language: appDelegate.model.settings.language)) {
-                    appDelegate.model.session?.releaseKeys()
-                    NSApp.keyWindow?.makeFirstResponder(nil)
+                    if let canvas = NSApp.keyWindow?.firstResponder as? RemoteCanvasView {
+                        canvas.releaseCapture()
+                    } else {
+                        appDelegate.model.session?.releaseKeys()
+                        NSApp.keyWindow?.makeFirstResponder(nil)
+                    }
                 }
             }
         }

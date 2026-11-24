@@ -16,17 +16,18 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private var pendingRenderer: CSRenderer?
     private var pendingResolution: CGSize?
     private var lastGuestPoint: CGPoint?
-    private var workerStarted = false
+    private static var workerStarted = false
+    private var pressedMouseMask: UInt32 = 0
     /// 預設開啟；workspace 會在多 session 時只留給作用中分頁。
-    private var clipboardSharingEnabled = true
+    private var clipboardSharingEnabled = false
 
     func startWorker() throws {
-        if workerStarted { return }
+        if Self.workerStarted { return }
         CSMain.shared.spiceSetDebug(false)
         guard CSMain.shared.spiceStart() else {
             throw SessionError.engineUnavailable
         }
-        workerStarted = true
+        Self.workerStarted = true
     }
 
     func connect(profile: ConnectionProfile) throws {
@@ -58,7 +59,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     func disconnect() {
-        input?.releaseKeys()
+        releaseKeys()
         spicePasteboard.stopPolling()
         connection?.session.shareClipboard = false
         connection?.session.pasteboardDelegate = nil
@@ -74,9 +75,9 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
 
     func sendMouse(_ event: MouseEvent) {
         guard let input else { return }
-        let mask = CSInputButton(rawValue: UInt(event.buttonMask))
         switch event.kind {
         case .move:
+            let mask = CSInputButton(rawValue: UInt(pressedMouseMask))
             if input.serverModeCursor {
                 let previous = lastGuestPoint ?? event.point
                 let delta = CGPoint(x: event.point.x - previous.x, y: event.point.y - previous.y)
@@ -91,12 +92,20 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
             // 只能送剛變化的那一顆 bit；複合 mask 當 button id 時 SPICE 會解成無效值。
             let button = CSInputButton(rawValue: UInt(event.button))
             guard !button.isEmpty else { return }
+            if event.kind == .down {
+                guard pressedMouseMask & event.button == 0 else { return }
+                pressedMouseMask |= event.button
+            } else {
+                guard pressedMouseMask & event.button != 0 else { return }
+                pressedMouseMask &= ~event.button
+            }
+            let mask = CSInputButton(rawValue: UInt(pressedMouseMask))
             input.sendMouseButton(button, mask: mask, pressed: event.kind == .down)
             if !input.serverModeCursor {
                 display?.cursor?.move(to: event.point)
             }
         case .scroll:
-            input.sendMouseScroll(.smooth, buttonMask: mask, dy: event.scrollDelta)
+            input.sendMouseScroll(.smooth, buttonMask: CSInputButton(rawValue: UInt(pressedMouseMask)), dy: event.scrollDelta)
         }
     }
 
@@ -112,6 +121,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
 
     func releaseKeys() {
         input?.releaseKeys()
+        for bit in [MouseButtonMapping.left, MouseButtonMapping.middle, MouseButtonMapping.right,
+                    MouseButtonMapping.side, MouseButtonMapping.extra] where pressedMouseMask & bit != 0 {
+            pressedMouseMask &= ~bit
+            input?.sendMouseButton(CSInputButton(rawValue: UInt(bit)),
+                                   mask: CSInputButton(rawValue: UInt(pressedMouseMask)), pressed: false)
+        }
+        pressedMouseMask = 0
+        lastGuestPoint = nil
     }
 
     func sendCtrlAltDelete() {
@@ -158,12 +175,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     private func applyClipboardSharing(to connection: CSConnection) {
-        connection.session.shareClipboard = clipboardSharingEnabled
-        connection.session.pasteboardDelegate = clipboardSharingEnabled ? spicePasteboard : nil
         if clipboardSharingEnabled {
             spicePasteboard.startPolling()
+            connection.session.pasteboardDelegate = spicePasteboard
+            connection.session.shareClipboard = true
         } else {
             spicePasteboard.stopPolling()
+            connection.session.shareClipboard = false
+            connection.session.pasteboardDelegate = nil
         }
     }
 
@@ -204,6 +223,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     nonisolated func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {
         hopToMain(from: connection) { adapter in
             if adapter.input === input {
+                adapter.pressedMouseMask = 0
+                adapter.lastGuestPoint = nil
                 adapter.input = nil
             }
         }
