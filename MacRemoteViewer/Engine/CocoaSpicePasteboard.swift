@@ -3,140 +3,137 @@ import Foundation
 import os
 import CocoaSpiceNoUsb
 
-/// CocoaSpice 的 `CSPasteboardDelegate`：直接對 `NSPasteboard.general` 做雙向同步。
-///
-/// GLib worker 可能呼叫這些方法，因此 pasteboard 存取一律轉到主執行緒。
+/// The GLib worker never waits synchronously for the main thread.
+/// Each activation has a generation; queued writes from old tabs are discarded.
 final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sendable {
-    private let pasteboard = NSPasteboard.general
-    private let lastChangeCount = OSAllocatedUnfairLock(initialState: 0)
-    private var pollTask: Task<Void, Never>?
+    private struct Snapshot: Sendable {
+        var enabled = false
+        var generation: UInt64 = 0
+        var changeCount = -1
+        var items: [String: Data] = [:]
+    }
 
-    func startPolling() {
-        lastChangeCount.withLock { $0 = readChangeCount() }
-        pollTask?.cancel()
-        pollTask = Task { [weak self] in
+    private let snapshot = OSAllocatedUnfairLock(initialState: Snapshot())
+    @MainActor private var pollTask: Task<Void, Never>?
+    private static let maxItemBytes = 16 * 1024 * 1024
+
+    @MainActor func startPolling() {
+        guard !snapshot.withLock({ $0.enabled }) else { return }
+        snapshot.withLock {
+            $0.enabled = true
+            $0.generation &+= 1
+            $0.changeCount = -1
+        }
+        refresh(announce: false)
+        pollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    self?.announceIfChanged()
-                }
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                self.refresh(announce: true)
             }
         }
     }
 
-    func stopPolling() {
+    @MainActor func stopPolling() {
+        snapshot.withLock {
+            $0.enabled = false
+            $0.generation &+= 1
+            $0.items.removeAll()
+            $0.changeCount = -1
+        }
         pollTask?.cancel()
         pollTask = nil
     }
 
-    // MARK: - CSPasteboardDelegate
-
     func canReadItem(for type: CSPasteboardType) -> Bool {
-        guard let pasteboardType = type.pasteboardType else { return false }
-        return onMain {
-            (self.pasteboard.types ?? []).contains(pasteboardType)
-        }
+        guard let key = type.pasteboardType?.rawValue else { return false }
+        return snapshot.withLock { $0.enabled && $0.items[key] != nil }
     }
 
     func data(for type: CSPasteboardType) -> Data? {
-        onMain {
-            if type == .string, let text = self.pasteboard.string(forType: .string) {
-                return Data(text.utf8)
-            }
-            guard let pasteboardType = type.pasteboardType else { return nil }
-            return self.pasteboard.data(forType: pasteboardType)
-        }
-    }
-
-    func setData(_ data: Data, for type: CSPasteboardType) {
-        onMainWrite {
-            if type == .string, let text = String(data: data, encoding: .utf8) {
-                self.writeString(text)
-                return
-            }
-            guard let pasteboardType = type.pasteboardType else { return }
-            self.pasteboard.clearContents()
-            self.pasteboard.setData(data, forType: pasteboardType)
-            self.rememberChangeCount()
-        }
+        guard let key = type.pasteboardType?.rawValue else { return nil }
+        return snapshot.withLock { $0.enabled ? $0.items[key] : nil }
     }
 
     func string() -> String? {
-        onMain { self.pasteboard.string(forType: .string) }
+        guard let data = data(for: .string) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func setData(_ data: Data, for type: CSPasteboardType) {
+        guard data.count <= Self.maxItemBytes else { return }
+        if type == .string {
+            guard let text = String(data: data, encoding: .utf8) else { return }
+            setString(text)
+            return
+        }
+        guard let key = type.pasteboardType?.rawValue else { return }
+        enqueueWrite { pasteboard in
+            pasteboard.clearContents()
+            pasteboard.setData(data, forType: NSPasteboard.PasteboardType(key))
+        }
     }
 
     func setString(_ string: String) {
-        onMainWrite { self.writeString(string) }
+        guard string.utf8.count <= Self.maxItemBytes else { return }
+        enqueueWrite { pasteboard in
+            pasteboard.clearContents()
+            pasteboard.setString(string, forType: .string)
+        }
     }
 
     func clearContents() {
-        onMainWrite {
-            self.pasteboard.clearContents()
-            self.rememberChangeCount()
+        enqueueWrite { $0.clearContents() }
+    }
+
+    private func enqueueWrite(_ body: @escaping @MainActor @Sendable (NSPasteboard) -> Void) {
+        guard let generation = snapshot.withLock({ $0.enabled ? $0.generation : nil }) else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.snapshot.withLock({ $0.enabled && $0.generation == generation }) else { return }
+            body(NSPasteboard.general)
+            self.refresh(announce: false)
         }
     }
 
-    // MARK: - Private
+    @MainActor private func refresh(announce: Bool) {
+        let pasteboard = NSPasteboard.general
+        let count = pasteboard.changeCount
+        guard let generation = snapshot.withLock({ state -> UInt64? in
+            guard state.enabled, state.changeCount != count else { return nil }
+            return state.generation
+        }) else { return }
 
-    private func announceIfChanged() {
-        let current = readChangeCount()
-        let previous = lastChangeCount.withLock { stored -> Int in
-            let old = stored
-            stored = current
-            return old
+        var items: [String: Data] = [:]
+        if let string = pasteboard.string(forType: .string), string.utf8.count <= Self.maxItemBytes {
+            items[NSPasteboard.PasteboardType.string.rawValue] = Data(string.utf8)
         }
-        guard current != previous else { return }
-        // CSSession 監聽此通知後對 guest 做 clipboard grab。
-        NotificationCenter.default.post(name: .csPasteboardChanged, object: self)
-    }
-
-    private func writeString(_ text: String) {
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        rememberChangeCount()
-    }
-
-    private func rememberChangeCount() {
-        lastChangeCount.withLock { $0 = pasteboard.changeCount }
-    }
-
-    private func readChangeCount() -> Int {
-        onMain { self.pasteboard.changeCount }
-    }
-
-    private func onMain<T>(_ body: () -> T) -> T {
-        if Thread.isMainThread {
-            return body()
+        let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, .init("public.jpeg"), .init("com.microsoft.bmp")]
+        for type in imageTypes where pasteboard.types?.contains(type) == true {
+            if let data = pasteboard.data(forType: type), data.count <= Self.maxItemBytes {
+                items[type.rawValue] = data
+            }
         }
-        return DispatchQueue.main.sync(execute: body)
-    }
-
-    /// 寫入走 async，避免 GLib worker 在 disconnect 期間 `main.sync` 與 `CSMain.syncWith` 互鎖。
-    private func onMainWrite(_ body: @escaping @Sendable () -> Void) {
-        if Thread.isMainThread {
-            body()
-            return
+        let changed = snapshot.withLock { state -> Bool in
+            guard state.enabled, state.generation == generation else { return false }
+            state.changeCount = count
+            state.items = items
+            return true
         }
-        DispatchQueue.main.async(execute: body)
+        if announce && changed {
+            NotificationCenter.default.post(name: .csPasteboardChanged, object: self)
+        }
     }
 }
 
 private extension CSPasteboardType {
     var pasteboardType: NSPasteboard.PasteboardType? {
         switch self {
-        case .string:
-            return .string
-        case .png:
-            return .png
-        case .tiff:
-            return .tiff
-        case .jpg:
-            return NSPasteboard.PasteboardType("public.jpeg")
-        case .bmp:
-            return NSPasteboard.PasteboardType("com.microsoft.bmp")
-        default:
-            return nil
+        case .string: return .string
+        case .png: return .png
+        case .tiff: return .tiff
+        case .jpg: return NSPasteboard.PasteboardType("public.jpeg")
+        case .bmp: return NSPasteboard.PasteboardType("com.microsoft.bmp")
+        default: return nil
         }
     }
 }
