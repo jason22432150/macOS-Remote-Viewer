@@ -171,8 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             @MainActor func cleanup() {
                 for canvas in canvases(in: host) { canvas.setSmokePixelHandler(nil) }
-                for session in workspaceModel.sessions { workspaceModel.closeSession(session.sessionID) }
-                window.orderOut(nil)
+                // Keep the host window visible while SwiftUI reconciles the
+                // empty workspace. Hiding it here can suspend view updates or
+                // let the app terminate before the final assertions run.
+                for id in workspaceModel.sessions.map(\.sessionID) {
+                    workspaceModel.closeSession(id)
+                }
             }
 
             do {
@@ -293,24 +297,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     throw SessionError.cancelled
                 }
                 print("MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2")
+                print("MRV_WORKSPACE_CLEANUP_BEGIN")
+                fflush(nil)
                 cleanup()
                 let deadline = ContinuousClock.now + .seconds(5)
                 while !canvases(in: host).isEmpty && ContinuousClock.now < deadline {
                     try await Task.sleep(for: .milliseconds(50))
                 }
+                let remainingViews = canvases(in: host).count
+                let disconnected = original.filter {
+                    $0.state == .disconnected && $0.displaySize == nil && !$0.hasRenderedFrame
+                }.count
+                print("MRV_WORKSPACE_CLEANUP_STATE sessions=\(workspaceModel.sessions.count) views=\(remainingViews) disconnected=\(disconnected) normal=\(model.sessions.count)")
                 guard workspaceModel.sessions.isEmpty, workspaceModel.selectedSessionID == nil,
-                      canvases(in: host).isEmpty, model.sessions.isEmpty,
-                      original.allSatisfy({ $0.state == .disconnected && $0.displaySize == nil }) else {
+                      remainingViews == 0, model.sessions.isEmpty, disconnected == original.count,
+                      foreign.isEmpty else {
                     throw SessionError.cancelled
                 }
                 print("MRV_PROBE_WORKSPACE_EMPTY")
                 print("MRV_WORKSPACE_OK")
                 fflush(nil)
+                window.orderOut(nil)
                 Darwin.exit(0)
             } catch {
                 print("MRV_WORKSPACE_FAILED error=\(error)")
                 cleanup()
                 fflush(nil)
+                window.orderOut(nil)
                 Darwin.exit(1)
             }
         }
@@ -825,7 +838,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // Probe completion must be explicit; a last-window event must never
+        // convert an unfinished integration test into a zero exit status.
+        !isIntegrationProbe
     }
 
     /// 開檔回呼可能早於 SwiftUI 建立視窗；沒有可顯示視窗時下一輪再試。

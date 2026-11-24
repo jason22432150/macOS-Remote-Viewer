@@ -299,7 +299,10 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 if switches != expected:
                     raise AssertionError("workspace: incomplete SwiftUI selection checks")
                 for marker in ("MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3",
-                               "MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2", "MRV_WORKSPACE_OK"):
+                               "MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2",
+                               "MRV_WORKSPACE_CLEANUP_BEGIN",
+                               "MRV_WORKSPACE_CLEANUP_STATE sessions=0 views=0 disconnected=4 normal=0",
+                               "MRV_WORKSPACE_OK"):
                     if lines.count(marker) != 1:
                         raise AssertionError(f"workspace: missing {marker}")
             else:
