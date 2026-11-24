@@ -761,6 +761,158 @@ def overlay_input_release_and_secure_attention(checkout: Path) -> None:
     ])
 
 
+def overlay_canvas_gpu_lifetime(checkout: Path) -> None:
+    """Own CPU staging memory; never wait for an AppKit draw on the GLib worker."""
+    display = checkout / "Sources" / "CocoaSpice" / "CSDisplay.m"
+    metal = checkout / "Sources" / "CocoaSpiceRenderer" / "CSMetalRenderer.m"
+    _replace_once(display, [
+        ('#import "CSDisplay+Renderer_Protected.h"', '#import "CSDisplay+Renderer_Protected.h"\n#import <math.h>'),
+        ("""    if (self.canvasIsBusy) {
+        dispatch_semaphore_t invalidateComplete = dispatch_semaphore_create(0);
+        [self invalidateWithCompletion:^{
+            dispatch_semaphore_signal(invalidateComplete);
+        }];
+        dispatch_semaphore_wait(invalidateComplete, DISPATCH_TIME_FOREVER);
+    }
+    [self disableScanout];""",
+         """    // Staging buffers are Metal-owned, not aliases of SPICE surface memory.
+    // An in-flight GPU command retains its old buffer; no UI-thread wait is needed.
+    self.canvasIsBusy = NO;
+    self.canvasTexture = nil;
+    [self disableScanout];"""),
+        ("""    MTLTextureDescriptor *textureDescriptor = [[MTLTextureDescriptor alloc] init];
+    // don't worry that that components are reversed, we fix it in shaders""",
+         """    // Bound allocation before converting dimensions or multiplying stride.
+    const NSUInteger maxCanvasBytes = 256u * 1024u * 1024u;
+    if (!self.canvasData || self.canvasStride <= 0 ||
+        !isfinite(self.canvasArea.size.height) || self.canvasArea.size.height < 1 ||
+        self.canvasArea.size.height > 16384 ||
+        !isfinite(visibleArea.size.width) || !isfinite(visibleArea.size.height) ||
+        visibleArea.size.width < 1 || visibleArea.size.width > 16384 ||
+        visibleArea.size.height < 1 || visibleArea.size.height > 16384 ||
+        (NSUInteger)self.canvasStride > maxCanvasBytes / (NSUInteger)self.canvasArea.size.height) {
+        return;
+    }
+    NSUInteger canvasSize = (NSUInteger)self.canvasStride * (NSUInteger)self.canvasArea.size.height;
+    MTLTextureDescriptor *textureDescriptor = [[MTLTextureDescriptor alloc] init];
+    // don't worry that that components are reversed, we fix it in shaders"""),
+        ("""    self.canvasTexture = [self.device newTextureWithDescriptor:textureDescriptor];
+    uintptr_t canvasDataAligned = trunc_page_kernel((uintptr_t)self.canvasData);
+    NSUInteger canvasSize = self.canvasStride * self.canvasArea.size.height;
+    if (!canvasDataAligned || !canvasSize) {
+        return; // it will be freed
+    }
+#if TARGET_OS_SIMULATOR
+    self.canvasBuffer = [self.device newBufferWithBytes:(void *)self.canvasData
+                                                 length:canvasSize
+                                                options:0];
+#else /* !TARGET_OS_SIMULATOR */
+    // round size up to multiple of page size
+    self.canvasBufferOffset = ((uintptr_t)self.canvasData - canvasDataAligned);
+    canvasSize += self.canvasBufferOffset;
+    canvasSize = round_page_kernel(canvasSize);
+    self.canvasBuffer = [self.device newBufferWithBytesNoCopy:(void *)canvasDataAligned
+                                                       length:canvasSize
+#if TARGET_OS_OSX
+                                                      options:MTLResourceStorageModeManaged
+#else
+                                                      options:MTLResourceCPUCacheModeWriteCombined
+#endif
+                                                  deallocator:nil];
+#endif /* TARGET_OS_SIMULATOR */""",
+         """    id<MTLTexture> texture = [self.device newTextureWithDescriptor:textureDescriptor];
+    id<MTLBuffer> buffer = [self.device newBufferWithLength:canvasSize
+                                                   options:MTLResourceStorageModeShared];
+    if (!texture || !buffer) return;
+    // A new staging generation must not inherit busy/dirty state from the old surface.
+    self.canvasIsBusy = NO;
+    self.canvasDirtyRect = CGRectZero;
+    self.canvasTexture = texture;
+    self.canvasBufferOffset = 0;
+    self.canvasBuffer = buffer;"""),
+        ("""#if TARGET_OS_OSX || TARGET_OS_SIMULATOR
+    for (NSUInteger i = 0; i < (NSUInteger)height; i++) {
+        NSUInteger location = self.canvasBufferOffset + offset + i * stride;
+#if TARGET_OS_SIMULATOR
+        memcpy(self.canvasBuffer.contents + location,
+               self.canvasData + offset + i * stride,
+               rowBytes);
+#else /* !TARGET_OS_SIMULATOR */
+        [self.canvasBuffer didModifyRange:NSMakeRange(location, rowBytes)];
+#endif /* TARGET_OS_SIMULATOR */
+    }
+#endif
+    [self copyBuffer:self.canvasBuffer""",
+         """    id<MTLBuffer> submittedBuffer = self.canvasBuffer;
+    for (NSUInteger i = 0; i < (NSUInteger)height; i++) {
+        NSUInteger location = offset + i * stride;
+        memcpy((uint8_t *)submittedBuffer.contents + location,
+               (const uint8_t *)self.canvasData + location, rowBytes);
+    }
+    [self copyBuffer:submittedBuffer"""),
+        ("""        [CSMain.sharedInstance asyncWith:^{
+            CGRect dirtyRect = self.canvasDirtyRect;
+            self.canvasDirtyRect = CGRectZero;
+            self.canvasIsBusy = NO;""",
+         """        [CSMain.sharedInstance asyncWith:^{
+            // A late completion must not clear the busy bit of a new surface.
+            if (self.canvasBuffer != submittedBuffer) return;
+            CGRect dirtyRect = self.canvasDirtyRect;
+            self.canvasDirtyRect = CGRectZero;
+            self.canvasIsBusy = NO;"""),
+    ])
+    _replace_once(metal, [
+        ("""    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+    blitEncoder.label = @"Renderer Canvas Updates";""",
+         """    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+    if (!blitEncoder) {
+        if (completion) completion();
+        return;
+    }
+    blitEncoder.label = @"Renderer Canvas Updates";"""),
+        ("""    [blitEncoder endEncoding];
+
+    [commandBuffer commit];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (completion) {
+            [self _addDrawCompletion:completion];
+        }
+        self.renderSourceData = sourceData;
+        self.renderNeedsUpdate = YES;
+    });""",
+         """    [blitEncoder endEncoding];
+
+    // CPU staging memory may be reused as soon as the GPU finishes reading it.
+    // No drawable, next draw, or main-queue completion is required.
+    if (completion) {
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+            completion();
+        }];
+    }
+    [commandBuffer commit];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.renderSourceData = sourceData;
+        self.renderNeedsUpdate = YES;
+    });"""),
+        ("""    void (^frameHandler)(void) = self.frameRenderedHandler;
+    [commandBuffer addCompletedHandler:""",
+         """    void (^frameHandler)(void) = self.frameRenderedHandler;
+    // Transfer only callbacks submitted with this draw. An older GPU completion
+    // must not drain callbacks added by a newer frame.
+    NSArray<completionCallback_t> *submittedCompletions = [self.renderCompletions copy];
+    [self.renderCompletions removeAllObjects];
+    [commandBuffer addCompletedHandler:"""),
+        ("""            [self _completeDraw];
+            if (rendered && frameHandler)""",
+         """            for (completionCallback_t completion in submittedCompletions) {
+                completion();
+            }
+            if (rendered && frameHandler)"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -775,6 +927,7 @@ def main() -> None:
         checkout / "Sources" / "CocoaSpiceRenderer" / "CSMetalRenderer.m"
     )
     overlay_metal_frame_observation(checkout)
+    overlay_canvas_gpu_lifetime(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)
