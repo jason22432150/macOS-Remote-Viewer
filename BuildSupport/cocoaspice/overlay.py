@@ -52,7 +52,7 @@ def overlay_csmain(checkout: Path) -> None:
         text = text.replace(old, new, 1)
     path.write_text(text)
     _replace_once(path, [
-        ('#import <pthread.h>', '#import <pthread.h>\\n#import <execinfo.h>\\n#import <stdlib.h>\\n#import <unistd.h>'),
+        ('#import <pthread.h>', '#import <pthread.h>\n#import <execinfo.h>\n#import <stdlib.h>\n#import <unistd.h>'),
         ("""    GDateTime *now;
     gchar *dateTimeStr;""",
          """    // Opt-in test diagnostics: no connection properties, credentials or
@@ -60,7 +60,7 @@ def overlay_csmain(checkout: Path) -> None:
     if ((log_level & G_LOG_LEVEL_CRITICAL) && getenv("MRV_GLIB_TRACE")) {
         uint64_t tid = 0;
         pthread_threadid_np(NULL, &tid);
-        fprintf(stderr, "MRV_GLIB_CRITICAL tid=%llu appkit=%d ownsDefault=%d\\\\n",
+        fprintf(stderr, "MRV_GLIB_CRITICAL tid=%llu appkit=%d ownsDefault=%d\\n",
                 (unsigned long long)tid, pthread_main_np(),
                 g_main_context_is_owner(g_main_context_default()));
         void *frames[32];
