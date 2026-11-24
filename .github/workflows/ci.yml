@@ -31,8 +31,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
-      - name: Xcode
-        run: xcodebuild -version
+      - name: Xcode and host architecture
+        run: |
+          xcodebuild -version
+          test "$(uname -m)" = arm64
       - name: Install native dependencies
         run: brew install pkgconf spice-gtk glib gstreamer
       - name: Prepare CocoaSpice and linker settings
@@ -40,7 +42,11 @@ jobs:
           ./BuildSupport/bootstrap-cocoaspice.sh
           ./BuildSupport/generate-xcconfig.sh
       - name: Debug build
-        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Debug -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/mrv-debug" CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Debug -destination 'platform=macOS,arch=arm64' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES -derivedDataPath "$RUNNER_TEMP/mrv-debug" CODE_SIGNING_ALLOWED=NO build
+      - name: Verify Debug executable architecture
+        run: test "$(lipo -archs "$RUNNER_TEMP/mrv-debug/Build/Products/Debug/Mac Remote Viewer.app/Contents/MacOS/Mac Remote Viewer")" = arm64
       - name: Release build
         if: success() || failure()
-        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Release -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/mrv-release" CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Release -destination 'platform=macOS,arch=arm64' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES -derivedDataPath "$RUNNER_TEMP/mrv-release" CODE_SIGNING_ALLOWED=NO build
+      - name: Verify Release executable architecture
+        run: test "$(lipo -archs "$RUNNER_TEMP/mrv-release/Build/Products/Release/Mac Remote Viewer.app/Contents/MacOS/Mac Remote Viewer")" = arm64

@@ -395,7 +395,11 @@ final class SessionControllerTests: XCTestCase {
         controller.updateViewportSize(CGSize(width: 1000, height: 800))
         controller.updateViewportSize(CGSize(width: 1600, height: 900))
         XCTAssertTrue(engine.requestedResolutions.isEmpty)
-        try await Task.sleep(for: .milliseconds(80))
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while engine.requestedResolutions.isEmpty && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1600, height: 900)])
     }
 

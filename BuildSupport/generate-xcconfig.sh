@@ -19,6 +19,13 @@ for module in spice-client-glib-2.0 glib-2.0 gstreamer-1.0; do
   fi
 done
 
+# The supported native distribution uses Apple Silicon Homebrew bottles.
+# Reject mismatched hosts rather than linking an accidental universal binary.
+if [ "$(uname -m)" != arm64 ]; then
+  echo "此建置流程需要原生 Apple Silicon (arm64)，不支援 Rosetta 或 Intel。" >&2
+  exit 1
+fi
+
 cflags="$(pkg-config --cflags spice-client-glib-2.0 glib-2.0 gstreamer-1.0)"
 libs="$(pkg-config --libs spice-client-glib-2.0 glib-2.0 gstreamer-1.0)"
 # Homebrew bottle 以目前 SDK 建置；若仍寫 14.0，ld 會對每個 dylib 發出 version 警告。
@@ -52,6 +59,8 @@ done
   echo "LIBRARY_SEARCH_PATHS = \$(inherited) /opt/homebrew/lib"
   echo "LD_RUNPATH_SEARCH_PATHS = \$(inherited) @executable_path/../Frameworks /opt/homebrew/lib"
   echo "MACOSX_DEPLOYMENT_TARGET = $sdk_version"
+  echo "ARCHS = arm64"
+  echo "ONLY_ACTIVE_ARCH = YES"
   echo "SWIFT_OBJC_BRIDGING_HEADER = MacRemoteViewer/Engine/MacRemoteViewer-Bridging-Header.h"
   echo "SWIFT_STRICT_CONCURRENCY = complete"
   # Xcode 16 mixed Swift/ObjC bridging PCH can load duplicate SPM Clang module maps.
