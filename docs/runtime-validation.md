@@ -76,3 +76,5 @@ CI 以唯讀方式掛載最終 DMG，比對內嵌與獨立 SBOM、檢查 Applica
 SPICE fixture 另提供固定 640×480 CPU Primary Surface（QXL interface）；同一簽署 App、engine、controller 及 RemoteCanvasView 反覆連線兩次。每輪須收到實際 Display Channel 尺寸、成功 Metal command buffer completion、首幀時間，斷線後須清空畫面與首幀狀態。伺服器另核對 TLS Display Channel 事件。這是合成 CPU framebuffer，不驗證影像像素正確性、動畫、GL Scanout、真實螢幕呈現或 Guest OS。原本純認證測試保留。
 
 Display fixture 每 250 ms 送出一個 QXL_DRAW_FILL，輪流填滿紅色與綠色；同時最多 16 個未釋放 command，且最多一個等待 worker 消費；收到 release 才能重用對應記憶體。Metal overlay 僅在明確設定 smokePixelHandler 時從已渲染的 BGRA8 drawable 中心以 GPU blit 讀回一個像素，完成後比對 RGB。每輪須同時觀察兩種預期顏色才算成功；一般 App 未設定 handler，不配置讀回 buffer。這仍是中心像素驗證，並非完整畫面像素比對、實體螢幕掃描輸出、GL Scanout 或真實 Guest 測試。
+
+動態測試改採 QXL_DRAW_COPY + immutable red/green direct bitmap，避免以單色 brush fill 作為唯一更新路徑。fixture 會記錄提交、worker 消費、release 次數及退出狀態；App 記錄有限的實際 RGB 樣本、GPU 讀回不可用狀態與首幀診斷。正常 shader 的非 alpha surface 使用 normalized alpha 1.0。紅／綠都必須符合原本精確 RGB 條件；不允許以超時、黑畫面或僅 GPU completion 代替。

@@ -61,8 +61,8 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
             lines = result.stdout.splitlines()
             expected = "MRV_SPICE_DISPLAY_OK" if display else ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED")
             if result.returncode != 0 or expected not in lines:
-                print(result.stdout[-2000:])
-                print(result.stderr[-2000:])
+                print(result.stdout[-6000:])
+                print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
             if display:
                 rounds = [line for line in lines if line.startswith("MRV_SPICE_DISPLAY_ROUND_OK ")]
@@ -76,20 +76,26 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
                     f"MRV_SPICE_AUTH_ROUND_OK {i}" for i in range(1, 4)]:
                 raise AssertionError("did not complete all three reconnect rounds")
         finally:
-            server.terminate()
+            if server.poll() is None:
+                server.terminate()
             try:
                 server.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 server.kill()
                 server.wait(timeout=5)
+            # Always emit bounded fixture logs, including on client assertion/timeout.
+            print(f"{name}: fixture exit={server.returncode}")
+            print(log.read_text(errors="replace")[-6000:])
         lines = log.read_text(errors="replace").splitlines()
+        if server.returncode != 0:
+            raise AssertionError(f"{name}: fixture exited abnormally")
         initialized = [line for line in lines if line.startswith("MAIN_INITIALIZED ")]
         if display:
             display_channels = [line for line in lines if line.startswith("DISPLAY_INITIALIZED ")]
             if display_channels != ["DISPLAY_INITIALIZED tls=1"] * 2 or "PRIMARY_CREATED 640x480" not in lines:
                 raise AssertionError(f"unexpected display channels: {display_channels}")
         if success and initialized != ["MAIN_INITIALIZED tls=1"] * (2 if display else 3):
-            raise AssertionError(f"{name}: expected three TLS main-channel initializations: {initialized}")
+            raise AssertionError(f"{name}: unexpected TLS main-channel initializations: {initialized}")
         if not success and initialized:
             raise AssertionError(f"{name}: rejected ticket initialized a channel")
         print(f"{name}: authenticated TLS main channels={len(initialized)}")

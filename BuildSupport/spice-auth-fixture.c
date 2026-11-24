@@ -129,12 +129,18 @@ enum { WIDTH = 640, HEIGHT = 480, DRAW_SLOTS = 16 };
 static struct {
     uint32_t pixels[WIDTH * HEIGHT];
     QXLDrawable draws[DRAW_SLOTS];
+    QXLImage images[DRAW_SLOTS];
+    uint32_t red[WIDTH * HEIGHT];
+    uint32_t green[WIDTH * HEIGHT];
 } framebuffer;
 #define pixels framebuffer.pixels
 static QXLInstance qxl;
 /* Bounded pool: SPICE may retain a drawable until a later update supersedes it. */
 static gint draw_states[DRAW_SLOTS];
 static unsigned next_color;
+static gint submitted_draws;
+static gint consumed_draws;
+static gint released_draws;
 static int qxl_get_draw(QXLInstance *instance, QXLCommandExt *command) {
     (void)instance;
     for (int i = 0; i < DRAW_SLOTS; ++i) {
@@ -143,6 +149,7 @@ static int qxl_get_draw(QXLInstance *instance, QXLCommandExt *command) {
         command->cmd.type = QXL_CMD_DRAW;
         command->cmd.data = (uintptr_t)&framebuffer.draws[i];
         command->group_id = 0;
+        g_atomic_int_inc(&consumed_draws);
         return 1;
     }
     return 0;
@@ -166,12 +173,27 @@ static gboolean update_color(gpointer data) {
     draw->bbox.bottom = HEIGHT;
     draw->clip.type = SPICE_CLIP_TYPE_NONE;
     draw->effect = QXL_EFFECT_OPAQUE;
-    draw->type = QXL_DRAW_FILL;
+    draw->type = QXL_DRAW_COPY;
     for (int i = 0; i < 3; ++i) draw->surfaces_dest[i] = -1;
     draw->mm_time = (uint32_t)(g_get_monotonic_time() / 1000);
-    draw->u.fill.brush.type = SPICE_BRUSH_TYPE_SOLID;
-    draw->u.fill.brush.u.color = next_color++ % 2 ? 0x0000ff00 : 0x00ff0000;
-    draw->u.fill.rop_descriptor = SPICE_ROPD_OP_PUT;
+    QXLImage *image = &framebuffer.images[slot];
+    memset(image, 0, sizeof(*image));
+    unsigned sequence = next_color++;
+    image->descriptor.id = (uint64_t)sequence + 1;
+    image->descriptor.type = SPICE_IMAGE_TYPE_BITMAP;
+    image->descriptor.width = WIDTH;
+    image->descriptor.height = HEIGHT;
+    image->bitmap.format = SPICE_BITMAP_FMT_32BIT;
+    image->bitmap.flags = QXL_BITMAP_DIRECT | QXL_BITMAP_TOP_DOWN;
+    image->bitmap.x = WIDTH;
+    image->bitmap.y = HEIGHT;
+    image->bitmap.stride = WIDTH * 4;
+    image->bitmap.data = (uintptr_t)(sequence % 2 ? framebuffer.green : framebuffer.red);
+    draw->u.copy.src_bitmap = (uintptr_t)image;
+    draw->u.copy.src_area.right = WIDTH;
+    draw->u.copy.src_area.bottom = HEIGHT;
+    draw->u.copy.rop_descriptor = SPICE_ROPD_OP_PUT;
+    g_atomic_int_inc(&submitted_draws);
     g_atomic_int_set(&draw_states[slot], 1);
     spice_qxl_wakeup(&qxl);
     return G_SOURCE_CONTINUE;
@@ -187,7 +209,7 @@ static void qxl_init_info(QXLInstance *instance, QXLDevInitInfo *info) {
     info->num_memslots = 1;
     info->num_memslots_groups = 1;
     info->internal_groupslot_id = 0;
-    info->qxl_ram_size = sizeof(pixels);
+    info->qxl_ram_size = sizeof(framebuffer);
     info->n_surfaces = 1;
 }
 static int qxl_no_command(QXLInstance *instance, QXLCommandExt *command) {
@@ -199,6 +221,7 @@ static void qxl_release(QXLInstance *instance, QXLReleaseInfoExt info) {
     if (!info.info) return;
     for (int i = 0; i < DRAW_SLOTS; ++i) {
         if (info.info->id == (uintptr_t)&framebuffer.draws[i]) {
+            g_atomic_int_inc(&released_draws);
             g_atomic_int_set(&draw_states[i], 0);
             return;
         }
@@ -238,6 +261,10 @@ static QXLInterface display_interface = {
 
 static int setup_display(SpiceServer *server) {
     memset(&qxl, 0, sizeof(qxl));
+    for (size_t i = 0; i < WIDTH * HEIGHT; ++i) {
+        framebuffer.red[i] = 0x00ff0000;
+        framebuffer.green[i] = 0x0000ff00;
+    }
     qxl.base.sif = &display_interface.base;
     qxl.id = 0;
     if (spice_server_add_interface(server, &qxl.base)) return 1;
@@ -286,7 +313,13 @@ int main(int argc, char **argv) {
     g_main_loop_run(loop);
     g_source_remove(signal_source);
     if (update_source) g_source_remove(update_source);
-    if (with_display) spice_qxl_destroy_primary_surface(&qxl, 0);
+    if (with_display) {
+        spice_qxl_destroy_primary_surface(&qxl, 0);
+        printf("DRAW_COUNTS submitted=%d consumed=%d released=%d\n",
+               g_atomic_int_get(&submitted_draws), g_atomic_int_get(&consumed_draws),
+               g_atomic_int_get(&released_draws));
+        fflush(stdout);
+    }
     spice_server_destroy(server);
     g_main_loop_unref(loop);
     return 0;

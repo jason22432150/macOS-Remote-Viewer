@@ -127,7 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for round in 0..<2 {
                     var colors = Set<UInt32>()
                     canvas.setSmokePixelHandler { pixel in
-                        colors.insert(pixel & 0x00ffffff)
+                        let rgb = pixel & 0x00ffffff
+                        if colors.count < 16 && colors.insert(rgb).inserted {
+                            print("MRV_PIXEL_SAMPLE round=\(round + 1) rgb=\(String(rgb, radix: 16))")
+                        }
                     }
                     controller.open(profile)
                     let deadline = ContinuousClock.now + .seconds(15)
@@ -146,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           controller.displaySize == RemoteFrame(width: 640, height: 480),
                           controller.hasRenderedFrame, let elapsed = controller.firstFrameMilliseconds,
                           colors.contains(0x00ff0000), colors.contains(0x0000ff00) else {
+                        print("MRV_DISPLAY_DIAGNOSTIC connected=\(controller.state == .connected) display=\(controller.displaySize != nil) rendered=\(controller.hasRenderedFrame) samples=\(colors.count)")
                         throw SessionError.displayTimeout
                     }
                     print("MRV_SPICE_DISPLAY_ROUND_OK \(round + 1) 640x480 first-frame-ms=\(elapsed) pixels=red,green")

@@ -1097,6 +1097,10 @@ def overlay_scanout_ownership(checkout: Path) -> None:
 def overlay_metal_pixel_probe(checkout: Path) -> None:
     """Opt-in GPU drawable readback for the synthetic loopback display test."""
     root = checkout / "Sources" / "CocoaSpiceRenderer"
+    # Metal normalized alpha is 0...1, not an 8-bit integer.
+    _replace_once(root / "CSShaders.metal", [
+        ("colorSample.a = 0xff;", "colorSample.a = 1.0h;"),
+    ])
     _replace_once(root / "include" / "CSMetalRenderer.h", [
         ("/// Modify upscaler and downscaler settings",
          "/// Test-only center pixel (BGRA8), delivered on main after GPU completion.\n"
@@ -1109,6 +1113,7 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
          """    void (^sampleHandler)(uint32_t) = self.smokePixelHandler;
     id<MTLTexture> drawableTexture = currentDrawable.texture;
     id<MTLBuffer> sampleBuffer = nil;
+    if (sampleHandler) [self _setViewportCGSize:CGSizeMake(drawableTexture.width, drawableTexture.height)];
     if (sampleHandler && !view.framebufferOnly &&
         drawableTexture.pixelFormat == MTLPixelFormatBGRA8Unorm &&
         drawableTexture.width && drawableTexture.height) {
@@ -1142,6 +1147,9 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
             }""",
          """            if (rendered && frameHandler) {
                 frameHandler();
+            }
+            if (sampleHandler && (!rendered || !sampleBuffer)) {
+                NSLog(@"MRV_PIXEL_READBACK_UNAVAILABLE gpuStatus=%lu buffer=%d", (unsigned long)commandBuffer.status, sampleBuffer != nil);
             }
             if (rendered && sampleHandler && sampleBuffer) {
                 uint32_t pixel = 0;
