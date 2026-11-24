@@ -106,6 +106,10 @@ swift test
 
 `python3 BuildSupport/check-dependencies.py --strict`：核對實際 Homebrew 連結版本是否符合 lockfile，發現版本漂移即失敗，不自動降級或修改系統。開發者可不加 `--strict` 取得差異報告；更新鎖定版本前須重新驗證 CI。CocoaSpice bootstrap 直接使用 lockfile 的 Git revision。此檢查鎖定三個直接原生依賴，並記錄全部已安裝 formula，尚非完整可重現的傳遞依賴安裝器。
 
+### 相對滑鼠擷取
+
+連線後按工具列「相對滑鼠」，等待 SPICE server 接受模式，再點擊遠端畫面以擷取游標。釋放快捷鍵依 .vv 設定（預設 Ctrl+Alt+R）；切換分頁、視窗失焦、切換回絕對模式或斷線也會釋放。伺服器可能拒絕模式變更，此時不鎖定游標。此功能需實機測試。標準 SPICE Inputs Channel / CocoaSpice 未提供原生水平滾輪，勿將側鍵當作水平滾輪。
+
 ### CI 預覽 DMG 與發布關卡
 
 CI 重用該次 Release App 打包，驗證內嵌 dylib、ARM64、Mach-O 最低版本、ad-hoc 簽章與 DMG checksum。從 Actions 對應執行紀錄下載 `MacRemoteViewer-arm64-preview` artifact（保留 14 天）。這不是正式 GitHub Release，也未經 Apple 公證。依賴版本與 SDK 資訊記錄在 `native-build.json`。

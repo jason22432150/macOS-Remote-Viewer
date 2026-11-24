@@ -19,6 +19,9 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case statusConnected
     case firstFrame
     case waitingFirstFrame
+    case relativeMouseOn
+    case relativeMouseOff
+    case relativeMouseHelp
     case statusDisconnecting
     case statusDisconnected
     case statusFailed
@@ -132,6 +135,9 @@ public enum L10n {
         .statusConnected: "已連線",
         .firstFrame: "首幀",
         .waitingFirstFrame: "等待首幀",
+        .relativeMouseOn: "相對滑鼠",
+        .relativeMouseOff: "絕對滑鼠",
+        .relativeMouseHelp: "要求 SPICE Server Mouse Mode；伺服器接受後，點擊遠端畫面擷取游標。使用連線檔的釋放快捷鍵或切換視窗即可釋放。",
         .statusDisconnecting: "中斷中",
         .statusDisconnected: "已斷線",
         .statusFailed: "失敗",
@@ -222,6 +228,9 @@ public enum L10n {
         .statusConnected: "Connected",
         .firstFrame: "First frame",
         .waitingFirstFrame: "Waiting for first frame",
+        .relativeMouseOn: "Relative mouse",
+        .relativeMouseOff: "Absolute mouse",
+        .relativeMouseHelp: "Request SPICE server mouse mode; click the remote display after the server accepts it to capture. Use the connection file release shortcut or switch windows to release.",
         .statusDisconnecting: "Disconnecting",
         .statusDisconnected: "Disconnected",
         .statusFailed: "Failed",

@@ -91,4 +91,11 @@ public protocol SpiceEngineing: AnyObject {
     func requestResolution(_ size: CGSize)
     /// 多 session 時只讓作用中連線同步剪貼簿。
     func setClipboardSharingEnabled(_ enabled: Bool)
+    var usesServerMouseMode: Bool { get }
+    func requestRelativeMouseMode(_ enabled: Bool)
+}
+
+public extension SpiceEngineing {
+    var usesServerMouseMode: Bool { false }
+    func requestRelativeMouseMode(_ enabled: Bool) {}
 }

@@ -16,10 +16,10 @@ final class InputRouter {
     var sideButton5: MouseSideButtonAction = .nextPage
     private var pressedScancodes: Set<Int> = []
 
-    func mouseEvent(from event: NSEvent, in view: NSView, mapping: GuestPointerMapping) -> MouseEvent? {
+    func mouseEvent(from event: NSEvent, in view: NSView, mapping: GuestPointerMapping, relativeCaptured: Bool = false) -> MouseEvent? {
         let location = view.convert(event.locationInWindow, from: nil)
         // 黑邊不轉給 guest；button-up 例外，夾到畫面邊緣以免 guest 按鍵卡住。
-        let clampToDisplay = Self.isButtonUp(event)
+        let clampToDisplay = relativeCaptured || Self.isButtonUp(event)
         guard let point = mapping.guestPoint(
             fromViewPoint: location,
             bounds: view.bounds,

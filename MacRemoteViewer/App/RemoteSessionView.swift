@@ -17,7 +17,9 @@ struct RemoteSessionView: View {
                     router: router,
                     displaySize: controller.displaySize,
                     isActive: isActive,
-                    useNativeDisplayPixels: model.settings.preferences.useNativeDisplayPixels
+                    useNativeDisplayPixels: model.settings.preferences.useNativeDisplayPixels,
+                    relativeMouseRequested: controller.relativeMouseRequested,
+                    sessionConnected: controller.state == .connected
                 )
                     .background(Color.black)
                 if showsOverlay {
@@ -55,6 +57,11 @@ struct RemoteSessionView: View {
             Spacer()
             Button(L10n.string(.ctrlAltDel, language: language)) { controller.sendSecureAttention() }
                 .disabled(controller.state != .connected)
+            Button(L10n.string(controller.relativeMouseRequested ? .relativeMouseOff : .relativeMouseOn, language: language)) {
+                controller.setRelativeMouseMode(!controller.relativeMouseRequested)
+            }
+            .disabled(controller.state != .connected)
+            .help(L10n.string(.relativeMouseHelp, language: language))
             Button(L10n.string(.fullscreen, language: language)) { NSApp.keyWindow?.toggleFullScreen(nil) }
         }
         .padding(8)

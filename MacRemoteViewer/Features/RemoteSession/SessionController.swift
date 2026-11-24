@@ -13,6 +13,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public private(set) var profile: ConnectionProfile?
     public private(set) var agent: AgentCapabilities = AgentCapabilities()
     public private(set) var displaySize: RemoteFrame?
+    public private(set) var relativeMouseRequested = false
+    public var usesServerMouseMode: Bool { state == .connected && engine.usesServerMouseMode }
     public private(set) var hasRenderedFrame = false
     public private(set) var firstFrameMilliseconds: Int?
     @ObservationIgnored private var frameWaitStarted: ContinuousClock.Instant?
@@ -76,6 +78,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         cleanupResult = .skipped
         agent = AgentCapabilities()
         displaySize = nil
+        relativeMouseRequested = false
         resetFrameObservation()
         diagnostics.compatibilityHint(unknownFields: profile.unknownFieldNames)
         state = .connecting
@@ -111,10 +114,18 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         engine.disconnect()
         agent = AgentCapabilities()
         displaySize = nil
+        relativeMouseRequested = false
         resetFrameObservation()
         if state == .disconnecting {
             state = .disconnected
         }
+    }
+
+    public func setRelativeMouseMode(_ enabled: Bool) {
+        guard state == .connected, relativeMouseRequested != enabled else { return }
+        engine.releaseKeys()
+        relativeMouseRequested = enabled
+        engine.requestRelativeMouseMode(enabled)
     }
 
     public func sendMouse(_ event: MouseEvent) {
@@ -194,6 +205,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         displayTask = nil
         agent = AgentCapabilities()
         displaySize = nil
+        relativeMouseRequested = false
         resetFrameObservation()
         if case .failed = state { return }
         state = .disconnected
@@ -294,6 +306,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         state = .failed(error)
         agent = AgentCapabilities()
         displaySize = nil
+        relativeMouseRequested = false
         resetFrameObservation()
         diagnostics.error(error)
         engine.releaseKeys()

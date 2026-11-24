@@ -19,6 +19,13 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private var pendingResolution: CGSize?
     private static var workerStarted = false
     private var pressedMouseMask: UInt32 = 0
+    private var relativeMouseRequested = false
+    var usesServerMouseMode: Bool { input?.serverModeCursor == true }
+
+    func requestRelativeMouseMode(_ enabled: Bool) {
+        relativeMouseRequested = enabled
+        input?.requestMouseMode(enabled)
+    }
     /// 預設開啟；workspace 會在多 session 時只留給作用中分頁。
     private var clipboardSharingEnabled = false
 
@@ -70,6 +77,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         connection?.delegate = nil
         connection = nil
         input = nil
+        relativeMouseRequested = false
         display = nil
         clearFrameObserver()
         attachedRenderer = nil
@@ -244,7 +252,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     nonisolated func spiceInputAvailable(_ connection: CSConnection, input: CSInput) {
         hopToMain(from: connection) { adapter in
             adapter.input = input
-            input.requestMouseMode(false)
+            input.requestMouseMode(adapter.relativeMouseRequested)
         }
     }
 

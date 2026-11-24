@@ -17,6 +17,8 @@ struct RemoteDisplayView: NSViewRepresentable {
     var displaySize: RemoteFrame?
     var isActive: Bool = true
     var useNativeDisplayPixels = false
+    var relativeMouseRequested = false
+    var sessionConnected = false
 
     func makeNSView(context: Context) -> RemoteCanvasView {
         let view = RemoteCanvasView(frame: .zero, device: SharedMetalDevice.systemDefault)
@@ -29,11 +31,16 @@ struct RemoteDisplayView: NSViewRepresentable {
         return view
     }
 
+    static func dismantleNSView(_ nsView: RemoteCanvasView, coordinator: ()) {
+        nsView.endRelativeCapture()
+    }
+
     func updateNSView(_ nsView: RemoteCanvasView, context: Context) {
         nsView.controller = controller
         nsView.router = router
         nsView.setNativeDisplayPixels(useNativeDisplayPixels)
         nsView.setActive(isActive)
+        if !relativeMouseRequested || !sessionConnected || displaySize == nil { nsView.endRelativeCapture() }
         nsView.attachRendererIfNeeded()
         nsView.updateViewport()
         // 不可在 layout／updateNSView 同步寫入 @Observable，否則 AppKit display cycle 會 SIGTRAP。
@@ -53,13 +60,17 @@ final class RemoteCanvasView: MTKView {
     private var useNativeDisplayPixels = false
     /// `NSCursor.hide` / `unhide` 是計數式 API，必須成對呼叫。
     private var isLocalCursorHidden = false
+    private static weak var captureOwner: RemoteCanvasView?
+    private var captureWatchdog: Task<Void, Never>?
+    private var priorMouseMovedEvents = false
+    private var isRelativeCaptured: Bool { Self.captureOwner === self }
 
     override var acceptsFirstResponder: Bool { isActive }
     override var isFlipped: Bool { true }
 
     func setActive(_ active: Bool) {
         guard isActive != active else { return }
-        if !active { releaseKeys() }
+        if !active { releaseKeys(); endRelativeCapture() }
         isActive = active
         preferredFramesPerSecond = active ? Self.foregroundFPS : Self.backgroundFPS
         if active {
@@ -167,6 +178,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        endRelativeCapture()
         if let window {
             NotificationCenter.default.removeObserver(
                 self,
@@ -209,12 +221,13 @@ final class RemoteCanvasView: MTKView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        guard isActive else { return }
+        guard isActive, !isRelativeCaptured else { return }
         showLocalCursor()
     }
 
     /// 失去 key window 時立刻顯示本機游標，避免 NSCursor.hide 殘留到其他 App。
     @objc private func windowDidResignKey(_ notification: Notification) {
+        endRelativeCapture()
         releaseKeys()
         showLocalCursor()
     }
@@ -225,8 +238,10 @@ final class RemoteCanvasView: MTKView {
         window?.makeFirstResponder(self)
         if router?.captured == false {
             router?.captured = true
+            if beginRelativeCapture(event) { return }
             return
         }
+        if !isRelativeCaptured, beginRelativeCapture(event) { return }
         handleMouse(event)
     }
     override func mouseUp(with event: NSEvent) { handleMouse(event) }
@@ -271,6 +286,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     override func resignFirstResponder() -> Bool {
+        endRelativeCapture()
         releaseKeys()
         return super.resignFirstResponder()
     }
@@ -278,13 +294,18 @@ final class RemoteCanvasView: MTKView {
     private func handleMouse(_ event: NSEvent) {
         guard isActive, let controller, let router, router.captured,
               controller.state == .connected else { return }
+        if isRelativeCaptured && !controller.usesServerMouseMode {
+            endRelativeCapture()
+            releaseKeys()
+            return
+        }
         updateViewport()
         if let mapping {
             let location = convert(event.locationInWindow, from: nil)
-            let insideDisplay = mapping.contains(viewPoint: location, bounds: bounds)
+            let insideDisplay = isRelativeCaptured || mapping.contains(viewPoint: location, bounds: bounds)
             // 只有滑鼠在遠端畫面內才隱藏本機游標；黑邊維持可見。
             updateLocalCursor(hidden: router.captured && insideDisplay)
-            if let mouse = router.mouseEvent(from: event, in: self, mapping: mapping) {
+            if let mouse = router.mouseEvent(from: event, in: self, mapping: mapping, relativeCaptured: isRelativeCaptured) {
                 controller.sendMouse(mouse)
             }
             // 側鍵上頁／下一頁只在畫面內送出，與滑鼠事件範圍一致。
@@ -296,6 +317,46 @@ final class RemoteCanvasView: MTKView {
         } else {
             showLocalCursor()
         }
+    }
+
+    /// Capture is explicit: an actual click, a key window and an accepted server mode.
+    private func beginRelativeCapture(_ event: NSEvent) -> Bool {
+        guard isActive, let controller, controller.relativeMouseRequested,
+              controller.usesServerMouseMode, let window, window.isKeyWindow,
+              NSApp.isActive, window.firstResponder === self, let mapping,
+              mapping.contains(viewPoint: convert(event.locationInWindow, from: nil), bounds: bounds)
+        else { return false }
+        Self.captureOwner?.endRelativeCapture()
+        guard CGAssociateMouseAndMouseCursorPosition(0) == .success else { return false }
+        Self.captureOwner = self
+        priorMouseMovedEvents = window.acceptsMouseMovedEvents
+        window.acceptsMouseMovedEvents = true
+        updateLocalCursor(hidden: true)
+        captureWatchdog = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                guard let self else { return }
+                guard self.isActive, NSApp.isActive, self.window?.isKeyWindow == true,
+                      self.window?.firstResponder === self,
+                      self.controller?.relativeMouseRequested == true, self.controller?.displaySize != nil,
+                      self.controller?.usesServerMouseMode == true else {
+                    self.endRelativeCapture()
+                    self.releaseKeys()
+                    return
+                }
+            }
+        }
+        return true
+    }
+
+    func endRelativeCapture() {
+        captureWatchdog?.cancel()
+        captureWatchdog = nil
+        guard isRelativeCaptured else { return }
+        _ = CGAssociateMouseAndMouseCursorPosition(1)
+        Self.captureOwner = nil
+        window?.acceptsMouseMovedEvents = priorMouseMovedEvents
+        showLocalCursor()
     }
 
     private func updateLocalCursor(hidden: Bool) {
@@ -327,6 +388,8 @@ final class RemoteCanvasView: MTKView {
     private func interceptHotKey(_ event: NSEvent) -> Bool {
         guard isActive, let controller, let router, let profile = controller.profile else { return false }
         if router.matches(profile.toggleFullscreen, event: event) {
+            endRelativeCapture()
+            releaseKeys()
             window?.toggleFullScreen(nil)
             return true
         }
@@ -342,6 +405,7 @@ final class RemoteCanvasView: MTKView {
     }
 
     func releaseCapture() {
+        endRelativeCapture()
         router?.captured = false
         releaseKeys()
         showLocalCursor()
