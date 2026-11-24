@@ -25,6 +25,9 @@ jobs:
       - name: CocoaSpice overlay tests
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport/cocoaspice -p 'test_*.py'
+      - name: Portable packaging tests
+        if: success() || failure()
+        run: python3 -m unittest discover -s BuildSupport -p 'test_package_portable.py'
 
   app:
     runs-on: macos-15

@@ -163,11 +163,9 @@ def copy_binary(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
     chmod_writable(destination)
-    try:
-        run(["codesign", "--remove-signature", str(destination)])
-    except BundleError:
-        # 未簽署的二進位會失敗，可忽略。
-        pass
+    # Preserve the original signature and __LINKEDIT layout until all load
+    # commands have been rewritten. install_name_tool may invalidate it;
+    # sign_app replaces every signature after the final edit.
 
 
 def dest_name_for(install_name: str, source: Path) -> str:
@@ -297,35 +295,24 @@ def find_openssl_modules() -> Path | None:
     return None
 
 
-def ensure_rpath(binary: Path, rpath: str) -> None:
-    """若尚未有指定 rpath 則加入。"""
-    _, _, rpaths = parse_macho(binary)
-    if rpath in rpaths:
-        return
-    run(["install_name_tool", "-add_rpath", rpath, str(binary)])
-
-
-def delete_host_rpaths(binary: Path) -> None:
-    """刪除 Homebrew／使用者目錄 rpath。"""
-    _, _, rpaths = parse_macho(binary)
-    for rpath in rpaths:
-        expanded_is_host = is_host_library(rpath) or rpath.startswith(HOST_PREFIXES)
-        if expanded_is_host:
-            run(["install_name_tool", "-delete_rpath", rpath, str(binary)])
-
-
 def rewrite_load_commands(binary: Path, *, id_path: str | None, extra_rpath: str) -> None:
-    """把本機路徑改成 @rpath，並設定可攜 rpath。"""
-    ident, dylibs, _rpaths = parse_macho(binary)
+    """Apply every load-command edit in one pass, then re-sign the binary later."""
+    ident, dylibs, rpaths = parse_macho(binary)
+    args = ["xcrun", "install_name_tool"]
     if id_path and ident and ident != id_path:
-        run(["install_name_tool", "-id", id_path, str(binary)])
-    for dep in dylibs:
+        args.extend(["-id", id_path])
+    for dep in dict.fromkeys(dylibs):
         if is_host_library(dep):
             new_dep = f"@rpath/{Path(dep).name}"
             if dep != new_dep:
-                run(["install_name_tool", "-change", dep, new_dep, str(binary)])
-    delete_host_rpaths(binary)
-    ensure_rpath(binary, extra_rpath)
+                args.extend(["-change", dep, new_dep])
+    for rpath in dict.fromkeys(rpaths):
+        if is_host_library(rpath) or rpath.startswith(HOST_PREFIXES):
+            args.extend(["-delete_rpath", rpath])
+    if extra_rpath not in rpaths:
+        args.extend(["-add_rpath", extra_rpath])
+    if len(args) > 2:
+        run([*args, str(binary)])
 
 
 def iter_macho_files(app: Path) -> list[Path]:
@@ -508,10 +495,7 @@ def bundle_into(app: Path) -> None:
         copy_binary(source, destination)
         copied[name] = destination
 
-    try:
-        run(["codesign", "--remove-signature", str(executable)])
-    except BundleError:
-        pass
+    chmod_writable(executable)
     rewrite_load_commands(executable, id_path=None, extra_rpath=RPATH_FRAMEWORKS)
     for name, binary in copied.items():
         rewrite_load_commands(
