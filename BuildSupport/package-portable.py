@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import plistlib
 import os
 import re
 import shutil
@@ -105,7 +107,7 @@ def parse_macho(path: Path) -> tuple[str | None, list[str], list[str]]:
         if line in {"cmd LC_ID_DYLIB", "cmd LC_LOAD_DYLIB", "cmd LC_LOAD_WEAK_DYLIB", "cmd LC_REEXPORT_DYLIB"}:
             cmd = line.split()[-1]
             for ahead in lines[index + 1 : index + 8]:
-                match = re.search(r"name\s+(\S+)", ahead)
+                match = re.search(r"name\s+(.+?)\s+\(offset \d+\)", ahead)
                 if match:
                     name = match.group(1)
                     if cmd == "LC_ID_DYLIB":
@@ -115,7 +117,7 @@ def parse_macho(path: Path) -> tuple[str | None, list[str], list[str]]:
                     break
         elif line == "cmd LC_RPATH":
             for ahead in lines[index + 1 : index + 8]:
-                match = re.search(r"path\s+(\S+)", ahead)
+                match = re.search(r"path\s+(.+?)\s+\(offset \d+\)", ahead)
                 if match:
                     rpaths.append(match.group(1))
                     break
@@ -212,6 +214,8 @@ def collect_host_libraries(seed: Path, *, executable: Path, app_root: Path) -> d
             if not (is_host_library(dep) or is_host_library(str(resolved))):
                 continue
             name = dest_name_for(dep, resolved)
+            if name in bundled and bundled[name] != resolved:
+                raise BundleError(f"Conflicting libraries with the same install name: {name}")
             if name not in bundled:
                 bundled[name] = resolved
                 queued.append(resolved)
@@ -220,6 +224,46 @@ def collect_host_libraries(seed: Path, *, executable: Path, app_root: Path) -> d
             bundled.setdefault(name, current)
 
     return bundled
+
+
+def verify_bundle_dependencies(app: Path) -> str:
+    """Check ARM64 load closure and derive the highest declared Mach-O minimum OS."""
+    executable = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+    _, _, executable_rpaths = parse_macho(executable)
+    plist = app / "Contents" / "Info.plist"
+    with plist.open("rb") as handle:
+        metadata = plistlib.load(handle)
+
+    def version_tuple(value: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in value.split("."))
+
+    minimum = metadata.get("LSMinimumSystemVersion", "14.0")
+    for binary in iter_macho_files(app):
+        archs = capture(["lipo", "-archs", str(binary)]).split()
+        if "arm64" not in archs:
+            raise BundleError(f"ARM64 slice missing: {binary.relative_to(app)}")
+        _, deps, rpaths = parse_macho(binary)
+        # The main executable's runpath stack is inherited for embedded dylibs.
+        for dep in deps:
+            if is_system_library(dep):
+                continue
+            resolved = expand_load_path(dep, loader=binary, executable=executable, rpaths=rpaths)
+            if resolved is None and dep.startswith("@rpath/"):
+                resolved = expand_load_path(dep, loader=executable, executable=executable,
+                                            rpaths=executable_rpaths)
+            if resolved is None or not is_inside(resolved, app):
+                raise BundleError(f"Unresolved or external dependency: {binary.relative_to(app)} -> {dep}")
+        commands = capture(["otool", "-arch", "arm64", "-l", str(binary)])
+        for match in re.finditer(r"cmd LC_BUILD_VERSION\s+cmdsize \d+\s+platform (?:1|macos|MACOS)\s+minos (\d+(?:\.\d+)+)", commands):
+            if version_tuple(match.group(1)) > version_tuple(minimum):
+                minimum = match.group(1)
+        for match in re.finditer(r"cmd LC_VERSION_MIN_MACOSX\s+cmdsize \d+\s+version (\d+(?:\.\d+)+)", commands):
+            if version_tuple(match.group(1)) > version_tuple(minimum):
+                minimum = match.group(1)
+    metadata["LSMinimumSystemVersion"] = minimum
+    with plist.open("wb") as handle:
+        plistlib.dump(metadata, handle, sort_keys=False)
+    return minimum
 
 
 def find_gst_plugin_dir() -> Path:
@@ -362,7 +406,7 @@ macOS 27 沒有 Launchpad。請用下面方式找到它：
 
 系統需求：
 - Apple Silicon（arm64）
-- macOS {minimum_os} 或更新版本
+- 最低宣告版本 macOS {minimum_os}；僅在打包主機同系列版本驗證，其他版本須實測
 - 不需要安裝 Homebrew 或 Xcode
 
 請不要長期從 DMG 裡面直接執行；拖到「應用程式」後再打開。
@@ -380,7 +424,7 @@ def build_app(build_dir: Path) -> Path:
     build_dir.mkdir(parents=True, exist_ok=True)
     developer = Path("/Applications/Xcode.app/Contents/Developer")
     env = os.environ.copy()
-    if developer.exists():
+    if developer.exists() and not env.get("DEVELOPER_DIR"):
         env["DEVELOPER_DIR"] = str(developer)
     args = [
         "xcodebuild",
@@ -394,6 +438,7 @@ def build_app(build_dir: Path) -> Path:
         "platform=macOS,arch=arm64",
         f"SYMROOT={build_dir / 'sym'}",
         f"OBJROOT={build_dir / 'obj'}",
+        "ARCHS=arm64",
         "ONLY_ACTIVE_ARCH=YES",
         "CODE_SIGN_IDENTITY=-",
         "CODE_SIGN_STYLE=Manual",
@@ -449,7 +494,10 @@ def bundle_into(app: Path) -> None:
 
     bundled: dict[str, Path] = {}
     for seed in seeds:
-        bundled.update(collect_host_libraries(seed, executable=executable, app_root=app))
+        for name, source in collect_host_libraries(seed, executable=executable, app_root=app).items():
+            if name in bundled and bundled[name] != source:
+                raise BundleError(f"Conflicting libraries with the same install name: {name}")
+            bundled[name] = source
 
     copied: dict[str, Path] = {}
     for name, source in bundled.items():
@@ -570,7 +618,8 @@ def make_dmg(app: Path, dist_dir: Path) -> Path:
     for leftover in dist_dir.resolve().glob(f"{artifact_stem}.zip*"):
         leftover.unlink()
 
-    digest = hashlib.sha256(dmg_path.read_bytes()).hexdigest()
+    with dmg_path.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
     dmg_path.with_suffix(".dmg.sha256").write_text(f"{digest}  {dmg_path.name}\n", encoding="utf-8")
     return dmg_path
 
@@ -617,9 +666,13 @@ def main() -> int:
     shutil.copytree(source_app, work_app, symlinks=True)
 
     bundle_into(work_app)
-    sign_app(work_app)
     verify_no_host_paths(work_app)
+    minimum = verify_bundle_dependencies(work_app)
+    sign_app(work_app)
+    run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(work_app)])
     dmg_path = make_dmg(work_app, dist_dir)
+    run(["hdiutil", "verify", str(dmg_path)])
+    print(f"Declared minimum macOS: {minimum}; runtime compatibility still requires testing.")
     size_mib = dmg_path.stat().st_size / (1024 * 1024)
     print(f"已寫入 {dmg_path}（{size_mib:.1f} MiB）")
     print(f"SHA-256：{dmg_path.with_suffix('.dmg.sha256').read_text().split()[0]}")
