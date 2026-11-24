@@ -29,7 +29,7 @@ public struct VVFileImporter: Sendable {
         let identity: SourceFileIdentity?
         do {
             let after = try files.identity(of: url)
-            identity = before == after ? after : nil
+            identity = before == after && after.size == UInt64(data.count) ? after : nil
         } catch {
             identity = nil
         }

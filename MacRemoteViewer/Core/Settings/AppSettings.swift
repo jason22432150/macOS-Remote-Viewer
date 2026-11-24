@@ -30,7 +30,7 @@ public final class AppSettings {
         self.preferences = loaded
         self.fileLog = fileLog ?? FileLogSink(
             enabled: loaded.loggingEnabled,
-            writer: FoundationFileLogWriter()
+            writer: AsyncFileLogWriter()
         )
         // 注入的 sink 也要跟已持久化的偏好對齊。
         self.fileLog.isEnabled = loaded.loggingEnabled

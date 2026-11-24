@@ -14,6 +14,7 @@ final class AppModel {
     let workspace: SessionWorkspace
 
     let importer = VVFileImporter()
+    @ObservationIgnored private var importTask: Task<Void, Never>?
 
     var session: SessionController? { workspace.selectedSession }
     var sessions: [SessionController] { workspace.sessions }
@@ -51,19 +52,29 @@ final class AppModel {
             message: "open-urls count=\(urls.count) existing-sessions=\(workspace.sessions.count)",
             sessionID: "app"
         )
-        var profiles: [ConnectionProfile] = []
-        var lastError: SessionError?
-        for url in urls {
-            do {
-                profiles.append(try importer.importFile(at: url))
-            } catch let error as SessionError {
-                lastError = error
-            } catch {
-                lastError = .sourceFileUnavailable
-            }
+        // Preserve open order without blocking AppKit on file I/O.
+        let previous = importTask
+        let importer = self.importer
+        importTask = Task { @MainActor [weak self] in
+            await previous?.value
+            let result = await Task.detached(priority: .userInitiated) {
+                var profiles: [ConnectionProfile] = []
+                var lastError: SessionError?
+                for url in urls {
+                    do {
+                        profiles.append(try importer.importFile(at: url))
+                    } catch let error as SessionError {
+                        lastError = error
+                    } catch {
+                        lastError = .sourceFileUnavailable
+                    }
+                }
+                return (profiles, lastError)
+            }.value
+            guard let self else { return }
+            self.workspace.open(result.0)
+            self.welcomeError = result.1
         }
-        workspace.open(profiles)
-        welcomeError = lastError
     }
 
     func chooseFile() {

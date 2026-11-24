@@ -57,6 +57,68 @@ public struct FoundationFileLogWriter: FileLogWriting, Sendable {
     }
 }
 
+/// Default app sink: perform disk I/O on a bounded serial utility queue.
+public final class AsyncFileLogWriter: FileLogWriting, @unchecked Sendable {
+    private let writer: FoundationFileLogWriter
+    private let queue = DispatchQueue(label: "local.MacRemoteViewer.file-log", qos: .utility)
+    private let lock = NSLock()
+    private let logger = Logger(subsystem: "local.MacRemoteViewer", category: "file-log")
+    private var pending = 0
+    private var lastPrunedDay: String?
+
+    public init(writer: FoundationFileLogWriter = FoundationFileLogWriter()) {
+        self.writer = writer
+    }
+
+    public var directoryURL: URL { writer.directoryURL }
+
+    public func ensureDirectoryExists() throws { try writer.ensureDirectoryExists() }
+
+    public func append(_ line: String) throws {
+        lock.lock()
+        guard pending < 512 else {
+            lock.unlock()
+            logger.error("file-log-queue-full")
+            return
+        }
+        pending += 1
+        lock.unlock()
+        queue.async { [self] in
+            defer {
+                lock.lock()
+                pending -= 1
+                lock.unlock()
+            }
+            do {
+                try writer.append(line)
+                pruneIfNeeded()
+            } catch {
+                logger.error("file-log-write-failed")
+            }
+        }
+    }
+
+    // Only delete this application's dated log files, never unrelated user files.
+    private func pruneIfNeeded() {
+        let now = Date()
+        let day = FoundationFileLogWriter.fileName(for: now)
+        guard lastPrunedDay != day else { return }
+        lastPrunedDay = day
+        guard let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) else { return }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: directoryURL,
+            includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return }
+        for url in urls {
+            guard url.lastPathComponent.range(of: #"^MacRemoteViewer-[0-9]{4}-[0-9]{2}-[0-9]{2}\.log$"#,
+                options: .regularExpression) != nil,
+                let values = try? url.resourceValues(forKeys: keys),
+                values.isRegularFile == true, values.isSymbolicLink != true,
+                let modified = values.contentModificationDate, modified < cutoff else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+}
+
 /// 可在工作階段中途開關檔案 log，而不必重建 `DiagnosticsLog`。
 public final class FileLogSink: @unchecked Sendable {
     public let writer: any FileLogWriting

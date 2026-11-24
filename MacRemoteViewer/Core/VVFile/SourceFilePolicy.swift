@@ -22,7 +22,12 @@ public struct FoundationFileAccessor: FileAccessing {
         }
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
-        let data = try handle.read(upToCount: VVParser.maxFileBytes + 1) ?? Data()
+        var data = Data()
+        while data.count <= VVParser.maxFileBytes {
+            let remaining = VVParser.maxFileBytes + 1 - data.count
+            guard let chunk = try handle.read(upToCount: min(remaining, 64 * 1024)), !chunk.isEmpty else { break }
+            data.append(chunk)
+        }
         guard data.count <= VVParser.maxFileBytes else {
             throw SessionError.fileTooLarge(maxBytes: VVParser.maxFileBytes)
         }
