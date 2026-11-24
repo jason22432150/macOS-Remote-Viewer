@@ -63,14 +63,16 @@ jobs:
       - name: Verify DMG checksum
         run: |
           cd dist
-          shasum -a 256 -c *.dmg.sha256
-      - name: Upload unsigned preview DMG and build provenance
+          shasum -a 256 -c *.dmg.sha256 *.bom.json.sha256
+      - name: Upload ad-hoc signed preview DMG, SBOM and build provenance
         uses: actions/upload-artifact@v4
         with:
           name: MacRemoteViewer-arm64-preview
           path: |
             dist/*.dmg
             dist/*.dmg.sha256
+            dist/*.bom.json
+            dist/*.bom.json.sha256
             ${{ runner.temp }}/native-build.json
           if-no-files-found: error
           retention-days: 14

@@ -121,3 +121,7 @@ Swift Core 的 macOS 14 設定不代表打包後 App 支援 macOS 14。打包工
 ### 發布前實機回歸驗證
 
 請依 [實機驗證清單](docs/runtime-validation.md) 記錄結果。CI 成功僅代表自動測試及打包驗證，不代表已通過 PVE、輸入擷取或效能實測。
+
+### SBOM 與二進位來源
+
+預覽 DMG 內含 `bom.json`（CycloneDX 1.6），CI 另上傳同一份 `*.bom.json` 與 SHA-256。清單以最終 ad-hoc 簽署後的 Mach-O 為準，包含 bundle 相對路徑、架構、load commands、rpath 與檔案雜湊；由 Homebrew 複製的檔案另記原始雜湊與實際 Cellar formula／keg 版本（可辨識時）。現成 App 中來源不明的二進位會明確標記，不假定版本。這是二進位物料清單，尚未完整枚舉靜態相依、授權義務、系統函式庫或漏洞；不可視為完整供應鏈證明。`native-build.json` 仍記錄直接版本鎖定及建置環境。正式發布流程要求 SBOM 與校驗檔一併存在。

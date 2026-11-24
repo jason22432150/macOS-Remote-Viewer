@@ -29,6 +29,33 @@ class PortablePackagingTests(unittest.TestCase):
                 "-add_rpath", "@loader_path/../Frameworks", str(binary),
             ])
 
+    def test_sbom_records_final_bytes_and_observed_keg_origin(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Cellar" / "example" / "1.2_3" / "lib" / "libexample.dylib"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"original bottle bytes")
+            app = root / "Example.app"
+            binary = app / "Contents" / "Frameworks" / "libexample.dylib"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"final signed bytes")
+            relative = binary.relative_to(app).as_posix()
+            origin = pack.source_provenance(source)
+            self.assertEqual(origin["formula"], "example")
+            self.assertEqual(origin["version"], "1.2_3")
+            self.assertEqual(origin["source_sha256"], pack.sha256_file(source))
+            with patch.object(pack, "iter_macho_files", return_value=[binary]), \
+                 patch.object(pack, "parse_macho", return_value=(None, [], [])), \
+                 patch.object(pack, "capture", return_value="arm64"):
+                bom = pack.build_sbom(app, {relative: origin}, version="1.0.0")
+            self.assertEqual(bom["bomFormat"], "CycloneDX")
+            package = bom["components"][0]
+            self.assertEqual(package["version"], "1.2_3")
+            file = package["components"][0]
+            self.assertEqual(file["name"], relative)
+            self.assertEqual(file["hashes"][0]["content"], pack.sha256_file(binary))
+            self.assertNotEqual(file["hashes"][0]["content"], origin["source_sha256"])
+
     def test_copy_keeps_signature_bytes(self):
         with tempfile.TemporaryDirectory() as raw:
             source = Path(raw) / "source"

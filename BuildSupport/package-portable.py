@@ -442,7 +442,25 @@ def build_app(build_dir: Path) -> Path:
     return app
 
 
-def bundle_into(app: Path) -> None:
+def sha256_file(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def source_provenance(source: Path) -> dict[str, str]:
+    """Record the actual input bytes and keg, without publishing local usernames."""
+    resolved = source.resolve()
+    result = {"source_sha256": sha256_file(resolved), "source_name": resolved.name}
+    parts = resolved.parts
+    if "Cellar" in parts:
+        index = parts.index("Cellar")
+        if len(parts) > index + 3:
+            result.update(formula=parts[index + 1], version=parts[index + 2],
+                          keg_path="/".join(parts[index + 3:]))
+    return result
+
+
+def bundle_into(app: Path) -> dict[str, dict[str, str]]:
     """把本機 dylib／plugin 嵌進 App，並改成可攜 rpath。"""
     executable = app / "Contents" / "MacOS" / "Mac Remote Viewer"
     if not executable.exists():
@@ -454,6 +472,12 @@ def bundle_into(app: Path) -> None:
     frameworks.mkdir(parents=True, exist_ok=True)
     plugins.mkdir(parents=True, exist_ok=True)
 
+    origins: dict[str, dict[str, str]] = {}
+
+    def copy_with_origin(source: Path, destination: Path) -> None:
+        origins[destination.relative_to(app).as_posix()] = source_provenance(source)
+        copy_binary(source, destination)
+
     seeds: list[Path] = [executable]
     gst_dir = find_gst_plugin_dir()
     for stem in GST_PLUGIN_STEMS:
@@ -462,13 +486,13 @@ def bundle_into(app: Path) -> None:
             print(f"略過缺少的 GStreamer plugin：{stem}", file=sys.stderr)
             continue
         destination = plugins / source.name
-        copy_binary(source.resolve(), destination)
+        copy_with_origin(source.resolve(), destination)
         seeds.append(destination)
 
     scanner = find_gst_scanner()
     if scanner is not None:
         scanner_dest = app / "Contents" / "MacOS" / "gst-plugin-scanner"
-        copy_binary(scanner, scanner_dest)
+        copy_with_origin(scanner, scanner_dest)
         seeds.append(scanner_dest)
 
     openssl_modules = find_openssl_modules()
@@ -476,7 +500,7 @@ def bundle_into(app: Path) -> None:
         openssl_dest.mkdir(parents=True, exist_ok=True)
         for module in openssl_modules.glob("*.dylib"):
             destination = openssl_dest / module.name
-            copy_binary(module.resolve(), destination)
+            copy_with_origin(module.resolve(), destination)
             seeds.append(destination)
 
     bundled: dict[str, Path] = {}
@@ -492,7 +516,7 @@ def bundle_into(app: Path) -> None:
         if destination.exists() and destination.resolve() == source.resolve():
             copied[name] = destination
             continue
-        copy_binary(source, destination)
+        copy_with_origin(source, destination)
         copied[name] = destination
 
     chmod_writable(executable)
@@ -523,6 +547,65 @@ def bundle_into(app: Path) -> None:
                 id_path=f"@loader_path/{module.name}",
                 extra_rpath=RPATH_RESOURCE_FRAMEWORKS,
             )
+
+
+    return origins
+
+
+def build_sbom(app: Path, origins: dict[str, dict[str, str]], *, version: str) -> dict:
+    """CycloneDX inventory of final signed Mach-O files and observed Homebrew kegs.
+
+    Static dependencies, system frameworks and licensing obligations are not fully
+    enumerated; do not claim a complete dependency graph or vulnerability scan.
+    """
+    files: list[dict] = []
+    packages: dict[tuple[str, str], dict] = {}
+    for binary in sorted(iter_macho_files(app)):
+        if not is_inside(binary, app):
+            raise BundleError(f"Mach-O path escapes bundle: {binary.name}")
+        relative = binary.relative_to(app).as_posix()
+        origin = origins.get(relative, {})
+        _, dependencies, rpaths = parse_macho(binary)
+        props = {
+            "mrv:bundle-path": relative,
+            "mrv:size-bytes": str(binary.stat().st_size),
+            "mrv:architectures": capture(["lipo", "-archs", str(binary)]).strip(),
+            "mrv:load-commands": json.dumps(sorted(set(dependencies))),
+            "mrv:rpaths": json.dumps(sorted(set(rpaths))),
+            "mrv:origin-status": "observed-copy" if origin else "prebuilt-app-origin-unverified",
+        }
+        props.update({f"mrv:{key.replace('_', '-')}": value for key, value in origin.items()})
+        component = {
+            "type": "file", "bom-ref": "file:" + relative, "name": relative,
+            "hashes": [{"alg": "SHA-256", "content": sha256_file(binary)}],
+            "properties": [{"name": name, "value": value} for name, value in sorted(props.items())],
+        }
+        if "formula" in origin:
+            key = (origin["formula"], origin["version"])
+            package = packages.setdefault(key, {
+                "type": "library", "bom-ref": "homebrew:" + key[0] + "@" + key[1],
+                "name": key[0], "version": key[1],
+                "externalReferences": [{"type": "website", "url": "https://formulae.brew.sh/formula/" + key[0]}],
+                "components": [],
+            })
+            package["components"].append(component)
+        else:
+            files.append(component)
+    if not files and not packages:
+        raise BundleError("No Mach-O binaries found for SBOM")
+    return {
+        "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+        "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+        "metadata": {
+            "component": {"type": "application", "bom-ref": "app:MacRemoteViewer",
+                          "name": "MacRemoteViewer", "version": version},
+            "properties": [
+                {"name": "mrv:coverage", "value": "signed bundled Mach-O files; static dependencies and licenses incomplete"},
+                {"name": "mrv:signature", "value": "ad-hoc"},
+            ],
+        },
+        "components": files + [packages[key] for key in sorted(packages)],
+    }
 
 
 def sign_app(app: Path) -> None:
@@ -567,7 +650,7 @@ def create_compressed_dmg(*, source: Path, destination: Path, volume_name: str) 
     )
 
 
-def make_dmg(app: Path, dist_dir: Path) -> Path:
+def make_dmg(app: Path, dist_dir: Path, bom_path: Path) -> Path:
     """產生可拖到「應用程式」的 DMG。"""
     version = app_version(app)
     minimum_os = capture(
@@ -584,6 +667,7 @@ def make_dmg(app: Path, dist_dir: Path) -> Path:
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
     shutil.copytree(app, stage / APP_NAME, symlinks=True)
+    shutil.copy2(bom_path, stage / "bom.json")
     applications_link = stage / "Applications"
     if applications_link.exists() or applications_link.is_symlink():
         applications_link.unlink()
@@ -649,12 +733,19 @@ def main() -> int:
     work_app.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source_app, work_app, symlinks=True)
 
-    bundle_into(work_app)
+    origins = bundle_into(work_app)
     verify_no_host_paths(work_app)
     minimum = verify_bundle_dependencies(work_app)
     sign_app(work_app)
     run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(work_app)])
-    dmg_path = make_dmg(work_app, dist_dir)
+    # Hash final signed bytes, not the pre-rewrite or pre-signature copies.
+    version = app_version(work_app)
+    bom_path = dist_dir / f"MacRemoteViewer-{version}-arm64.bom.json"
+    bom_path.write_text(json.dumps(build_sbom(work_app, origins, version=version),
+                                   indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    bom_path.with_suffix(".json.sha256").write_text(
+        f"{sha256_file(bom_path)}  {bom_path.name}\n", encoding="utf-8")
+    dmg_path = make_dmg(work_app, dist_dir, bom_path)
     run(["hdiutil", "verify", str(dmg_path)])
     print(f"Declared minimum macOS: {minimum}; runtime compatibility still requires testing.")
     size_mib = dmg_path.stat().st_size / (1024 * 1024)
