@@ -46,6 +46,8 @@ jobs:
         run: |
           ./BuildSupport/bootstrap-cocoaspice.sh
           ./BuildSupport/generate-xcconfig.sh
+      - name: Validate patched CocoaSpice GPU lifetime invariants
+        run: python3 BuildSupport/cocoaspice/check_gpu_lifetime.py ThirdParty/CocoaSpice
       - name: Debug build
         run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Debug -destination 'platform=macOS,arch=arm64' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES -derivedDataPath "$RUNNER_TEMP/mrv-debug" CODE_SIGNING_ALLOWED=NO build
       - name: Verify Debug executable architecture

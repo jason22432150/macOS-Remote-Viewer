@@ -223,7 +223,7 @@ def overlay_display_initial_frame(checkout: Path) -> None:
     }
     NSUInteger stride = (NSUInteger)self.canvasStride;
     NSUInteger rowBytes = (NSUInteger)width * (NSUInteger)pixelSize;
-    if (rowBytes == 0 || rowBytes > stride) {
+    if (rowBytes == 0 || rowBytes > stride || (NSUInteger)x > (stride - rowBytes) / (NSUInteger)pixelSize) {
         return;
     }
     NSUInteger offset = (NSUInteger)y * stride + (NSUInteger)x * (NSUInteger)pixelSize;
@@ -790,7 +790,8 @@ def overlay_canvas_gpu_lifetime(checkout: Path) -> None:
         !isfinite(visibleArea.size.width) || !isfinite(visibleArea.size.height) ||
         visibleArea.size.width < 1 || visibleArea.size.width > 16384 ||
         visibleArea.size.height < 1 || visibleArea.size.height > 16384 ||
-        (NSUInteger)self.canvasStride > maxCanvasBytes / (NSUInteger)self.canvasArea.size.height) {
+        (NSUInteger)self.canvasStride > maxCanvasBytes / (NSUInteger)self.canvasArea.size.height ||
+        (NSUInteger)visibleArea.size.width > maxCanvasBytes / 4 / (NSUInteger)visibleArea.size.height) {
         return;
     }
     NSUInteger canvasSize = (NSUInteger)self.canvasStride * (NSUInteger)self.canvasArea.size.height;
@@ -823,7 +824,14 @@ def overlay_canvas_gpu_lifetime(checkout: Path) -> None:
          """    id<MTLTexture> texture = [self.device newTextureWithDescriptor:textureDescriptor];
     id<MTLBuffer> buffer = [self.device newBufferWithLength:canvasSize
                                                    options:MTLResourceStorageModeShared];
-    if (!texture || !buffer) return;
+    if (!texture || !buffer) {
+        self.ready = NO;
+        self.canvasBuffer = nil;
+        self.canvasTexture = nil;
+        self.canvasIsBusy = NO;
+        self.canvasDirtyRect = CGRectZero;
+        return;
+    }
     // A new staging generation must not inherit busy/dirty state from the old surface.
     self.canvasIsBusy = NO;
     self.canvasDirtyRect = CGRectZero;
@@ -883,11 +891,12 @@ def overlay_canvas_gpu_lifetime(checkout: Path) -> None:
     });""",
          """    [blitEncoder endEncoding];
 
-    // CPU staging memory may be reused as soon as the GPU finishes reading it.
-    // No drawable, next draw, or main-queue completion is required.
+    // CPU staging memory may be reused after the GPU finishes reading it.
+    // Main-queue delivery bounds queued publications to one per active canvas.
+    // No drawable or next draw is required, and the GLib worker never waits on it.
     if (completion) {
         [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> finished) {
-            completion();
+            dispatch_async(dispatch_get_main_queue(), completion);
         }];
     }
     [commandBuffer commit];
