@@ -80,4 +80,37 @@ final class GuestResolutionPolicyTests: XCTestCase {
             RemoteFrame(width: 1920, height: 1080)
         )
     }
+
+    func testRetriesWhileGuestKeepsOldSize() {
+        let requested = RemoteFrame(width: 1600, height: 900)
+        let current = RemoteFrame(width: 1024, height: 768)
+        XCTAssertTrue(
+            GuestResolutionPolicy.shouldRetry(
+                requested: requested,
+                currentDisplay: current,
+                remainingAttempts: 3
+            )
+        )
+        XCTAssertFalse(
+            GuestResolutionPolicy.shouldRetry(
+                requested: requested,
+                currentDisplay: requested,
+                remainingAttempts: 3
+            )
+        )
+        XCTAssertFalse(
+            GuestResolutionPolicy.shouldRetry(
+                requested: requested,
+                currentDisplay: current,
+                remainingAttempts: 0
+            )
+        )
+        XCTAssertTrue(
+            GuestResolutionPolicy.shouldRetry(
+                requested: requested,
+                currentDisplay: nil,
+                remainingAttempts: 1
+            )
+        )
+    }
 }

@@ -81,6 +81,16 @@ public enum GuestResolutionPolicy {
         lastRequested != frame && currentDisplay != frame
     }
 
+    /// Linux vdagent 可能晚於 capability 宣告才真正套用；Windows QXL 則通常立刻改。
+    /// 仍與目標不符且還有重試次數時才再送，避免與套用中的中間尺寸互打。
+    public static func shouldRetry(
+        requested: RemoteFrame,
+        currentDisplay: RemoteFrame?,
+        remainingAttempts: Int
+    ) -> Bool {
+        remainingAttempts > 0 && currentDisplay != requested
+    }
+
     private static func alignedDimension(_ value: CGFloat) -> Int {
         let clamped = min(max(value.rounded(), 0), CGFloat(maximumDimension))
         return Int(clamped) & ~1

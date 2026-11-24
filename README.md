@@ -84,6 +84,7 @@ swift test
 - 也可拖放到視窗或 Dock 圖示，或用選單「開啟 .vv…」
 - 快捷鍵依連線檔：全螢幕、釋放游標、`Ctrl+Alt+Ins` 傳送 `Ctrl+Alt+Del`（不是原組合）
 - 剪貼簿由 CocoaSpice／spice-vdagent 自動雙向同步；Guest 需安裝 spice-vdagent
+- 依視窗調整 guest 解析度也走 vdagent。Windows 通常會立刻改；Linux（尤其 Kali 預設 XFCE）常只更新 xrandr 可用模式、桌面不套用。可在 guest 執行 `xrandr --output Virtual-1 --auto`，或在設定改選固定解析度
 
 ## 已知限制
 
@@ -91,3 +92,4 @@ swift test
 - 沒有 Developer ID：可以打包，但不能公證。下載後會有隔離屬性警告。
 - Homebrew bottle 若以 macOS 27 建置，打出來的 DMG 目前只保證在 Apple Silicon 的 macOS 27 執行。
 - 尚未完成音效、多顯示器、圖片剪貼簿、USB、PVE API 自動換票。
+- Kali／XFCE 等 Linux 桌面可能不套用 SPICE monitors config；App 會重試並在 status bar 提示，無法在 client 端強制改 guest 桌面解析度。

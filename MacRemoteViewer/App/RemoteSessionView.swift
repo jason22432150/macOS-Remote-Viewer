@@ -99,6 +99,8 @@ struct RemoteSessionView: View {
                 Text(L10n.string(.noGuestAgent, language: language)).foregroundStyle(.orange)
             } else if !controller.agent.supportsMonitorsConfig {
                 Text(L10n.string(.cannotAdjustResolution, language: language)).foregroundStyle(.orange)
+            } else if controller.guestDidNotApplyResolution {
+                Text(L10n.string(.guestDidNotApplyResolution, language: language)).foregroundStyle(.orange)
             } else if !controller.agent.supportsClipboard {
                 Text(L10n.string(.clipboardUnavailable, language: language)).foregroundStyle(.orange)
             }

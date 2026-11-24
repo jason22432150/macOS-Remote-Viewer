@@ -18,16 +18,22 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public let diagnostics: DiagnosticsLog
     /// 設定頁會讀取；必須保持 observable。內部 viewport 同步欄位則忽略，避免 layout 期間 willSet。
     public private(set) var resolutionPreference: GuestResolutionPreference
+    /// 已送出 monitors config，但 guest 桌面解析度沒有跟上（常見於 Kali／XFCE）。
+    public private(set) var guestDidNotApplyResolution = false
 
     private let engine: SpiceEngineing
     private let files: FileAccessing
     private let cleanup: SourceFileCleanup
     private let resolutionDebounce: Duration
+    private let resolutionRetryDelay: Duration
+    private let resolutionRetryLimit: Int
     /// 內部同步狀態不可被 SwiftUI 追蹤；layout／`updateNSView` 期間 willSet 會讓 AppKit SIGTRAP。
     @ObservationIgnored private var didCleanupSource = false
     @ObservationIgnored private var pendingViewportSize: CGSize?
     @ObservationIgnored private var lastRequestedFrame: RemoteFrame?
     @ObservationIgnored private var resolutionTask: Task<Void, Never>?
+    @ObservationIgnored private var resolutionRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var resolutionRetryCount = 0
 
     public init(
         engine: SpiceEngineing,
@@ -35,6 +41,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         cleanup: SourceFileCleanup = SourceFileCleanup(),
         diagnostics: DiagnosticsLog = DiagnosticsLog(sessionID: UUID().uuidString),
         resolutionDebounce: Duration = .milliseconds(400),
+        resolutionRetryDelay: Duration = .seconds(2),
+        resolutionRetryLimit: Int = 3,
         resolutionPreference: GuestResolutionPreference = .matchWindow,
         sessionID: String = UUID().uuidString
     ) {
@@ -43,6 +51,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         self.cleanup = cleanup
         self.diagnostics = diagnostics
         self.resolutionDebounce = resolutionDebounce
+        self.resolutionRetryDelay = resolutionRetryDelay
+        self.resolutionRetryLimit = resolutionRetryLimit
         self.resolutionPreference = resolutionPreference
         self.sessionID = sessionID
         self.engine.delegate = self
@@ -119,6 +129,10 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public func applyResolutionPreference(_ preference: GuestResolutionPreference) {
         resolutionPreference = preference
         lastRequestedFrame = nil
+        resolutionRetryCount = 0
+        guestDidNotApplyResolution = false
+        resolutionRetryTask?.cancel()
+        resolutionRetryTask = nil
         flushResolutionIfNeeded()
     }
 
@@ -136,7 +150,11 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public func engineDidDisconnect() {
         resolutionTask?.cancel()
         resolutionTask = nil
+        resolutionRetryTask?.cancel()
+        resolutionRetryTask = nil
         lastRequestedFrame = nil
+        resolutionRetryCount = 0
+        guestDidNotApplyResolution = false
         if state != .failed(.disconnected) {
             state = .disconnected
         }
@@ -149,6 +167,13 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
 
     public func engineDidUpdateDisplay(_ frame: RemoteFrame) {
         displaySize = frame
+        if frame == lastRequestedFrame {
+            resolutionRetryTask?.cancel()
+            resolutionRetryTask = nil
+            resolutionRetryCount = 0
+            guestDidNotApplyResolution = false
+            return
+        }
         // 尚未送出過目標尺寸時，guest 自行改解析度仍要以視窗為準再對齊。
         // 已送出則交給 lastRequested 去重，避免與 guest 套用中的中間尺寸互打。
         if lastRequestedFrame == nil {
@@ -163,6 +188,10 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
             diagnostics.info("guest-agent-limited")
         }
         if gainedMonitorsConfig {
+            resolutionRetryTask?.cancel()
+            resolutionRetryTask = nil
+            resolutionRetryCount = 0
+            guestDidNotApplyResolution = false
             lastRequestedFrame = nil
         }
         flushResolutionIfNeeded()
@@ -182,17 +211,18 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
             flushResolutionIfNeeded()
             return
         }
-        resolutionTask = Task { @MainActor in
+        let delay = resolutionDebounce
+        resolutionTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: resolutionDebounce)
+                try await Task.sleep(for: delay)
             } catch {
                 return
             }
-            flushResolutionIfNeeded()
+            self?.flushResolutionIfNeeded()
         }
     }
 
-    private func flushResolutionIfNeeded() {
+    private func flushResolutionIfNeeded(force: Bool = false) {
         guard state == .connected else { return }
         guard agent.supportsMonitorsConfig else { return }
         guard let frame = GuestResolutionPolicy.targetFrame(
@@ -202,20 +232,60 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         guard GuestResolutionPolicy.shouldRequest(
             frame,
             currentDisplay: displaySize,
-            lastRequested: lastRequestedFrame
+            lastRequested: force ? nil : lastRequestedFrame
         ) else {
             return
+        }
+        if !force {
+            resolutionRetryCount = 0
+            guestDidNotApplyResolution = false
         }
         lastRequestedFrame = frame
         diagnostics.info("guest-resolution \(frame.width)x\(frame.height)")
         engine.requestResolution(CGSize(width: frame.width, height: frame.height))
+        scheduleResolutionRetry()
+    }
+
+    /// Linux session agent 常比 capability 晚就緒；逾時仍未套用就再送一次。
+    private func scheduleResolutionRetry() {
+        resolutionRetryTask?.cancel()
+        guard resolutionRetryDelay > .zero else { return }
+        let requested = lastRequestedFrame
+        let delay = resolutionRetryDelay
+        resolutionRetryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self, let requested, self.lastRequestedFrame == requested else { return }
+            let remaining = self.resolutionRetryLimit - self.resolutionRetryCount
+            guard GuestResolutionPolicy.shouldRetry(
+                requested: requested,
+                currentDisplay: self.displaySize,
+                remainingAttempts: remaining
+            ) else {
+                if self.displaySize != requested {
+                    self.guestDidNotApplyResolution = true
+                    self.diagnostics.info("guest-resolution-unapplied \(requested.width)x\(requested.height)")
+                }
+                self.resolutionRetryTask = nil
+                return
+            }
+            self.resolutionRetryCount += 1
+            self.flushResolutionIfNeeded(force: true)
+        }
     }
 
     private func resetResolutionSync() {
         resolutionTask?.cancel()
         resolutionTask = nil
+        resolutionRetryTask?.cancel()
+        resolutionRetryTask = nil
         pendingViewportSize = nil
         lastRequestedFrame = nil
+        resolutionRetryCount = 0
+        guestDidNotApplyResolution = false
     }
 
     private func deleteSourceFileIfNeeded() {

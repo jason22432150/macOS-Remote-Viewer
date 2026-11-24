@@ -3,20 +3,32 @@ build/
 DerivedData/
 *.xcuserstate
 *.xccheckout
+*.xcscmblueprint
 *.moved-aside
-xcuserdata/
 *.hmap
 *.ipa
 *.dSYM.zip
 *.dSYM
+*.xcarchive
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+xcuserdata/
 timeline.xctimeline
 playground.xcworkspace
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+!default.mode1v3
+!default.mode2v3
+!default.perspectivev3
+
+# 本機建置產物
+*.app
+*.appex
 
 # Swift Package Manager
 .build/
-.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
-.swiftpm/configuration/registries.json
-.swiftpm/xcode/package.xcworkspace/
+.swiftpm/
+Packages/
 Package.resolved
 
 # Homebrew / 本機產生的建構設定
@@ -26,23 +38,71 @@ BuildSupport/.deps-prefix
 # 第三方原始碼 checkout（以鎖定 commit 重新取得）
 ThirdParty/CocoaSpice/
 
+# 可攜打包產物（內含 Homebrew dylib，不進 git）
+dist/
+*.dmg
+*.dmg.sha256
+*.sha256
+
 # 機密與使用者連線檔
 *.vv
 !Tests/Fixtures/*.vv
 .env
 .env.*
+!.env.example
 *.pem
 *.p12
+*.p8
 *.mobileprovision
+*.cer
+*.key
+secrets/
+credentials/
+*.credentials
+
+# 測試覆蓋率與 Profiling
+coverage/
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+*.trace
+*.crash
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+.coverage
+.coverage.*
 
-# 可攜打包產物（內含 Homebrew dylib，不進 git）
-dist/
+# 編輯器／IDE 本機設定
+.idea/
+*.swp
+*~
+*.orig
+*.rej
+*.bak
+*.tmp
+*.temp
 
 # 系統
 .DS_Store
-*.swp
-*~
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+._*
+Icon?
+Thumbs.db
+Desktop.ini

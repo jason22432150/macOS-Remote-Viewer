@@ -251,6 +251,103 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(engine.requestedResolutions.count, 1)
     }
 
+    func testRetriesWhenGuestDoesNotApplyRequestedSize() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            resolutionDebounce: .zero,
+            resolutionRetryDelay: .milliseconds(30),
+            resolutionRetryLimit: 2
+        )
+        try connect(controller, engine: engine, monitorsConfig: true)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+        XCTAssertFalse(controller.guestDidNotApplyResolution)
+
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(engine.requestedResolutions.count, 2)
+        XCTAssertEqual(
+            engine.requestedResolutions.last,
+            CGSize(width: 1600, height: 900)
+        )
+        XCTAssertFalse(controller.guestDidNotApplyResolution)
+    }
+
+    func testFlagsWhenGuestNeverAppliesRequestedSize() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            resolutionDebounce: .zero,
+            resolutionRetryDelay: .milliseconds(30),
+            resolutionRetryLimit: 1
+        )
+        try connect(controller, engine: engine, monitorsConfig: true)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(engine.requestedResolutions.count, 2)
+        XCTAssertTrue(controller.guestDidNotApplyResolution)
+    }
+
+    func testDoesNotRetryAfterGuestAppliesRequestedSize() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            resolutionDebounce: .zero,
+            resolutionRetryDelay: .milliseconds(30),
+            resolutionRetryLimit: 2
+        )
+        try connect(controller, engine: engine, monitorsConfig: true)
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1600, height: 900))
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+        XCTAssertFalse(controller.guestDidNotApplyResolution)
+    }
+
+    func testDisconnectDuringRetryDoesNotResendOrFlag() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            resolutionDebounce: .zero,
+            resolutionRetryDelay: .milliseconds(30),
+            resolutionRetryLimit: 2
+        )
+        try connect(controller, engine: engine, monitorsConfig: true)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+
+        controller.cancel()
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(engine.requestedResolutions.count, 1)
+        XCTAssertFalse(controller.guestDidNotApplyResolution)
+    }
+
+    func testNewViewportSizeClearsUnappliedResolutionFlag() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(
+            engine: engine,
+            resolutionDebounce: .zero,
+            resolutionRetryDelay: .milliseconds(30),
+            resolutionRetryLimit: 1
+        )
+        try connect(controller, engine: engine, monitorsConfig: true)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertTrue(controller.guestDidNotApplyResolution)
+
+        controller.updateViewportSize(CGSize(width: 1280, height: 800))
+        XCTAssertFalse(controller.guestDidNotApplyResolution)
+        XCTAssertEqual(engine.requestedResolutions.last, CGSize(width: 1280, height: 800))
+    }
+
     func testDebouncedResizeSendsLatestSize() async throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine, resolutionDebounce: .milliseconds(30))

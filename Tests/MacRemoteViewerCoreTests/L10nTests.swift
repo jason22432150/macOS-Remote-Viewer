@@ -32,6 +32,11 @@ final class L10nTests: XCTestCase {
         )
         XCTAssertEqual(L10n.string(.sideButtonPreviousPage, language: .zhHant), "上頁")
         XCTAssertEqual(L10n.string(.sideButtonNextPage, language: .zhHant), "下一頁")
+        XCTAssertEqual(L10n.string(.guestDidNotApplyResolution, language: .zhHant), "遠端未套用解析度")
+        XCTAssertNotEqual(
+            L10n.string(.guestDidNotApplyResolution, language: .zhHant),
+            L10n.string(.guestDidNotApplyResolution, language: .english)
+        )
     }
 
     func testFormatInsertsSafeFieldName() {

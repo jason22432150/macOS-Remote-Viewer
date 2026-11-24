@@ -23,6 +23,7 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case statusRemoteIP
     case noGuestAgent
     case cannotAdjustResolution
+    case guestDidNotApplyResolution
     case clipboardUnavailable
     case ignoredFields
     case menuSession
@@ -130,6 +131,7 @@ public enum L10n {
         .statusRemoteIP: "遠端 IP：%@",
         .noGuestAgent: "無 guest agent",
         .cannotAdjustResolution: "無法自動調整解析度",
+        .guestDidNotApplyResolution: "遠端未套用解析度",
         .clipboardUnavailable: "剪貼簿不可用",
         .ignoredFields: "忽略未支援欄位：%@",
         .menuSession: "工作階段",
@@ -160,7 +162,7 @@ public enum L10n {
         .deleteVVAfterConnect: "成功連線後刪除 .vv 檔案",
         .deleteVVAfterConnectHelp: "PVE 票證通常只能用一次。開啟後刪除可避免誤用過期檔；測試時可關閉此選項以重複使用同一檔案。",
         .matchResolutionToWindow: "依目前視窗大小調整遠端解析度",
-        .matchResolutionToWindowHelp: "需要 guest 安裝 spice-vdagent。不支援時改為本機縮放。關閉後可改選常用解析度。",
+        .matchResolutionToWindowHelp: "需要 guest 的 spice-vdagent。Windows 的 QXL 驅動通常會立刻改解析度。Linux（尤其 Kali 預設 XFCE）往往只更新可用模式、桌面不套用；App 會自動重試數次，仍未套用時 status bar 會提示，畫面改為本機縮放。可在 guest 執行 xrandr --output Virtual-1 --auto，或改選常用解析度。",
         .commonResolutions: "常用解析度",
         .resetResolution: "重設解析度",
         .resetResolutionHelp: "恢復為依目前應用程式視窗大小自動調整。",
@@ -214,6 +216,7 @@ public enum L10n {
         .statusRemoteIP: "Remote IP: %@",
         .noGuestAgent: "No guest agent",
         .cannotAdjustResolution: "Cannot resize guest display",
+        .guestDidNotApplyResolution: "Guest did not apply resolution",
         .clipboardUnavailable: "Clipboard unavailable",
         .ignoredFields: "Ignoring unsupported fields: %@",
         .menuSession: "Session",
@@ -244,7 +247,7 @@ public enum L10n {
         .deleteVVAfterConnect: "Delete the .vv file after a successful connection",
         .deleteVVAfterConnectHelp: "PVE tickets are usually one-time. Deleting the file avoids reusing an expired ticket. Turn this off when you need to reuse the same file while testing.",
         .matchResolutionToWindow: "Match guest resolution to the current window size",
-        .matchResolutionToWindowHelp: "Requires spice-vdagent in the guest. If unsupported, the app scales locally instead. Turn this off to pick a preset resolution.",
+        .matchResolutionToWindowHelp: "Requires spice-vdagent. Windows QXL usually applies the new size immediately. Linux desktops (especially Kali’s default XFCE) often ignore it; the app retries a few times, then shows a status-bar hint and scales locally. In the guest, run xrandr --output Virtual-1 --auto, or pick a preset resolution.",
         .commonResolutions: "Common resolutions",
         .resetResolution: "Reset resolution",
         .resetResolutionHelp: "Restore automatic matching to the current app window size.",
