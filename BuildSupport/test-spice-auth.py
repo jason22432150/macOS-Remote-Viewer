@@ -155,13 +155,25 @@ def test_multi(app, root, fixture):
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+            env["MRV_GLIB_TRACE"] = "1"
+            library = app / "Contents" / "Frameworks" / "libspice-client-glib-2.0.8.dylib"
+            if library.is_file():
+                symbols = subprocess.run(["/usr/bin/nm", "-u", str(library)],
+                                         capture_output=True, text=True, timeout=15, check=True)
+                candidates = [line for line in symbols.stdout.splitlines()
+                              if any(term in line for term in ("context", "longjmp", "setjmp", "g_thread_new"))]
+                print("MRV_COROUTINE_IMPORTS")
+                print("\n".join(candidates)[:6000])
             result = subprocess.run([str(exe), "--loopback-spice-multi-probe",
                                      *map(str, profiles)], cwd=root, env=env,
                                     capture_output=True, text=True, timeout=75)
-            print(result.stdout[-8000:])
+            print(result.stdout[-12000:])
+            if result.stderr:
+                print(result.stderr[-16000:])
             if result.returncode:
-                print(result.stderr[-8000:])
                 raise AssertionError(f"multi: client failed (exit={result.returncode})")
+            if "MRV_GLIB_CRITICAL" in result.stderr or "CRITICAL GLib" in result.stdout:
+                raise AssertionError("multi: GLib critical during concurrent sessions")
             lines = result.stdout.splitlines()
             phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
             if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:

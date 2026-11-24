@@ -52,6 +52,24 @@ def overlay_csmain(checkout: Path) -> None:
         text = text.replace(old, new, 1)
     path.write_text(text)
     _replace_once(path, [
+        ('#import <pthread.h>', '#import <pthread.h>\\n#import <execinfo.h>\\n#import <stdlib.h>\\n#import <unistd.h>'),
+        ("""    GDateTime *now;
+    gchar *dateTimeStr;""",
+         """    // Opt-in test diagnostics: no connection properties, credentials or
+    // remote data are emitted. Capture the offending thread before returning.
+    if ((log_level & G_LOG_LEVEL_CRITICAL) && getenv("MRV_GLIB_TRACE")) {
+        uint64_t tid = 0;
+        pthread_threadid_np(NULL, &tid);
+        fprintf(stderr, "MRV_GLIB_CRITICAL tid=%llu appkit=%d ownsDefault=%d\\\\n",
+                (unsigned long long)tid, pthread_main_np(),
+                g_main_context_is_owner(g_main_context_default()));
+        void *frames[32];
+        int count = backtrace(frames, 32);
+        backtrace_symbols_fd(frames, count, STDERR_FILENO);
+        fflush(stderr);
+    }
+    GDateTime *now;
+    gchar *dateTimeStr;"""),
         ("    gint _loop_quit;", "    gint _loop_quit;\n    dispatch_semaphore_t _workerReady;\n    BOOL _workerOwnsContext;"),
         ("""    gst_ios_init();
     
@@ -591,12 +609,15 @@ def overlay_connection_pve_api(checkout: Path) -> None:
              certSubject:(NSString *)subject
                 password:(NSString *)password
 {
-    if (!self.spiceSession || !host.length || !tlsPort.length || !ca.length || !subject.length) {
+    if (!host.length || !tlsPort.length || !ca.length || !subject.length) {
         return NO;
     }
-    self.isTLSOnly = YES;
-    gchar *channels[] = { "all", NULL };
-    g_object_set(self.spiceSession,
+    __block BOOL configured = NO;
+    [CSMain.sharedInstance syncWith:^{
+        if (!self.spiceSession) return;
+        self.isTLSOnly = YES;
+        gchar *channels[] = { "all", NULL };
+        g_object_set(self.spiceSession,
                  "host", host.UTF8String,
                  "tls-port", tlsPort.UTF8String,
                  "port", NULL,
@@ -609,11 +630,13 @@ def overlay_connection_pve_api(checkout: Path) -> None:
                  "proxy", proxy.length ? proxy.UTF8String : NULL,
                  "pubkey", NULL,
                  NULL);
-    GByteArray *caArray = g_byte_array_new();
-    g_byte_array_append(caArray, ca.bytes, (guint)ca.length);
-    g_object_set(self.spiceSession, "ca", caArray, NULL);
-    g_byte_array_unref(caArray);
-    return YES;
+        GByteArray *caArray = g_byte_array_new();
+        g_byte_array_append(caArray, ca.bytes, (guint)ca.length);
+        g_object_set(self.spiceSession, "ca", caArray, NULL);
+        g_byte_array_unref(caArray);
+        configured = YES;
+    }];
+    return configured;
 }
 
 - (BOOL)hasPVEClipboardCapability {
@@ -624,6 +647,27 @@ def overlay_connection_pve_api(checkout: Path) -> None:
 """
     _replace_once(header, [("- (BOOL)connect;", declaration + "- (BOOL)connect;")])
     _replace_once(impl, [
+        ("""- (instancetype)initWithHost:(NSString *)host port:(NSString *)port {
+    if (self = [super init]) {
+        self.spiceSession = spice_session_new();
+        self.host = host;
+        self.port = port;
+        [self finishInit];
+    }
+    return self;
+}""",
+         """- (instancetype)initWithHost:(NSString *)host port:(NSString *)port {
+    if (self = [super init]) {
+        // The PVE adapter uses this initializer after spiceStart succeeds.
+        [CSMain.sharedInstance syncWith:^{
+            self.spiceSession = spice_session_new();
+            self.host = host;
+            self.port = port;
+            [self finishInit];
+        }];
+    }
+    return self;
+}"""),
         ("""- (BOOL)connect {
     return spice_session_connect(self.spiceSession);
 }

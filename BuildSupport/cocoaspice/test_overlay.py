@@ -420,7 +420,17 @@ class OverlayTests(unittest.TestCase):
             header.parent.mkdir(parents=True)
             header.write_text("- (BOOL)connect;")
             impl = source / "CSConnection.m"
-            impl.write_text("""- (BOOL)connect {
+            impl.write_text("""- (instancetype)initWithHost:(NSString *)host port:(NSString *)port {
+    if (self = [super init]) {
+        self.spiceSession = spice_session_new();
+        self.host = host;
+        self.port = port;
+        [self finishInit];
+    }
+    return self;
+}
+
+- (BOOL)connect {
     return spice_session_connect(self.spiceSession);
 }
 
@@ -435,7 +445,9 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("SPICE_SESSION_VERIFY_SUBJECT", text)
             self.assertIn("self.spiceMain", text)
             self.assertNotIn("valueForKey", text)
-            self.assertEqual(text.count("[CSMain.sharedInstance syncWith:"), 2)
+            self.assertEqual(text.count("[CSMain.sharedInstance syncWith:"), 4)
+            self.assertIn("configured = YES;", text)
+            self.assertIn("self.spiceSession = spice_session_new();", text)
 
     def test_session_private_sharing_category_is_renamed_to_avoid_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
