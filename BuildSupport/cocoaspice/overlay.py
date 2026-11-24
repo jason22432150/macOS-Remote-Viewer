@@ -922,6 +922,178 @@ def overlay_canvas_gpu_lifetime(checkout: Path) -> None:
     ])
 
 
+def overlay_scanout_ownership(checkout: Path) -> None:
+    """Never publish a server-owned IOSurface; fence stale GPU copies."""
+    display = checkout / "Sources" / "CocoaSpice" / "CSDisplay.m"
+    _replace_once(display, [
+        ("@property (nonatomic) BOOL shadowNeedsFullCopy;",
+         "@property (nonatomic) BOOL shadowNeedsFullCopy;\n"
+         "@property (nonatomic, nullable) id<MTLCommandQueue> shadowQueue;\n"
+         "- (void)resetScanout;"),
+        ("""    self.shadowTexture = nil;
+    self.presentTexture = nil;
+}""",
+         """    [self resetScanout];
+}"""),
+        ("""    /* should only be called when the display has a scanout */
+    g_return_if_fail(scanout != NULL);
+    
+    self.isGLEnabled = YES;""",
+         """    if (!scanout) {
+        [self resetScanout];
+        return;
+    }
+    self.isGLEnabled = YES;"""),
+        ("""        // the shadow buffer belongs to the old device
+        self.shadowTexture = nil;
+        self.presentTexture = nil;""",
+         """        // The shadow allocation belongs to the old device/queue.
+        self.shadowTexture = nil;
+        self.presentTexture = nil;
+        self.shadowQueue = nil;"""),
+        ("""                [self rebuildScanoutTextureWithSurface:self.delayedScanoutSurface width:self.delayedScanoutInfo.width height:self.delayedScanoutInfo.height];
+                self.delayedScanoutSurface = nil;""",
+         """                // Transfer the owned +1 reference before the consuming call.
+                IOSurfaceRef surface = self.delayedScanoutSurface;
+                self.delayedScanoutSurface = nil;
+                [self rebuildScanoutTextureWithSurface:surface width:self.delayedScanoutInfo.width height:self.delayedScanoutInfo.height];"""),
+        ("""        // present the shadow copy once we have one, see
+        // `copyScanoutRect:withCompletion:`
+        id<MTLTexture> presentTexture = self.presentTexture;
+        return presentTexture ?: self.glTexture;""",
+         """        // A gl_draw_done acknowledgement permits the server to overwrite
+        // its IOSurface. Only a completed private copy is safe to present.
+        return self.presentTexture;"""),
+        ("""        g_object_unref(channel);
+    }];
+}
+
+- (void)updateVisibleAreaWithRect:""",
+         """        g_object_unref(channel);
+    }];
+    if (_delayedScanoutSurface) {
+        CFRelease(_delayedScanoutSurface);
+        _delayedScanoutSurface = nil;
+    }
+}
+
+- (void)updateVisibleAreaWithRect:"""),
+        ("""- (void)rebuildScanoutTextureWithScanout:(SpiceGlScanout)scanout {
+    IOSurfaceID iosurfaceid = 0;""",
+         """// Called on the GLib context. Drop an unconsumed lookup reference and
+// invalidate previous copy generations before accepting a new scanout.
+- (void)resetScanout {
+    if (self.delayedScanoutSurface) {
+        CFRelease(self.delayedScanoutSurface);
+        self.delayedScanoutSurface = nil;
+    }
+    self.presentTexture = nil;
+    self.shadowTexture = nil;
+    self.shadowQueue = nil;
+    self.glTexture = nil;
+    self.shadowNeedsFullCopy = YES;
+    [self disableScanout];
+}
+
+- (void)rebuildScanoutTextureWithScanout:(SpiceGlScanout)scanout {
+    [self resetScanout];
+    IOSurfaceID iosurfaceid = 0;"""),
+        ("""- (void)rebuildScanoutTextureWithSurface:(IOSurfaceRef)surface width:(NSUInteger)width height:(NSUInteger)height {
+    MTLTextureDescriptor *textureDescriptor""",
+         """- (void)rebuildScanoutTextureWithSurface:(IOSurfaceRef)surface width:(NSUInteger)width height:(NSUInteger)height {
+    // Consume the +1 reference on all paths. Bound dimensions and allocation
+    // before invoking Metal, and do not trust metadata over the IOSurface.
+    const NSUInteger maxScanoutBytes = 256u * 1024u * 1024u;
+    if (!surface) return;
+    if (!width || !height || width > 16384 || height > 16384 ||
+        width > IOSurfaceGetWidth(surface) || height > IOSurfaceGetHeight(surface) ||
+        width > maxScanoutBytes / 4 / height) {
+        CFRelease(surface);
+        [self resetScanout];
+        return;
+    }
+    self.shadowTexture = nil;
+    self.presentTexture = nil;
+    self.shadowQueue = nil;
+    MTLTextureDescriptor *textureDescriptor"""),
+        ("""    CFRelease(surface);
+    [self rebuildShadowTextureWithWidth:width height:height];""",
+         """    CFRelease(surface);
+    if (!self.glTexture) {
+        [self resetScanout];
+        return;
+    }
+    [self rebuildShadowTextureWithWidth:width height:height];"""),
+        ("""    // if this fails we present the scanout directly, which is correct but
+    // couples the server to our display refresh
+    self.shadowTexture = [self.device newTextureWithDescriptor:textureDescriptor];""",
+         """    // If allocation fails, skip presentation instead of sampling memory
+    // the server is allowed to overwrite.
+    self.shadowTexture = [self.device newTextureWithDescriptor:textureDescriptor];"""),
+        ("""    id<MTLTexture> source = self.glTexture;
+    id<MTLTexture> destination = self.shadowTexture;
+    id<MTLCommandQueue> queue = self.renderers.firstObject.commandQueue;""",
+         """    id<MTLTexture> source = self.glTexture;
+    id<MTLCommandQueue> queue = self.renderers.firstObject.commandQueue;
+    if (self.shadowQueue != queue) {
+        // A replacement renderer may use a different command queue. Do not
+        // overwrite a texture which the old queue may still be reading.
+        self.shadowTexture = nil;
+        self.presentTexture = nil;
+        self.shadowQueue = queue;
+        self.shadowNeedsFullCopy = YES;
+    }
+    if (source && queue && !self.shadowTexture) {
+        [self rebuildShadowTextureWithWidth:source.width height:source.height];
+        self.shadowNeedsFullCopy = YES;
+    }
+    id<MTLTexture> destination = self.shadowTexture;"""),
+        ("""        // Either nothing can present this frame, or we have nowhere to copy it
+        // to. We must not acknowledge here and then present `glTexture`: that
+        // hands the renderer the surface the server is now free to overwrite.
+        // Going through the renderer instead holds the acknowledgement until
+        // the frame is on screen, which is what we did before the copy existed,
+        // and costs nothing when there is nothing to draw.
+        [self invalidateWithCompletion:^{
+            [CSMain.sharedInstance asyncWith:completion];
+        }];
+        return;""",
+         """        // No GPU reads the raw IOSurface in this branch. Acknowledge without
+        // waiting on AppKit, and force a full copy when rendering recovers.
+        self.shadowNeedsFullCopy = YES;
+        completion();
+        return;"""),
+        ("""    if (!CGRectIsEmpty(damaged)) {
+        [blitEncoder copyFromTexture:source""",
+         """    if (!CGRectIsNull(damaged) && !CGRectIsEmpty(damaged)) {
+        [blitEncoder copyFromTexture:source"""),
+        ("""    // later copies build on this one, and the queue keeps them in order
+    self.shadowNeedsFullCopy = NO;
+
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        BOOL succeeded = commandBuffer.error == nil;""",
+         """    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        BOOL succeeded = commandBuffer.status == MTLCommandBufferStatusCompleted;"""),
+        ("""            if (succeeded && destination == self.shadowTexture) {
+                // publish before the completion runs, so the invalidate it
+                // triggers picks up this frame
+                self.presentTexture = destination;
+            }""",
+         """            if (source == self.glTexture && destination == self.shadowTexture &&
+                queue == self.shadowQueue) {
+                if (succeeded) {
+                    self.shadowNeedsFullCopy = NO;
+                    self.presentTexture = destination;
+                } else {
+                    // A failed partial copy may corrupt the existing shadow.
+                    self.shadowNeedsFullCopy = YES;
+                    self.presentTexture = nil;
+                    [self disableScanout];
+                }
+            }"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -937,6 +1109,7 @@ def main() -> None:
     )
     overlay_metal_frame_observation(checkout)
     overlay_canvas_gpu_lifetime(checkout)
+    overlay_scanout_ownership(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)

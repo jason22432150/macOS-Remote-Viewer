@@ -32,7 +32,14 @@ def main() -> None:
     require("addCompletedHandler" in copy and "_addDrawCompletion" not in copy, "blit completion still depends on drawable")
     require("submittedCompletions" in gpu_draw, "draw completion batch missing")
     require("for (completionCallback_t completion in submittedCompletions)" in gpu_draw, "old draw can drain newer completions")
-    print("Patched GPU lifetime invariants verified.")
+    scanout_copy = display.split("- (void)copyScanoutRect:(CGRect)rect withCompletion:", 1)[1].split("- (void)rebuildCanvasTexture {", 1)[0]
+    require("return presentTexture ?: self.glTexture" not in display, "server-owned IOSurface must not be presented")
+    require("return self.presentTexture;" in display, "private scanout presentation missing")
+    require("CFRelease(self.delayedScanoutSurface)" in display and "CFRelease(_delayedScanoutSurface)" in display, "unconsumed IOSurface reference not released")
+    require("source == self.glTexture && destination == self.shadowTexture" in scanout_copy and "queue == self.shadowQueue" in scanout_copy, "stale scanout completion not fenced")
+    require("self.shadowNeedsFullCopy = YES;" in scanout_copy and "self.presentTexture = nil;" in scanout_copy, "copy failure recovery missing")
+    require("invalidateWithCompletion" not in scanout_copy, "scanout fallback still waits for AppKit")
+    print("Patched GPU and scanout lifetime invariants verified.")
 
 
 if __name__ == "__main__":
