@@ -2,6 +2,9 @@
 #include <glib.h>
 #include <glib-unix.h>
 #include <spice.h>
+#include <spice/enums.h>
+#include <spice/qxl_dev.h>
+#include <string.h>
 #include <stdint.h>
 #include <signal.h>
 #include <stdio.h>
@@ -90,8 +93,11 @@ static void watch_remove(SpiceWatch *watch) {
 }
 
 static void channel_event(int event, SpiceChannelEventInfo *info) {
-    if (event == SPICE_CHANNEL_EVENT_INITIALIZED && info->type == 1) {
+    if (event == SPICE_CHANNEL_EVENT_INITIALIZED && info->type == SPICE_CHANNEL_MAIN) {
         printf("MAIN_INITIALIZED tls=%d\n", !!(info->flags & SPICE_CHANNEL_EVENT_FLAG_TLS));
+        fflush(stdout);
+    } else if (event == SPICE_CHANNEL_EVENT_INITIALIZED && info->type == SPICE_CHANNEL_DISPLAY) {
+        printf("DISPLAY_INITIALIZED tls=%d\n", !!(info->flags & SPICE_CHANNEL_EVENT_FLAG_TLS));
         fflush(stdout);
     }
 }
@@ -118,8 +124,90 @@ static gboolean quit_loop(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 
+/* Fixed test-only CPU framebuffer. Never expose guest or host desktop memory. */
+enum { WIDTH = 640, HEIGHT = 480 };
+static uint32_t pixels[WIDTH * HEIGHT];
+static QXLInstance qxl;
+
+static void qxl_attached(QXLInstance *instance) { (void)instance; }
+static void qxl_compression(QXLInstance *instance, int level) { (void)instance; (void)level; }
+static void qxl_init_info(QXLInstance *instance, QXLDevInitInfo *info) {
+    (void)instance;
+    memset(info, 0, sizeof(*info));
+    info->memslot_gen_bits = 1;
+    info->memslot_id_bits = 1;
+    info->num_memslots = 1;
+    info->num_memslots_groups = 1;
+    info->internal_groupslot_id = 0;
+    info->qxl_ram_size = sizeof(pixels);
+    info->n_surfaces = 1;
+}
+static int qxl_no_command(QXLInstance *instance, QXLCommandExt *command) {
+    (void)instance; (void)command; return 0;
+}
+static int qxl_notification(QXLInstance *instance) { (void)instance; return 1; }
+static void qxl_release(QXLInstance *instance, QXLReleaseInfoExt info) { (void)instance; (void)info; }
+static void qxl_notify_update(QXLInstance *instance, uint32_t id) { (void)instance; (void)id; }
+static int qxl_flush(QXLInstance *instance) { (void)instance; return 0; }
+static void qxl_async(QXLInstance *instance, uint64_t cookie) { (void)instance; (void)cookie; }
+static void qxl_update_complete(QXLInstance *instance, uint32_t surface_id, QXLRect *dirty, uint32_t count) {
+    (void)instance; (void)surface_id; (void)dirty; (void)count;
+}
+static void qxl_capabilities(QXLInstance *instance, uint8_t present, uint8_t caps[58]) {
+    (void)instance; (void)present; (void)caps;
+}
+
+static QXLInterface display_interface = {
+    .base = {
+        .type = SPICE_INTERFACE_QXL,
+        .description = "MRV synthetic CPU framebuffer",
+        .major_version = SPICE_INTERFACE_QXL_MAJOR,
+        .minor_version = SPICE_INTERFACE_QXL_MINOR,
+    },
+    .attached_worker = qxl_attached,
+    .set_compression_level = qxl_compression,
+    .get_init_info = qxl_init_info,
+    .get_command = qxl_no_command,
+    .req_cmd_notification = qxl_notification,
+    .release_resource = qxl_release,
+    .get_cursor_command = qxl_no_command,
+    .req_cursor_notification = qxl_notification,
+    .notify_update = qxl_notify_update,
+    .flush_resources = qxl_flush,
+    .async_complete = qxl_async,
+    .update_area_complete = qxl_update_complete,
+    .set_client_capabilities = qxl_capabilities,
+};
+
+static int setup_display(SpiceServer *server) {
+    memset(&qxl, 0, sizeof(qxl));
+    qxl.base.sif = &display_interface.base;
+    qxl.id = 0;
+    if (spice_server_add_interface(server, &qxl.base)) return 1;
+    QXLDevMemSlot slot = {0};
+    slot.slot_group_id = 0;
+    slot.virt_start = (uintptr_t)pixels;
+    slot.virt_end = (uintptr_t)pixels + sizeof(pixels);
+    slot.addr_delta = 0;
+    spice_qxl_add_memslot(&qxl, &slot);
+    QXLDevSurfaceCreate surface = {0};
+    surface.width = WIDTH;
+    surface.height = HEIGHT;
+    surface.stride = -WIDTH * 4;
+    surface.format = SPICE_SURFACE_FMT_32_xRGB;
+    surface.mouse_mode = 1;
+    surface.mem = (uintptr_t)pixels;
+    surface.group_id = 0;
+    spice_qxl_create_primary_surface(&qxl, 0, &surface);
+    printf("PRIMARY_CREATED %dx%d\n", WIDTH, HEIGHT);
+    fflush(stdout);
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    if (argc != 6) return 2;
+    if (argc != 6 && argc != 7) return 2;
+    int with_display = argc == 7 && strcmp(argv[6], "display") == 0;
+    if (argc == 7 && !with_display) return 2;
     int port = atoi(argv[1]);
     if (port < 1 || port > 65535) return 2;
     SpiceServer *server = spice_server_new();
@@ -132,12 +220,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "SPICE fixture initialization failed\n");
         return 1;
     }
+    if (with_display && setup_display(server)) return 1;
     GMainLoop *loop = g_main_loop_new(NULL, FALSE);
     guint signal_source = g_unix_signal_add(SIGTERM, quit_loop, loop);
     printf("READY\n");
     fflush(stdout);
     g_main_loop_run(loop);
     g_source_remove(signal_source);
+    if (with_display) spice_qxl_destroy_primary_surface(&qxl, 0);
     spice_server_destroy(server);
     g_main_loop_unref(loop);
     return 0;

@@ -70,3 +70,7 @@ CI 以唯讀方式掛載最終 DMG，比對內嵌與獨立 SBOM、檢查 Applica
 ## 真實 SPICE Main Channel / Ticket Authentication
 
 `BuildSupport/test-spice-auth.py` 在 macOS 透過 Homebrew test-only `spice-server` 編譯 C fixture，使用 GLib main loop 與 TLS-only 127.0.0.1 端點。使用合成 CA、票證與實際簽署 App：正確票證須在同一 engine/controller 內連線及取消三次，且伺服器須觀察三個 TLS main-channel initialized 事件；錯誤票證須收到 authenticationRejected，且不得初始化 main channel。fixture 不提供 guest OS、QXL、Display Channel 或 guest agent；不代表真實 PVE GUI、輸入或 framebuffer 測試。測試套件於打包及依賴審查之後安裝，非發行 App 的新增相依。若未安裝 server 依賴，本測試不可宣稱通過。
+
+## 真實 Display Channel 與 GPU 首幀
+
+SPICE fixture 另提供固定 640×480 CPU Primary Surface（QXL interface）；同一簽署 App、engine、controller 及 RemoteCanvasView 反覆連線兩次。每輪須收到實際 Display Channel 尺寸、成功 Metal command buffer completion、首幀時間，斷線後須清空畫面與首幀狀態。伺服器另核對 TLS Display Channel 事件。這是合成 CPU framebuffer，不驗證影像像素正確性、動畫、GL Scanout、真實螢幕呈現或 Guest OS。原本純認證測試保留。

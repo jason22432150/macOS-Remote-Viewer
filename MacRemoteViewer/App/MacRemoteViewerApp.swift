@@ -94,6 +94,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-spice-auth-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackSpiceAuthProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-display-probe") {
+            guard index + 1 < arguments.count else { Darwin.exit(2) }
+            runLoopbackSpiceDisplayProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        }
+    }
+
+    /// Exercise actual display callbacks and Metal completion using the production canvas.
+    private func runLoopbackSpiceDisplayProbe(file: URL) {
+        Task { @MainActor in
+            let engine = SpiceEngineAdapter()
+            let controller = SessionController(engine: engine,
+                connectionTimeout: .seconds(8), displayTimeout: .seconds(12))
+            let frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+            let window = NSWindow(contentRect: frame, styleMask: [.titled, .closable],
+                                  backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            do {
+                let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                let profile = try VVParser().parse(data: data)
+                guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                      profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile,
+                      let device = MTLCreateSystemDefaultDevice() else {
+                    throw SessionError.cancelled
+                }
+                controller.setClipboardSharingEnabled(false)
+                let canvas = RemoteCanvasView(frame: frame, device: device)
+                canvas.controller = controller
+                canvas.setupMetal()
+                window.contentView = canvas
+                window.makeKeyAndOrderFront(nil)
+                for round in 0..<2 {
+                    controller.open(profile)
+                    let deadline = ContinuousClock.now + .seconds(15)
+                    while ContinuousClock.now < deadline {
+                        if case .failed = controller.state { throw SessionError.network }
+                        if controller.state == .disconnected { throw SessionError.disconnected }
+                        canvas.attachRendererIfNeeded()
+                        canvas.updateViewport()
+                        if controller.state == .connected,
+                           controller.displaySize == RemoteFrame(width: 640, height: 480),
+                           controller.hasRenderedFrame { break }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    guard controller.state == .connected,
+                          controller.displaySize == RemoteFrame(width: 640, height: 480),
+                          controller.hasRenderedFrame, let elapsed = controller.firstFrameMilliseconds else {
+                        throw SessionError.displayTimeout
+                    }
+                    print("MRV_SPICE_DISPLAY_ROUND_OK \(round + 1) 640x480 first-frame-ms=\(elapsed)")
+                    controller.cancel()
+                    try await Task.sleep(for: .milliseconds(200))
+                    guard controller.state == .disconnected, !controller.hasRenderedFrame,
+                          controller.displaySize == nil else { throw SessionError.cancelled }
+                }
+                canvas.prepareForRemoval()
+                window.orderOut(nil)
+                print("MRV_SPICE_DISPLAY_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                controller.cancel()
+                window.orderOut(nil)
+                print("MRV_SPICE_DISPLAY_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
         }
     }
 

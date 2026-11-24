@@ -23,7 +23,7 @@ def compile_fixture(destination):
                     "-o", str(destination), *flags], check=True, timeout=60)
 
 
-def test_case(app, root, fixture, name, server_ticket, success):
+def test_case(app, root, fixture, name, server_ticket, success, display=False):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -32,9 +32,11 @@ def test_case(app, root, fixture, name, server_ticket, success):
     profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
     log = root / f"{name}.log"
     with log.open("wb") as output:
-        server = subprocess.Popen([str(fixture), str(port), str(root / "trusted.pem"),
-                                   str(root / "server.pem"), str(root / "server.key"), server_ticket],
-                                  stdout=output, stderr=subprocess.STDOUT)
+        command = [str(fixture), str(port), str(root / "trusted.pem"),
+                   str(root / "server.pem"), str(root / "server.key"), server_ticket]
+        if display:
+            command.append("display")
+        server = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
@@ -53,15 +55,23 @@ def test_case(app, root, fixture, name, server_ticket, success):
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
-            result = subprocess.run([str(exe), "--loopback-spice-auth-probe", str(profile)],
-                                    cwd=root, env=env, capture_output=True, text=True, timeout=40)
+            mode = "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe"
+            result = subprocess.run([str(exe), mode, str(profile)],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=45)
             lines = result.stdout.splitlines()
-            expected = "MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED"
+            expected = "MRV_SPICE_DISPLAY_OK" if display else ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED")
             if result.returncode != 0 or expected not in lines:
                 print(result.stdout[-2000:])
                 print(result.stderr[-2000:])
                 raise AssertionError(f"{name}: missing expected auth result")
-            if success and [line for line in lines if line.startswith("MRV_SPICE_AUTH_ROUND_OK ")] != [
+            if display:
+                rounds = [line for line in lines if line.startswith("MRV_SPICE_DISPLAY_ROUND_OK ")]
+                if len(rounds) != 2 or any(not line.startswith(f"MRV_SPICE_DISPLAY_ROUND_OK {i} 640x480 first-frame-ms=")
+                                           for i, line in enumerate(rounds, 1)):
+                    raise AssertionError("did not complete both actual display rounds")
+                for line in rounds:
+                    print(line)
+            if success and not display and [line for line in lines if line.startswith("MRV_SPICE_AUTH_ROUND_OK ")] != [
                     f"MRV_SPICE_AUTH_ROUND_OK {i}" for i in range(1, 4)]:
                 raise AssertionError("did not complete all three reconnect rounds")
         finally:
@@ -73,7 +83,11 @@ def test_case(app, root, fixture, name, server_ticket, success):
                 server.wait(timeout=5)
         lines = log.read_text(errors="replace").splitlines()
         initialized = [line for line in lines if line.startswith("MAIN_INITIALIZED ")]
-        if success and initialized != ["MAIN_INITIALIZED tls=1"] * 3:
+        if display:
+            display_channels = [line for line in lines if line.startswith("DISPLAY_INITIALIZED ")]
+            if display_channels != ["DISPLAY_INITIALIZED tls=1"] * 2 or "PRIMARY_CREATED 640x480" not in lines:
+                raise AssertionError(f"unexpected display channels: {display_channels}")
+        if success and initialized != ["MAIN_INITIALIZED tls=1"] * (2 if display else 3):
             raise AssertionError(f"{name}: expected three TLS main-channel initializations: {initialized}")
         if not success and initialized:
             raise AssertionError(f"{name}: rejected ticket initialized a channel")
@@ -91,6 +105,7 @@ def main():
         compile_fixture(fixture)
         test_case(args.app.resolve(), root, fixture, "valid-ticket", tls.TICKET, True)
         test_case(args.app.resolve(), root, fixture, "wrong-ticket", "mrv-ci-other-ticket", False)
+        test_case(args.app.resolve(), root, fixture, "display", tls.TICKET, True, display=True)
     print("Real SPICE ticket authentication and reconnect checks passed.")
 
 
