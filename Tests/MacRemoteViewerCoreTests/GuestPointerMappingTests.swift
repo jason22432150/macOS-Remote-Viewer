@@ -2,6 +2,13 @@ import XCTest
 @testable import MacRemoteViewerCore
 
 final class GuestPointerMappingTests: XCTestCase {
+    func testMouseEventCarriesIndependentRelativeMotion() {
+        let event = MouseEvent(kind: .move, point: CGPoint(x: 1200, y: 800),
+                               relativeDelta: CGPoint(x: -4, y: 3))
+        XCTAssertEqual(event.relativeDelta, CGPoint(x: -4, y: 3))
+        XCTAssertEqual(event.point, CGPoint(x: 1200, y: 800))
+        XCTAssertNil(MouseEvent(kind: .move, point: .zero).relativeDelta)
+    }
     func testAspectFitCentersLetterboxedDisplay() {
         let mapping = GuestPointerMapping.aspectFit(
             displaySize: CGSize(width: 1920, height: 1080),

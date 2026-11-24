@@ -57,7 +57,8 @@ final class InputRouter {
             guard bits.button != 0 else { return nil }
             return MouseEvent(kind: .up, point: point, buttonMask: bits.mask, button: bits.button)
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-            return MouseEvent(kind: .move, point: point, buttonMask: mask)
+            return MouseEvent(kind: .move, point: point, buttonMask: mask,
+                              relativeDelta: CGPoint(x: event.deltaX, y: event.deltaY))
         case .scrollWheel:
             let delta = ScrollWheelMapping.guestDelta(
                 event.scrollingDeltaY,
@@ -66,6 +67,7 @@ final class InputRouter {
                 mouseWheelSensitivity: mouseWheelSensitivity,
                 trackpadScrollSensitivity: trackpadScrollSensitivity
             )
+            guard delta.isFinite, delta != 0 else { return nil }
             return MouseEvent(kind: .scroll, point: point, buttonMask: mask, scrollDelta: delta)
         default:
             return nil

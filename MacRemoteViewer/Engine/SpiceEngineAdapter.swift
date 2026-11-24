@@ -17,7 +17,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private var attachedRenderer: CSRenderer?
     private var frameGeneration = UUID()
     private var pendingResolution: CGSize?
-    private var lastGuestPoint: CGPoint?
     private static var workerStarted = false
     private var pressedMouseMask: UInt32 = 0
     /// 預設開啟；workspace 會在多 session 時只留給作用中分頁。
@@ -76,7 +75,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         attachedRenderer = nil
         pendingRenderer = nil
         pendingResolution = nil
-        lastGuestPoint = nil
     }
 
     func sendMouse(_ event: MouseEvent) {
@@ -85,15 +83,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         case .move:
             let mask = CSInputButton(rawValue: UInt(pressedMouseMask))
             if input.serverModeCursor {
-                let previous = lastGuestPoint ?? event.point
-                let delta = CGPoint(x: event.point.x - previous.x, y: event.point.y - previous.y)
+                let delta = event.relativeDelta ?? .zero
+                guard delta.x.isFinite, delta.y.isFinite else { return }
                 input.sendMouseMotion(mask, relativePoint: delta)
             } else {
                 input.sendMousePosition(mask, absolutePoint: event.point)
                 // client 模式必須自己移動 overlay，否則遠端游標會停在舊位置。
                 display?.cursor?.move(to: event.point)
             }
-            lastGuestPoint = event.point
         case .down, .up:
             // 只能送剛變化的那一顆 bit；複合 mask 當 button id 時 SPICE 會解成無效值。
             let button = CSInputButton(rawValue: UInt(event.button))
@@ -106,10 +103,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
                 pressedMouseMask &= ~event.button
             }
             let mask = CSInputButton(rawValue: UInt(pressedMouseMask))
-            input.sendMouseButton(button, mask: mask, pressed: event.kind == .down)
+            // In client mode, ensure the server receives the actual click
+            // location even when AppKit did not send a preceding move event.
             if !input.serverModeCursor {
+                let previousMask = event.kind == .down ? pressedMouseMask & ~event.button : pressedMouseMask | event.button
+                input.sendMousePosition(CSInputButton(rawValue: UInt(previousMask)), absolutePoint: event.point)
                 display?.cursor?.move(to: event.point)
             }
+            input.sendMouseButton(button, mask: mask, pressed: event.kind == .down)
         case .scroll:
             input.sendMouseScroll(.smooth, buttonMask: CSInputButton(rawValue: UInt(pressedMouseMask)), dy: event.scrollDelta)
         }
@@ -134,7 +135,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
                                    mask: CSInputButton(rawValue: UInt(pressedMouseMask)), pressed: false)
         }
         pressedMouseMask = 0
-        lastGuestPoint = nil
     }
 
     func sendCtrlAltDelete() {
@@ -252,7 +252,6 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         hopToMain(from: connection) { adapter in
             if adapter.input === input {
                 adapter.pressedMouseMask = 0
-                adapter.lastGuestPoint = nil
                 adapter.input = nil
             }
         }

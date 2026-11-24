@@ -26,19 +26,23 @@ public struct MouseEvent: Sendable, Equatable {
     /// down／up 時剛變化的那一顆按鍵；move／scroll 為 0。
     public var button: UInt32
     public var scrollDelta: CGFloat
+    /// Native event delta for server-mode motion; nil for synthetic or legacy callers.
+    public var relativeDelta: CGPoint?
 
     public init(
         kind: Kind,
         point: CGPoint,
         buttonMask: UInt32 = 0,
         button: UInt32 = 0,
-        scrollDelta: CGFloat = 0
+        scrollDelta: CGFloat = 0,
+        relativeDelta: CGPoint? = nil
     ) {
         self.kind = kind
         self.point = point
         self.buttonMask = buttonMask
         self.button = button
         self.scrollDelta = scrollDelta
+        self.relativeDelta = relativeDelta
     }
 }
 
