@@ -65,10 +65,12 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/python" -m pip install 'jsonschema==4.25.1'
           "$RUNNER_TEMP/sbom-venv/bin/python" BuildSupport/validate-sbom.py dist/*.bom.json --app "dist/work/Mac Remote Viewer.app"
+      - name: Audit bundled keg versions, notices and OSV advisories
+        run: python3 BuildSupport/audit-dependencies.py dist/*.bom.json --manifest "$RUNNER_TEMP/native-build.json"
       - name: Verify DMG checksum
         run: |
           cd dist
-          shasum -a 256 -c *.dmg.sha256 *.bom.json.sha256
+          shasum -a 256 -c *.dmg.sha256 *.bom.json.sha256 *.dependency-audit.json.sha256 *.notices.zip.sha256
       - name: Upload ad-hoc signed preview DMG, SBOM and build provenance
         uses: actions/upload-artifact@v4
         with:
@@ -78,6 +80,10 @@ jobs:
             dist/*.dmg.sha256
             dist/*.bom.json
             dist/*.bom.json.sha256
+            dist/*.dependency-audit.json
+            dist/*.dependency-audit.json.sha256
+            dist/*.notices.zip
+            dist/*.notices.zip.sha256
             ${{ runner.temp }}/native-build.json
           if-no-files-found: error
           retention-days: 14

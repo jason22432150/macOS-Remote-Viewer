@@ -18,7 +18,29 @@ validator = importlib.util.module_from_spec(VALIDATOR_SPEC)
 VALIDATOR_SPEC.loader.exec_module(validator)
 
 
+AUDIT_SPEC = importlib.util.spec_from_file_location(
+    "audit_dependencies", Path(__file__).with_name("audit-dependencies.py"))
+audit = importlib.util.module_from_spec(AUDIT_SPEC)
+AUDIT_SPEC.loader.exec_module(audit)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_osv_pagination_and_query_failure_are_explicit(self):
+        kegs = [("example", "1.2_3", Path("/tmp"), "homebrew/core")]
+        with patch.object(audit, "query_batch", side_effect=[
+            [{"vulns": [{"id": "TEST-1"}], "next_page_token": "next"}],
+            [{"vulns": [{"id": "TEST-2"}]}],
+        ]) as query:
+            report = audit.scan(kegs)[0]
+            self.assertEqual(report["advisory_ids"], ["TEST-1", "TEST-2"])
+            self.assertEqual(report["status"], "matches")
+            self.assertEqual(query.call_args.args[0][0]["page_token"], "next")
+            self.assertEqual(query.call_args.args[0][0]["version"], "1.2_3")
+        with patch.object(audit, "query_batch", side_effect=OSError("offline")):
+            self.assertEqual(audit.scan(kegs)[0]["status"], "query-error")
+        with patch.object(audit, "query_batch", return_value=[{}]):
+            self.assertEqual(audit.scan(kegs)[0]["status"], "no-known-matches")
+
     def test_inventory_rejects_wrong_hash_and_missing_file(self):
         with tempfile.TemporaryDirectory() as raw:
             app = Path(raw)

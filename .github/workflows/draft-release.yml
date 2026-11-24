@@ -66,6 +66,14 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/python" -m pip install 'jsonschema==4.25.1'
           "$RUNNER_TEMP/sbom-venv/bin/python" BuildSupport/validate-sbom.py "$BOM_PATH"
+          AUDIT_PATH="${DMG_PATH%.dmg}.dependency-audit.json"
+          NOTICES_PATH="${DMG_PATH%.dmg}.notices.zip"
+          test -f "$AUDIT_PATH"
+          test -f "$NOTICES_PATH"
+          (cd "$(dirname "$AUDIT_PATH")"; shasum -a 256 -c "$(basename "$AUDIT_PATH").sha256" "$(basename "$NOTICES_PATH").sha256")
+          BOM_SHA="$(shasum -a 256 "$BOM_PATH" | cut -d ' ' -f 1)"
+          NOTICES_SHA="$(shasum -a 256 "$NOTICES_PATH" | cut -d ' ' -f 1)"
+          jq -e --arg bom "$BOM_SHA" --arg notices "$NOTICES_SHA" '.scan_complete_for_observed_kegs == true and .sbom_sha256 == $bom and .notice_archive_sha256 == $notices and .release_review_required == true' "$AUDIT_PATH"
           MANIFEST="$(find release-artifact -type f -name native-build.json -print)"
           test -f "$MANIFEST"
-          gh release create "$TAG" "$DMG_PATH" "$DMG_PATH.sha256" "$BOM_PATH" "$BOM_PATH.sha256" "$MANIFEST" --verify-tag --draft --title "Mac Remote Viewer $TAG" --notes "Ad-hoc signed ARM64 build; not notarized. Review the draft and distribution requirements before publishing."
+          gh release create "$TAG" "$DMG_PATH" "$DMG_PATH.sha256" "$BOM_PATH" "$BOM_PATH.sha256" "$AUDIT_PATH" "$AUDIT_PATH.sha256" "$NOTICES_PATH" "$NOTICES_PATH.sha256" "$MANIFEST" --verify-tag --draft --title "Mac Remote Viewer $TAG" --notes "Ad-hoc signed ARM64 build; not notarized. Review the draft and distribution requirements before publishing."

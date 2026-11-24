@@ -125,3 +125,5 @@ Swift Core 的 macOS 14 設定不代表打包後 App 支援 macOS 14。打包工
 ### SBOM 與二進位來源
 
 預覽 DMG 內含 `bom.json`（CycloneDX 1.6），CI 另上傳同一份 `*.bom.json` 與 SHA-256。清單以最終 ad-hoc 簽署後的 Mach-O 為準，包含 bundle 相對路徑、架構、load commands、rpath 與檔案雜湊；由 Homebrew 複製的檔案另記原始雜湊與實際 Cellar formula／keg 版本（可辨識時）。現成 App 中來源不明的二進位會明確標記，不假定版本。這是二進位物料清單，尚未完整枚舉靜態相依、授權義務、系統函式庫或漏洞；不可視為完整供應鏈證明。`native-build.json` 仍記錄直接版本鎖定及建置環境。正式發布流程要求 SBOM 與校驗檔一併存在。
+
+CI 另外使用固定 CycloneDX Schema revision 驗證 SBOM 與簽署後 App 內所有 Mach-O 的檔案雜湊，並核對每個實際內嵌 Homebrew keg 的版本、安裝收據及打包前來源雜湊。`*.dependency-audit.json` 記錄 OSV Homebrew advisory IDs、覆蓋狀態和時間；`*.notices.zip` 收集實際 keg 的授權候選文字及雜湊，缺漏仍需人工處理。OSV 無匹配不等於無漏洞，API 故障／未辨識 tap 不算掃描完成。預覽可保留，但建立發布草稿須完整查詢並人工審查漏洞、授權及實機測試。這些檔案不是完整的傳遞依賴重建鎖或授權合規證明。
