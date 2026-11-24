@@ -80,3 +80,7 @@ Display fixture 每 250 ms 送出一個 QXL_DRAW_FILL，輪流填滿紅色與綠
 動態測試改採 QXL_DRAW_COPY + immutable red/green direct bitmap，避免以單色 brush fill 作為唯一更新路徑。fixture 會記錄提交、worker 消費、release 次數及退出狀態；App 記錄有限的實際 RGB 樣本、GPU 讀回不可用狀態與首幀診斷。正常 shader 的非 alpha surface 使用 normalized alpha 1.0。紅／綠都必須符合原本精確 RGB 條件；不允許以超時、黑畫面或僅 GPU completion 代替。
 
 CI #45392068111 顯示已建立 Main/Display Channel、完成 GPU draw 與黑色像素讀回，但 QXL submitted=1、consumed=0。SPICE red worker 在 VM 尚未 running 時不消費 QXL 命令。fixture 在建立 QXL primary surface 後、啟動 GLib loop 前呼叫 `spice_server_vm_start`；結束時先銷毀 surface，再 `spice_server_vm_stop`。測試保留雙色 RGB 驗證，並要求伺服器 VM_STARTED marker 與實際消費計數，不將僅送出初始 surface 視為動態更新成功。
+
+## 四個真實 Session 並行
+
+CI 的 multi probe 在同一 App 程序內開四個 loopback TLS SPICE server，分別提供紅/綠、藍/黃、青/洋紅、白/灰動態 bitmap。使用同一 Metal device、四個 production RemoteCanvasView 及四個獨立 SessionController/Adapter；以可見 2×2 grid 測試四輪 active 切換。每輪要求每個 canvas 重新取得自身兩色、無其他非黑色、保持 connected 並確認 active/background preferredFramesPerSecond 為 60/15。關閉第二組後剩餘三組須重新取得自身雙色，關閉組須清除 display/frame state。這是 canvas/controller 層的真實網路並行測試，並非 SwiftUI 分頁整合測試；不測 clipboard/guest input，FPS 設定不等於實際量測 FPS，亦不驗證完全隱藏或遮蔽視窗的 GPU 行為。

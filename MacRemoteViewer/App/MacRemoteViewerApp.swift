@@ -97,6 +97,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-spice-display-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackSpiceDisplayProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-multi-probe") {
+            guard arguments.count == index + 5 else { Darwin.exit(2) }
+            runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
+                URL(fileURLWithPath: $0)
+            })
+        }
+    }
+
+    /// Four simultaneous real connections, one shared GPU device, four isolated canvases.
+    /// All canvases remain visible in a test-only grid so a headless/occluded view
+    /// cannot prevent the background rendering checks. No clipboard or guest input.
+    private func runLoopbackSpiceMultiProbe(files: [URL]) {
+        Task { @MainActor in
+            let expected: [Set<UInt32>] = [
+                [0xff0000, 0x00ff00], [0x0000ff, 0xffff00],
+                [0x00ffff, 0xff00ff], [0xffffff, 0x808080],
+            ]
+            let rect = CGRect(x: 0, y: 0, width: 640, height: 480)
+            let window = NSWindow(contentRect: rect, styleMask: [.titled, .closable],
+                                  backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            var controllers: [SessionController] = []
+            var canvases: [RemoteCanvasView] = []
+            var observed = Array(repeating: Set<UInt32>(), count: 4)
+            var foreign = Set<Int>()
+            var live = Set(0..<4)
+            func cleanUp() {
+                for canvas in canvases {
+                    canvas.setSmokePixelHandler(nil)
+                    canvas.prepareForRemoval()
+                }
+                for controller in controllers { controller.cancel() }
+                window.orderOut(nil)
+            }
+            do {
+                let profiles = try files.map { file in
+                    let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                    let profile = try VVParser().parse(data: data)
+                    guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                          profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
+                        throw SessionError.cancelled
+                    }
+                    return profile
+                }
+                guard profiles.count == 4, Set(profiles.map(\.tlsPort)).count == 4,
+                      let device = MTLCreateSystemDefaultDevice() else {
+                    throw SessionError.engineUnavailable
+                }
+                let grid = NSView(frame: rect)
+                window.contentView = grid
+                for i in 0..<4 {
+                    let controller = SessionController(engine: SpiceEngineAdapter(),
+                        connectionTimeout: .seconds(8), displayTimeout: .seconds(12))
+                    controller.setClipboardSharingEnabled(false)
+                    let canvas = RemoteCanvasView(
+                        frame: CGRect(x: (i % 2) * 320, y: (i / 2) * 240, width: 320, height: 240),
+                        device: device)
+                    canvas.controller = controller
+                    canvas.setActive(i == 0)
+                    canvas.setupMetal()
+                    canvas.setSmokePixelHandler { pixel in
+                        let rgb = pixel & 0x00ffffff
+                        // Initial empty black surfaces are allowed, but cannot
+                        // satisfy either expected color. Any foreign color fails.
+                        if expected[i].contains(rgb) { observed[i].insert(rgb) }
+                        else if rgb != 0 {
+                            if foreign.insert(i).inserted {
+                                print("MRV_MULTI_FOREIGN session=\(i) rgb=\(String(rgb, radix: 16))")
+                            }
+                        }
+                    }
+                    grid.addSubview(canvas)
+                    controllers.append(controller)
+                    canvases.append(canvas)
+                }
+                window.makeKeyAndOrderFront(nil)
+                // Open all four before yielding to the main actor.
+                for i in 0..<4 { controllers[i].open(profiles[i]) }
+
+                func validatePhase(active: Int) async throws {
+                    for i in live { canvases[i].setActive(i == active) }
+                    // Reset observations for each phase: require fresh draws, not
+                    // cached success from the previous foreground selection.
+                    for i in live { observed[i].removeAll() }
+                    let deadline = ContinuousClock.now + .seconds(12)
+                    while ContinuousClock.now < deadline {
+                        guard foreign.isEmpty else { throw SessionError.unknown(code: "foreign-color") }
+                        for i in live {
+                            let controller = controllers[i]
+                            if case .failed = controller.state { throw SessionError.network }
+                            if controller.state == .disconnected { throw SessionError.disconnected }
+                            canvases[i].attachRendererIfNeeded()
+                            canvases[i].updateViewport()
+                        }
+                        if live.allSatisfy({ i in
+                            controllers[i].state == .connected &&
+                            controllers[i].displaySize == RemoteFrame(width: 640, height: 480) &&
+                            controllers[i].hasRenderedFrame && observed[i] == expected[i] &&
+                            canvases[i].preferredFramesPerSecond == (i == active ? 60 : 15)
+                        }) { return }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    for i in live.sorted() {
+                        print("MRV_MULTI_DIAGNOSTIC session=\(i) connected=\(controllers[i].state == .connected) rendered=\(controllers[i].hasRenderedFrame) samples=\(observed[i].count)")
+                    }
+                    throw SessionError.displayTimeout
+                }
+
+                for active in 0..<4 {
+                    try await validatePhase(active: active)
+                    print("MRV_MULTI_PHASE_OK active=\(active) live=4 targets=60,15")
+                }
+                // Disconnect one renderer while the remaining three continue.
+                canvases[1].setSmokePixelHandler(nil)
+                canvases[1].prepareForRemoval()
+                canvases[1].removeFromSuperview()
+                controllers[1].cancel()
+                live.remove(1)
+                try await validatePhase(active: 2)
+                guard controllers[1].state == .disconnected,
+                      controllers[1].displaySize == nil, !controllers[1].hasRenderedFrame,
+                      foreign.isEmpty else { throw SessionError.cancelled }
+                print("MRV_MULTI_CLOSE_OK live=3")
+                for i in 0..<4 {
+                    if let elapsed = controllers[i].firstFrameMilliseconds {
+                        print("MRV_MULTI_FIRST_FRAME session=\(i) ms=\(elapsed)")
+                    }
+                }
+                cleanUp()
+                print("MRV_MULTI_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                cleanUp()
+                print("MRV_MULTI_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
         }
     }
 

@@ -138,6 +138,13 @@ static QXLInstance qxl;
 /* Bounded pool: SPICE may retain a drawable until a later update supersedes it. */
 static gint draw_states[DRAW_SLOTS];
 static unsigned next_color;
+static unsigned palette_index;
+static const uint32_t palettes[4][2] = {
+    {0x00ff0000, 0x0000ff00}, /* red / green */
+    {0x000000ff, 0x00ffff00}, /* blue / yellow */
+    {0x0000ffff, 0x00ff00ff}, /* cyan / magenta */
+    {0x00ffffff, 0x00808080}, /* white / gray */
+};
 static gint submitted_draws;
 static gint consumed_draws;
 static gint released_draws;
@@ -262,8 +269,8 @@ static QXLInterface display_interface = {
 static int setup_display(SpiceServer *server) {
     memset(&qxl, 0, sizeof(qxl));
     for (size_t i = 0; i < WIDTH * HEIGHT; ++i) {
-        framebuffer.red[i] = 0x00ff0000;
-        framebuffer.green[i] = 0x0000ff00;
+        framebuffer.red[i] = palettes[palette_index][0];
+        framebuffer.green[i] = palettes[palette_index][1];
     }
     qxl.base.sif = &display_interface.base;
     qxl.id = 0;
@@ -289,9 +296,13 @@ static int setup_display(SpiceServer *server) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 6 && argc != 7) return 2;
-    int with_display = argc == 7 && strcmp(argv[6], "display") == 0;
-    if (argc == 7 && !with_display) return 2;
+    if (argc < 6 || argc > 8) return 2;
+    int with_display = argc >= 7 && strcmp(argv[6], "display") == 0;
+    if (argc >= 7 && !with_display) return 2;
+    if (argc == 8) {
+        if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;
+        palette_index = (unsigned)(argv[7][0] - '0');
+    }
     int port = atoi(argv[1]);
     if (port < 1 || port > 65535) return 2;
     SpiceServer *server = spice_server_new();
