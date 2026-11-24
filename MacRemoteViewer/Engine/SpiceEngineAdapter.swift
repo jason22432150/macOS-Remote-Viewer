@@ -73,13 +73,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         spicePasteboard.stopPolling()
         connection?.session.shareClipboard = false
         connection?.session.pasteboardDelegate = nil
-        connection?.disconnect()
+        clearFrameObserver()
+        if let attachedRenderer { display?.removeRenderer(attachedRenderer) }
         connection?.delegate = nil
+        connection?.disconnect()
         connection = nil
         input = nil
         relativeMouseRequested = false
         display = nil
-        clearFrameObserver()
         attachedRenderer = nil
         pendingRenderer = nil
         pendingResolution = nil
@@ -220,6 +221,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         }
     }
 
+    func clearPendingResolution() { pendingResolution = nil }
+
     func requestResolution(_ size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
         pendingResolution = size
@@ -271,8 +274,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     nonisolated func spiceDisplayCreated(_ connection: CSConnection, display: CSDisplay) {
-        let width = Int(display.displaySize.width)
-        let height = Int(display.displaySize.height)
+        let frame = Self.validatedFrame(display.displaySize)
         let isPrimary = display.isPrimaryDisplay
         hopToMain(from: connection) { adapter in
             if adapter.display == nil || isPrimary {
@@ -285,17 +287,16 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
                 adapter.display = display
                 adapter.attachPendingRenderer()
                 adapter.applyPendingResolution()
-                adapter.delegate?.engineDidUpdateDisplay(RemoteFrame(width: width, height: height))
+                if let frame { adapter.delegate?.engineDidUpdateDisplay(frame) }
             }
         }
     }
 
     nonisolated func spiceDisplayUpdated(_ connection: CSConnection, display: CSDisplay) {
-        let width = Int(display.displaySize.width)
-        let height = Int(display.displaySize.height)
+        let frame = Self.validatedFrame(display.displaySize)
         hopToMain(from: connection) { adapter in
             guard display === adapter.display else { return }
-            adapter.delegate?.engineDidUpdateDisplay(RemoteFrame(width: width, height: height))
+            if let frame { adapter.delegate?.engineDidUpdateDisplay(frame) }
         }
     }
 
@@ -339,6 +340,12 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
             guard self.connection === connection else { return }
             body(self)
         }
+    }
+
+    nonisolated private static func validatedFrame(_ size: CGSize) -> RemoteFrame? {
+        guard size.width.isFinite, size.height.isFinite, size.width >= 1, size.height >= 1,
+              size.width <= CGFloat(Int32.max), size.height <= CGFloat(Int32.max) else { return nil }
+        return RemoteFrame(width: Int(size.width), height: Int(size.height))
     }
 
     nonisolated private static func mapError(code: CSConnectionError, message: String?) -> SessionError {

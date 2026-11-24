@@ -93,6 +93,7 @@ public protocol SpiceEngineing: AnyObject {
     /// 分頁切走時畫面會被卸載，必須先從 display 拿掉 renderer，避免指向已釋放的 Metal 視圖。
     func detachDisplayRenderer(_ renderer: AnyObject)
     func requestResolution(_ size: CGSize)
+    func clearPendingResolution()
     /// 多 session 時只讓作用中連線同步剪貼簿。
     func setClipboardSharingEnabled(_ enabled: Bool)
     var usesServerMouseMode: Bool { get }
@@ -100,6 +101,7 @@ public protocol SpiceEngineing: AnyObject {
 }
 
 public extension SpiceEngineing {
+    func clearPendingResolution() {}
     var usesServerMouseMode: Bool { false }
     func requestRelativeMouseMode(_ enabled: Bool) {}
 }

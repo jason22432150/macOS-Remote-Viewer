@@ -30,6 +30,39 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertFalse(controller.usesServerMouseMode)
     }
 
+    func testFirstFrameDelayWarnsWithoutDisconnectingAndClearsOnRender() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, firstFrameWarningDelay: .milliseconds(20))
+        try connect(controller, engine: engine, monitorsConfig: false)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 800, height: 600))
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !controller.firstFrameDelayed && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(controller.firstFrameDelayed)
+        XCTAssertEqual(controller.state, .connected)
+        engine.delegate?.engineDidRenderFrame()
+        XCTAssertFalse(controller.firstFrameDelayed)
+        XCTAssertTrue(controller.hasRenderedFrame)
+        engine.delegate?.engineDidLoseDisplay()
+        XCTAssertFalse(controller.firstFrameDelayed)
+        controller.cancel()
+    }
+
+    func testReturningToCurrentResolutionCancelsObsoleteRetry() async throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine, resolutionDebounce: .zero,
+            resolutionRetryDelay: .milliseconds(30))
+        try connect(controller, engine: engine, monitorsConfig: true)
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
+        controller.updateViewportSize(CGSize(width: 1600, height: 900))
+        controller.updateViewportSize(CGSize(width: 1024, height: 768))
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(engine.requestedResolutions, [CGSize(width: 1600, height: 900)])
+        XCTAssertGreaterThan(engine.clearPendingResolutionCount, 0)
+        XCTAssertFalse(controller.guestDidNotApplyResolution)
+    }
+
     func testFirstFrameObservationResetsWhenDisplayIsLost() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine)
@@ -630,6 +663,8 @@ private final class MockEngine: SpiceEngineing {
     var attachedRenderer: AnyObject?
     var detachedRenderer: AnyObject?
     var requestedResolutions: [CGSize] = []
+    var clearPendingResolutionCount = 0
+    func clearPendingResolution() { clearPendingResolutionCount += 1 }
     var usesServerMouseMode = false
     var requestedMouseModes: [Bool] = []
     func requestRelativeMouseMode(_ enabled: Bool) { requestedMouseModes.append(enabled) }

@@ -116,6 +116,8 @@ struct RemoteSessionView: View {
                 Text("\(L10n.string(.firstFrame, language: language)): \(milliseconds) ms")
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+            } else if controller.firstFrameDelayed {
+                Text(L10n.string(.firstFrameDelayed, language: language)).foregroundStyle(.orange)
             } else if controller.state == .connected {
                 Text(L10n.string(.waitingFirstFrame, language: language)).foregroundStyle(.secondary)
             }

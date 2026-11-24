@@ -17,6 +17,9 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public var usesServerMouseMode: Bool { state == .connected && engine.usesServerMouseMode }
     public private(set) var hasRenderedFrame = false
     public private(set) var firstFrameMilliseconds: Int?
+    public private(set) var firstFrameDelayed = false
+    @ObservationIgnored private var firstFrameTask: Task<Void, Never>?
+    private let firstFrameWarningDelay: Duration
     @ObservationIgnored private var frameWaitStarted: ContinuousClock.Instant?
     public private(set) var cleanupResult: SourceCleanupResult = .skipped
 
@@ -55,7 +58,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         resolutionPreference: GuestResolutionPreference = .matchWindow,
         sessionID: String = UUID().uuidString,
         connectionTimeout: Duration = .seconds(30),
-        displayTimeout: Duration = .seconds(30)
+        displayTimeout: Duration = .seconds(30),
+        firstFrameWarningDelay: Duration = .seconds(15)
     ) {
         self.engine = engine
         self.files = files
@@ -63,6 +67,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         self.diagnostics = diagnostics
         self.connectionTimeout = connectionTimeout
         self.displayTimeout = displayTimeout
+        self.firstFrameWarningDelay = firstFrameWarningDelay
         self.resolutionDebounce = resolutionDebounce
         self.resolutionRetryDelay = resolutionRetryDelay
         self.resolutionRetryLimit = resolutionRetryLimit
@@ -166,7 +171,9 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
 
     /// 設定頁變更解析度策略時立刻套用；重設 lastRequested 以免被去重擋下。
     public func applyResolutionPreference(_ preference: GuestResolutionPreference) {
+        guard resolutionPreference != preference else { return }
         resolutionPreference = preference
+        engine.clearPendingResolution()
         lastRequestedFrame = nil
         resolutionRetryCount = 0
         guestDidNotApplyResolution = false
@@ -186,6 +193,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         state = .connected
         diagnostics.info("connected")
         scheduleDisplayTimeoutIfNeeded()
+        scheduleFirstFrameWarningIfNeeded()
         deleteSourceFileIfNeeded()
         flushResolutionIfNeeded()
     }
@@ -224,7 +232,9 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         displayTask?.cancel()
         displayTask = nil
         displaySize = frame
+        scheduleFirstFrameWarningIfNeeded()
         if frame == lastRequestedFrame {
+            engine.clearPendingResolution()
             lastRequestedFrame = nil
             resolutionRetryTask?.cancel()
             resolutionRetryTask = nil
@@ -243,13 +253,22 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         guard state == .connecting || state == .connected else { return }
         displaySize = nil
         resetFrameObservation()
+        engine.clearPendingResolution()
+        lastRequestedFrame = nil
+        resolutionRetryTask?.cancel()
+        resolutionRetryTask = nil
+        resolutionRetryCount = 0
+        guestDidNotApplyResolution = false
         frameWaitStarted = ContinuousClock.now
         engine.releaseKeys()
         scheduleDisplayTimeoutIfNeeded()
     }
 
     public func engineDidRenderFrame() {
-        guard state == .connecting || state == .connected, !hasRenderedFrame else { return }
+        guard (state == .connecting || state == .connected), !hasRenderedFrame else { return }
+        firstFrameTask?.cancel()
+        firstFrameTask = nil
+        firstFrameDelayed = false
         hasRenderedFrame = true
         if let start = frameWaitStarted {
             let elapsed = start.duration(to: ContinuousClock.now).components
@@ -260,9 +279,27 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     private func resetFrameObservation() {
+        firstFrameTask?.cancel()
+        firstFrameTask = nil
+        firstFrameDelayed = false
         hasRenderedFrame = false
         firstFrameMilliseconds = nil
         frameWaitStarted = nil
+    }
+
+    // A hidden or minimized MTKView may have no drawable, so warn instead of disconnecting.
+    private func scheduleFirstFrameWarningIfNeeded() {
+        guard state == .connected, displaySize != nil, !hasRenderedFrame,
+              !firstFrameDelayed, firstFrameTask == nil, firstFrameWarningDelay > .zero else { return }
+        let delay = firstFrameWarningDelay
+        firstFrameTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self, self.state == .connected,
+                  self.displaySize != nil, !self.hasRenderedFrame else { return }
+            self.firstFrameTask = nil
+            self.firstFrameDelayed = true
+            self.diagnostics.info("first-frame-delayed")
+        }
     }
 
     private func scheduleDisplayTimeoutIfNeeded() {
@@ -280,6 +317,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public func engineDidUpdateAgent(_ capabilities: AgentCapabilities) {
         guard state == .connecting || state == .connected else { return }
         if !capabilities.isConnected || !capabilities.supportsMonitorsConfig {
+            engine.clearPendingResolution()
             resolutionRetryTask?.cancel()
             resolutionRetryTask = nil
             lastRequestedFrame = nil
@@ -338,6 +376,15 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
             preference: resolutionPreference,
             windowSize: pendingViewportSize
         ) else { return }
+        // Cancel an obsolete target even when the new target already matches the guest.
+        if let previous = lastRequestedFrame, previous != frame {
+            engine.clearPendingResolution()
+            resolutionRetryTask?.cancel()
+            resolutionRetryTask = nil
+            lastRequestedFrame = nil
+            resolutionRetryCount = 0
+            guestDidNotApplyResolution = false
+        }
         guard GuestResolutionPolicy.shouldRequest(
             frame,
             currentDisplay: displaySize,
