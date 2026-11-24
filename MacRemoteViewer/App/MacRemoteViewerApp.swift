@@ -97,11 +97,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-spice-display-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackSpiceDisplayProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-wrapper-probe") {
+            guard arguments.count == index + 5 else { Darwin.exit(2) }
+            runLoopbackSpiceWrapperProbe(files: arguments[(index + 1)...].map {
+                URL(fileURLWithPath: $0)
+            })
         } else if let index = arguments.firstIndex(of: "--loopback-spice-multi-probe") {
             guard arguments.count == index + 5 else { Darwin.exit(2) }
             runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
                 URL(fileURLWithPath: $0)
             })
+        }
+    }
+
+    /// Production session/adapter/CocoaSpice path without any remote Metal canvas.
+    private func runLoopbackSpiceWrapperProbe(files: [URL]) {
+        Task { @MainActor in
+            var controllers: [SessionController] = []
+            do {
+                let profiles = try files.map { file in
+                    let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                    let profile = try VVParser().parse(data: data)
+                    guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                          profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
+                        throw SessionError.cancelled
+                    }
+                    return profile
+                }
+                guard profiles.count == 4, Set(profiles.map(\.tlsPort)).count == 4 else {
+                    throw SessionError.cancelled
+                }
+                for _ in profiles {
+                    let controller = SessionController(engine: SpiceEngineAdapter(),
+                        connectionTimeout: .seconds(8), displayTimeout: .seconds(12))
+                    controller.setClipboardSharingEnabled(false)
+                    controllers.append(controller)
+                }
+                for i in profiles.indices { controllers[i].open(profiles[i]) }
+                let deadline = ContinuousClock.now + .seconds(15)
+                var stableSince: ContinuousClock.Instant?
+                var passed = false
+                while ContinuousClock.now < deadline {
+                    for i in controllers.indices {
+                        if case .failed(let error) = controllers[i].state {
+                            print("MRV_WRAPPER_FAILED session=\(i) error=\(error)")
+                            throw SessionError.network
+                        }
+                        if controllers[i].state == .disconnected {
+                            print("MRV_WRAPPER_DISCONNECTED session=\(i)")
+                            throw SessionError.disconnected
+                        }
+                    }
+                    if controllers.allSatisfy({
+                        $0.state == .connected && $0.displaySize == RemoteFrame(width: 640, height: 480)
+                    }) {
+                        if stableSince == nil { stableSince = ContinuousClock.now }
+                        if let start = stableSince, start.duration(to: ContinuousClock.now) >= .seconds(2) {
+                            passed = true
+                            break
+                        }
+                    } else {
+                        stableSince = nil
+                    }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                guard passed else { throw SessionError.displayTimeout }
+                for controller in controllers { controller.cancel() }
+                try await Task.sleep(for: .milliseconds(500))
+                guard controllers.allSatisfy({ $0.state == .disconnected && $0.displaySize == nil }) else {
+                    throw SessionError.cancelled
+                }
+                print("MRV_WRAPPER_MULTI_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                for i in controllers.indices {
+                    print("MRV_WRAPPER_FINAL session=\(i) state=\(controllers[i].state) display=\(controllers[i].displaySize != nil)")
+                    controllers[i].cancel()
+                }
+                fflush(nil)
+                Darwin.exit(1)
+            }
         }
     }
 

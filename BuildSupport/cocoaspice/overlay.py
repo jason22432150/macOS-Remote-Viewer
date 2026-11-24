@@ -52,7 +52,7 @@ def overlay_csmain(checkout: Path) -> None:
         text = text.replace(old, new, 1)
     path.write_text(text)
     _replace_once(path, [
-        ('#import <pthread.h>', '#import <pthread.h>\n#import <execinfo.h>\n#import <stdlib.h>\n#import <unistd.h>'),
+        ('#import <pthread.h>', '#import <pthread.h>\n#import <stdlib.h>'),
         ("""    GDateTime *now;
     gchar *dateTimeStr;""",
          """    // Opt-in test diagnostics: no connection properties, credentials or
@@ -63,9 +63,10 @@ def overlay_csmain(checkout: Path) -> None:
         fprintf(stderr, "MRV_GLIB_CRITICAL tid=%llu appkit=%d ownsDefault=%d\\n",
                 (unsigned long long)tid, pthread_main_np(),
                 g_main_context_is_owner(g_main_context_default()));
-        void *frames[32];
-        int count = backtrace(frames, 32);
-        backtrace_symbols_fd(frames, count, STDERR_FILENO);
+        // Do not unwind a stack created by makecontext/longjmp. The
+        // previous diagnostic itself could fault before printing the error.
+        fprintf(stderr, "MRV_GLIB_MESSAGE domain=%s message=%s\\n",
+                log_domain ? log_domain : "(none)", message ? message : "(none)");
         fflush(stderr);
     }
     GDateTime *now;
@@ -1290,6 +1291,52 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
     ])
 
 
+def overlay_channel_lifetime_guards(checkout: Path) -> None:
+    """Validate main-channel pointers on the worker, not before scheduling."""
+    source = checkout / "Sources" / "CocoaSpice"
+    _replace_once(source / "CSInput.m", [
+        ("""- (void)requestMouseMode:(BOOL)server {
+    if (!self.spiceMain) {
+        return;
+    }
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceMainChannel *main = self.spiceMain;""",
+         """- (void)requestMouseMode:(BOOL)server {
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceMainChannel *main = self.spiceMain;
+        if (!main || !self.channel) return;"""),
+    ])
+    _replace_once(source / "CSDisplay.m", [
+        ("""    if (!self.spiceMain) {
+        SPICE_DEBUG("[CocoaSpice] ignoring change resolution because main channel not found");
+        return;
+    }
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceMainChannel *main = self.spiceMain;
+        spice_main_channel_update_display_enabled""",
+         """    [CSMain.sharedInstance asyncWith:^{
+        SpiceMainChannel *main = self.spiceMain;
+        if (!main) return;
+        spice_main_channel_update_display_enabled"""),
+        ("""    if (_isEnabled != isEnabled) {
+        if (!self.spiceMain) {
+            SPICE_DEBUG("[CocoaSpice] ignoring display enable change because main channel not found");
+            return;
+        }
+        [CSMain.sharedInstance asyncWith:^{
+            spice_main_channel_update_display_enabled(self.spiceMain, (int)self.monitorID, isEnabled, TRUE);
+            self->_isEnabled = isEnabled;
+        }];
+    }""",
+         """    [CSMain.sharedInstance asyncWith:^{
+        SpiceMainChannel *main = self.spiceMain;
+        if (!main || self->_isEnabled == isEnabled) return;
+        spice_main_channel_update_display_enabled(main, (int)self.monitorID, isEnabled, TRUE);
+        self->_isEnabled = isEnabled;
+    }];"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -1311,6 +1358,7 @@ def main() -> None:
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)
     overlay_session_sharing_category(checkout)
+    overlay_channel_lifetime_guards(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 
 

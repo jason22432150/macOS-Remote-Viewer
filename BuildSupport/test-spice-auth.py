@@ -134,7 +134,7 @@ def compile_native_probe(app, destination):
             raise RuntimeError(f"native probe: missing packaged dependency {name}")
 
 
-def test_multi(app, root, fixture, native_probe=None):
+def test_multi(app, root, fixture, native_probe=None, wrapper_only=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
     profiles = []
@@ -149,7 +149,7 @@ def test_multi(app, root, fixture, native_probe=None):
             sock.close()
         try:
             for i, port in enumerate(ports):
-                prefix = "native" if native_probe is not None else "multi"
+                prefix = "native" if native_probe is not None else ("wrapper" if wrapper_only else "multi")
                 profile = root / f"{prefix}-{i}.vv"
                 profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
                 profiles.append(profile)
@@ -192,7 +192,8 @@ def test_multi(app, root, fixture, native_probe=None):
                 env["G_DEBUG"] = "fatal-criticals"
                 command = [str(native_probe), str(root / "trusted.pem"), *map(str, ports)]
             else:
-                command = [str(exe), "--loopback-spice-multi-probe", *map(str, profiles)]
+                mode = "--loopback-spice-wrapper-probe" if wrapper_only else "--loopback-spice-multi-probe"
+                command = [str(exe), mode, *map(str, profiles)]
             result = subprocess.run(command, cwd=root, env=env,
                                     capture_output=True, text=True, timeout=75)
             print(result.stdout[-12000:])
@@ -206,6 +207,9 @@ def test_multi(app, root, fixture, native_probe=None):
             if native_probe is not None:
                 if "MRV_NATIVE_MULTI_OK" not in lines:
                     raise AssertionError("native multi: missing success marker")
+            elif wrapper_only:
+                if "MRV_WRAPPER_MULTI_OK" not in lines:
+                    raise AssertionError("wrapper multi: missing success marker")
             else:
                 phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
                 if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:
@@ -243,7 +247,8 @@ def test_multi(app, root, fixture, native_probe=None):
             if not 0 < consumed <= submitted or not 0 <= released <= consumed:
                 raise AssertionError(f"{log.stem}: invalid draw lifecycle")
     print("Native four-session channel checks passed." if native_probe is not None
-          else "Real four-session display isolation checks passed.")
+          else ("Wrapper four-session channel checks passed." if wrapper_only
+                else "Real four-session display isolation checks passed."))
 
 
 def main():
@@ -268,6 +273,11 @@ def main():
         except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             failures.append(f"native: {exc}")
             print(f"MRV_NATIVE_FAILURE {exc}", flush=True)
+        try:
+            test_multi(args.app.resolve(), root, fixture, wrapper_only=True)
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"wrapper: {exc}")
+            print(f"MRV_WRAPPER_FAILURE {exc}", flush=True)
         try:
             test_multi(args.app.resolve(), root, fixture)
         except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:

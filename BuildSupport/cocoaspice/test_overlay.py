@@ -210,9 +210,10 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("g_source_attach(source, self.glibMainContext)", text)
             self.assertNotIn("g_main_context_invoke_full(", text)
             self.assertIn("g_main_context_release(self->_main_context)", text)
-            self.assertIn("#import <pthread.h>\n#import <execinfo.h>", text)
+            self.assertIn("#import <pthread.h>\n#import <stdlib.h>", text)
             self.assertIn(r'ownsDefault=%d\n"', text)
-            self.assertIn("backtrace_symbols_fd(frames, count, STDERR_FILENO);", text)
+            self.assertIn("MRV_GLIB_MESSAGE", text)
+            self.assertNotIn("backtrace_symbols_fd(", text)
 
     def test_gst_ios_init_uses_dynamic_gst_init(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
