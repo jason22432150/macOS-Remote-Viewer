@@ -91,6 +91,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-auth-probe") {
+            guard index + 1 < arguments.count else { Darwin.exit(2) }
+            runLoopbackSpiceAuthProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        }
+    }
+
+    /// A real SPICE server supplies the main channel, not a guest display.
+    /// Reuse the same engine/controller to exercise disconnect and reconnect.
+    private func runLoopbackSpiceAuthProbe(file: URL) {
+        Task { @MainActor in
+            let engine = SpiceEngineAdapter()
+            let controller = SessionController(engine: engine,
+                connectionTimeout: .seconds(8), displayTimeout: .seconds(10))
+            do {
+                let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                let profile = try VVParser().parse(data: data)
+                guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                      profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
+                    throw SessionError.cancelled
+                }
+                controller.setClipboardSharingEnabled(false)
+                for round in 0..<3 {
+                    controller.open(profile)
+                    let deadline = ContinuousClock.now + .seconds(10)
+                    while controller.state == .connecting && ContinuousClock.now < deadline {
+                        try await Task.sleep(for: .milliseconds(25))
+                    }
+                    if case .failed(.authenticationRejected) = controller.state, round == 0 {
+                        controller.cancel()
+                        print("MRV_SPICE_AUTH_REJECTED")
+                        fflush(nil)
+                        Darwin.exit(0)
+                    }
+                    guard controller.state == .connected else { throw SessionError.network }
+                    // Allow initial main-channel messages to run before cancelling.
+                    try await Task.sleep(for: .milliseconds(150))
+                    guard controller.state == .connected else { throw SessionError.network }
+                    controller.cancel()
+                    guard controller.state == .disconnected else { throw SessionError.cancelled }
+                    // Drain callbacks from the old connection before opening again.
+                    try await Task.sleep(for: .milliseconds(150))
+                    guard controller.state == .disconnected else { throw SessionError.cancelled }
+                    print("MRV_SPICE_AUTH_ROUND_OK \(round + 1)")
+                }
+                print("MRV_SPICE_AUTH_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                controller.cancel()
+                print("MRV_SPICE_AUTH_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
         }
     }
 

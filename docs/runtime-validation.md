@@ -66,3 +66,7 @@ CI 以唯讀方式掛載最終 DMG，比對內嵌與獨立 SBOM、檢查 Applica
 ## 本機 TLS／SPICE Link 整合測試
 
 `BuildSupport/test-loopback-tls.py` 使用臨時 RSA CA／server certificate、只監聽 127.0.0.1 的 Python TLS 端點及實際簽署 App。受信任 CA + Subject 必須完成 TLS 並送出 SPICE `REDQ` link magic；錯誤 CA、錯誤 Subject 不得送出任何應用資料，且三種情況都不得降級成 plaintext。端點故意不提供 SPICE link reply／ticket auth／display channel，故 App 必須終止連線，不能回報 connected。這不是完整 SPICE server 或真實 PVE 連線測試。測試憑證與 key 只在暫存目錄生成，不上傳、不使用真實票證。
+
+## 真實 SPICE Main Channel / Ticket Authentication
+
+`BuildSupport/test-spice-auth.py` 在 macOS 透過 Homebrew test-only `spice-server` 編譯 C fixture，使用 GLib main loop 與 TLS-only 127.0.0.1 端點。使用合成 CA、票證與實際簽署 App：正確票證須在同一 engine/controller 內連線及取消三次，且伺服器須觀察三個 TLS main-channel initialized 事件；錯誤票證須收到 authenticationRejected，且不得初始化 main channel。fixture 不提供 guest OS、QXL、Display Channel 或 guest agent；不代表真實 PVE GUI、輸入或 framebuffer 測試。測試套件於打包及依賴審查之後安裝，非發行 App 的新增相依。若未安裝 server 依賴，本測試不可宣稱通過。
