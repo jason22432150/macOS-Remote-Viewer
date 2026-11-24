@@ -4,6 +4,27 @@ import XCTest
 
 @MainActor
 final class SessionControllerTests: XCTestCase {
+    func testFirstFrameObservationResetsWhenDisplayIsLost() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine)
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 800, height: 600))
+        XCTAssertFalse(controller.hasRenderedFrame)
+        engine.delegate?.engineDidRenderFrame()
+        XCTAssertTrue(controller.hasRenderedFrame)
+        XCTAssertNotNil(controller.firstFrameMilliseconds)
+        let initial = controller.firstFrameMilliseconds
+        engine.delegate?.engineDidRenderFrame()
+        XCTAssertEqual(controller.firstFrameMilliseconds, initial)
+        engine.delegate?.engineDidLoseDisplay()
+        XCTAssertFalse(controller.hasRenderedFrame)
+        XCTAssertNil(controller.firstFrameMilliseconds)
+        controller.cancel()
+        engine.delegate?.engineDidRenderFrame()
+        XCTAssertFalse(controller.hasRenderedFrame)
+    }
+
     func testDisplayTimeoutAfterConnectionWithoutValidDimensions() async throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine, displayTimeout: .milliseconds(20))

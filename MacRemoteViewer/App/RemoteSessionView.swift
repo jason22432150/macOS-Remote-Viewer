@@ -103,6 +103,13 @@ struct RemoteSessionView: View {
                 Text(L10n.string(.ignoredFields, language: language, names.joined(separator: ", ")))
                     .foregroundStyle(.secondary)
             }
+            if let milliseconds = controller.firstFrameMilliseconds {
+                Text("\(L10n.string(.firstFrame, language: language)): \(milliseconds) ms")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } else if controller.state == .connected {
+                Text(L10n.string(.waitingFirstFrame, language: language)).foregroundStyle(.secondary)
+            }
             if let frame = controller.displaySize {
                 Text("\(frame.width)×\(frame.height)")
                     .monospacedDigit()

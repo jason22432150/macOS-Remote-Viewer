@@ -61,11 +61,13 @@ public protocol SpiceEngineDelegate: AnyObject {
     func engineDidFail(_ error: SessionError)
     func engineDidUpdateDisplay(_ frame: RemoteFrame)
     func engineDidLoseDisplay()
+    func engineDidRenderFrame()
     func engineDidUpdateAgent(_ capabilities: AgentCapabilities)
 }
 
 public extension SpiceEngineDelegate {
     func engineDidLoseDisplay() {}
+    func engineDidRenderFrame() {}
 }
 
 /// UI 與 C 指標之間的邊界。UI 不持有 SpiceSession／channel。

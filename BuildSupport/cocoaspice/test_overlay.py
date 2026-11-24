@@ -15,6 +15,7 @@ from overlay import (
     overlay_gst_ios_init,
     overlay_metal_renderer_complete_pending_draws,
     overlay_metal_renderer_diagnostics,
+    overlay_metal_frame_observation,
     overlay_package_swift,
     overlay_renderer_protected_category,
     overlay_session_sharing_category,
@@ -374,6 +375,28 @@ class OverlayTests(unittest.TestCase):
                 text.find("[self _completeDraw];\n        self.renderSourceData = nil"),
                 text.find("self.renderSourceData = nil"),
             )
+
+    def test_frame_observation_only_reports_completed_draws(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpiceRenderer"
+            header = source / "include" / "CSMetalRenderer.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("/// Modify upscaler and downscaler settings")
+            impl = source / "CSMetalRenderer.m"
+            impl.write_text("""    [commandBuffer presentDrawable:currentDrawable];
+
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _completeDraw];
+        });
+    }];""")
+            overlay_metal_frame_observation(root)
+            self.assertIn("frameRenderedHandler", header.read_text())
+            text = impl.read_text()
+            self.assertIn("MTLCommandBufferStatusCompleted", text)
+            self.assertIn("if (rendered && frameHandler)", text)
+            self.assertIn("[self _completeDraw];", text)
 
     def test_connection_pve_api_uses_typed_properties_and_tls(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -14,6 +14,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private var display: CSDisplay?
     private let spicePasteboard = CocoaSpicePasteboard()
     private var pendingRenderer: CSRenderer?
+    private var attachedRenderer: CSRenderer?
+    private var frameGeneration = UUID()
     private var pendingResolution: CGSize?
     private var lastGuestPoint: CGPoint?
     private static var workerStarted = false
@@ -70,6 +72,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         connection = nil
         input = nil
         display = nil
+        clearFrameObserver()
+        attachedRenderer = nil
         pendingRenderer = nil
         pendingResolution = nil
         lastGuestPoint = nil
@@ -157,23 +161,45 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
 
     func attachDisplayRenderer(_ renderer: AnyObject) {
         guard let renderer = renderer as? CSRenderer else { return }
-        pendingRenderer = renderer
+        if pendingRenderer !== renderer {
+            clearFrameObserver()
+            if let attachedRenderer { display?.removeRenderer(attachedRenderer) }
+            attachedRenderer = nil
+            pendingRenderer = renderer
+        }
         attachPendingRenderer()
     }
 
     func detachDisplayRenderer(_ renderer: AnyObject) {
         guard let renderer = renderer as? CSRenderer else { return }
         if pendingRenderer === renderer {
+            clearFrameObserver()
             pendingRenderer = nil
         }
+        if attachedRenderer === renderer { attachedRenderer = nil }
         display?.removeRenderer(renderer)
     }
 
     private func attachPendingRenderer() {
-        guard let display, let pendingRenderer else { return }
-        // CocoaSpice 以 containsObject 去重，可重複呼叫。
-        // 不在成功後清掉 pending：display channel 重建時還要用同一顆 renderer。
+        guard let display, let pendingRenderer, attachedRenderer !== pendingRenderer else { return }
+        attachedRenderer = pendingRenderer
+        if let renderer = pendingRenderer as? CSMetalRenderer {
+            let generation = UUID()
+            frameGeneration = generation
+            renderer.frameRenderedHandler = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.frameGeneration == generation else { return }
+                    self.clearFrameObserver()
+                    self.delegate?.engineDidRenderFrame()
+                }
+            }
+        }
         display.addRenderer(pendingRenderer)
+    }
+
+    private func clearFrameObserver() {
+        frameGeneration = UUID()
+        (pendingRenderer as? CSMetalRenderer)?.frameRenderedHandler = nil
     }
 
     private func applyClipboardSharing(to connection: CSConnection) {
@@ -245,6 +271,12 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         let isPrimary = display.isPrimaryDisplay
         hopToMain(from: connection) { adapter in
             if adapter.display == nil || isPrimary {
+                if adapter.display !== display {
+                    adapter.clearFrameObserver()
+                    if let attached = adapter.attachedRenderer { adapter.display?.removeRenderer(attached) }
+                    if adapter.display != nil { adapter.delegate?.engineDidLoseDisplay() }
+                    adapter.attachedRenderer = nil
+                }
                 adapter.display = display
                 adapter.attachPendingRenderer()
                 adapter.applyPendingResolution()
@@ -265,6 +297,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     nonisolated func spiceDisplayDestroyed(_ connection: CSConnection, display: CSDisplay) {
         hopToMain(from: connection) { adapter in
             if adapter.display === display {
+                adapter.clearFrameObserver()
+                adapter.attachedRenderer = nil
                 adapter.display = nil
                 adapter.delegate?.engineDidLoseDisplay()
             }

@@ -17,6 +17,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case statusParsing
     case statusConnecting
     case statusConnected
+    case firstFrame
+    case waitingFirstFrame
     case statusDisconnecting
     case statusDisconnected
     case statusFailed
@@ -126,6 +128,8 @@ public enum L10n {
         .statusParsing: "解析連線檔",
         .statusConnecting: "連線中",
         .statusConnected: "已連線",
+        .firstFrame: "首幀",
+        .waitingFirstFrame: "等待首幀",
         .statusDisconnecting: "中斷中",
         .statusDisconnected: "已斷線",
         .statusFailed: "失敗",
@@ -212,6 +216,8 @@ public enum L10n {
         .statusParsing: "Parsing connection file",
         .statusConnecting: "Connecting",
         .statusConnected: "Connected",
+        .firstFrame: "First frame",
+        .waitingFirstFrame: "Waiting for first frame",
         .statusDisconnecting: "Disconnecting",
         .statusDisconnected: "Disconnected",
         .statusFailed: "Failed",

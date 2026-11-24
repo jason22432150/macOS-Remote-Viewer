@@ -469,6 +469,40 @@ def overlay_metal_renderer_complete_pending_draws(impl: Path) -> None:
     )
 
 
+def overlay_metal_frame_observation(checkout: Path) -> None:
+    """Notify only after a real draw command buffer completes successfully."""
+    root = checkout / "Sources" / "CocoaSpiceRenderer"
+    _replace_once(root / "include" / "CSMetalRenderer.h", [
+        ("/// Modify upscaler and downscaler settings",
+         "/// Optional callback on the main queue after a successful GPU draw. Set on main.\n"
+         "@property (nonatomic, copy, nullable) void (^frameRenderedHandler)(void);\n\n"
+         "/// Modify upscaler and downscaler settings"),
+    ])
+    _replace_once(root / "CSMetalRenderer.m", [
+        ("""    [commandBuffer presentDrawable:currentDrawable];
+
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _completeDraw];
+        });
+    }];""",
+         """    [commandBuffer presentDrawable:currentDrawable];
+
+    // Capture the handler at submission, never read a newer session's handler
+    // when an older GPU command buffer completes.
+    void (^frameHandler)(void) = self.frameRenderedHandler;
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        BOOL rendered = commandBuffer.status == MTLCommandBufferStatusCompleted;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _completeDraw];
+            if (rendered && frameHandler) {
+                frameHandler();
+            }
+        });
+    }];"""),
+    ])
+
+
 def overlay_connection_pve_api(checkout: Path) -> None:
     """Expose a typed PVE configuration API inside the pinned CocoaSpice implementation."""
     source = checkout / "Sources" / "CocoaSpice"
@@ -594,6 +628,7 @@ def main() -> None:
     overlay_metal_renderer_complete_pending_draws(
         checkout / "Sources" / "CocoaSpiceRenderer" / "CSMetalRenderer.m"
     )
+    overlay_metal_frame_observation(checkout)
     overlay_connection_pve_api(checkout)
     overlay_session_sharing_category(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")

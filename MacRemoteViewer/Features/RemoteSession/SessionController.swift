@@ -13,6 +13,9 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public private(set) var profile: ConnectionProfile?
     public private(set) var agent: AgentCapabilities = AgentCapabilities()
     public private(set) var displaySize: RemoteFrame?
+    public private(set) var hasRenderedFrame = false
+    public private(set) var firstFrameMilliseconds: Int?
+    @ObservationIgnored private var frameWaitStarted: ContinuousClock.Instant?
     public private(set) var cleanupResult: SourceCleanupResult = .skipped
 
     public let diagnostics: DiagnosticsLog
@@ -73,8 +76,10 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         cleanupResult = .skipped
         agent = AgentCapabilities()
         displaySize = nil
+        resetFrameObservation()
         diagnostics.compatibilityHint(unknownFields: profile.unknownFieldNames)
         state = .connecting
+        frameWaitStarted = ContinuousClock.now
         if connectionTimeout > .zero {
             let delay = connectionTimeout
             connectionTask = Task { @MainActor [weak self] in
@@ -106,6 +111,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         engine.disconnect()
         agent = AgentCapabilities()
         displaySize = nil
+        resetFrameObservation()
         if state == .disconnecting {
             state = .disconnected
         }
@@ -188,6 +194,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         displayTask = nil
         agent = AgentCapabilities()
         displaySize = nil
+        resetFrameObservation()
         if case .failed = state { return }
         state = .disconnected
         engine.disconnect()
@@ -223,8 +230,27 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     public func engineDidLoseDisplay() {
         guard state == .connecting || state == .connected else { return }
         displaySize = nil
+        resetFrameObservation()
+        frameWaitStarted = ContinuousClock.now
         engine.releaseKeys()
         scheduleDisplayTimeoutIfNeeded()
+    }
+
+    public func engineDidRenderFrame() {
+        guard state == .connecting || state == .connected, !hasRenderedFrame else { return }
+        hasRenderedFrame = true
+        if let start = frameWaitStarted {
+            let elapsed = start.duration(to: ContinuousClock.now).components
+            let milliseconds = Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
+            firstFrameMilliseconds = milliseconds
+            diagnostics.info("first-frame-rendered-ms \(milliseconds)")
+        }
+    }
+
+    private func resetFrameObservation() {
+        hasRenderedFrame = false
+        firstFrameMilliseconds = nil
+        frameWaitStarted = nil
     }
 
     private func scheduleDisplayTimeoutIfNeeded() {
@@ -268,6 +294,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         state = .failed(error)
         agent = AgentCapabilities()
         displaySize = nil
+        resetFrameObservation()
         diagnostics.error(error)
         engine.releaseKeys()
         engine.disconnect()
