@@ -1,4 +1,6 @@
 import AppKit
+import CoreGraphics
+import OSLog
 import MetalKit
 import SwiftUI
 import CocoaSpiceRenderer
@@ -40,7 +42,9 @@ struct RemoteDisplayView: NSViewRepresentable {
         nsView.router = router
         nsView.setNativeDisplayPixels(useNativeDisplayPixels)
         nsView.setActive(isActive)
-        if !relativeMouseRequested || !sessionConnected || displaySize == nil { nsView.endRelativeCapture() }
+        nsView.updateCaptureEligibility(requested: relativeMouseRequested,
+                                        connected: sessionConnected,
+                                        hasDisplay: displaySize != nil)
         nsView.attachRendererIfNeeded()
         nsView.updateViewport()
         // 不可在 layout／updateNSView 同步寫入 @Observable，否則 AppKit display cycle 會 SIGTRAP。
@@ -63,6 +67,8 @@ final class RemoteCanvasView: MTKView {
     private static weak var captureOwner: RemoteCanvasView?
     private var captureWatchdog: Task<Void, Never>?
     private var priorMouseMovedEvents = false
+    private var lastRelativeRequest = false
+    private let captureLogger = Logger(subsystem: "local.MacRemoteViewer", category: "mouse-capture")
     private var isRelativeCaptured: Bool { Self.captureOwner === self }
 
     override var acceptsFirstResponder: Bool { isActive }
@@ -319,6 +325,15 @@ final class RemoteCanvasView: MTKView {
         }
     }
 
+    func updateCaptureEligibility(requested: Bool, connected: Bool, hasDisplay: Bool) {
+        if lastRelativeRequest != requested || !connected || !hasDisplay {
+            // Clear router bookkeeping when the controller releases remote input.
+            if lastRelativeRequest != requested { _ = router?.releaseAll() }
+            if !requested || !connected || !hasDisplay { endRelativeCapture() }
+        }
+        lastRelativeRequest = requested
+    }
+
     /// Capture is explicit: an actual click, a key window and an accepted server mode.
     private func beginRelativeCapture(_ event: NSEvent) -> Bool {
         guard isActive, let controller, controller.relativeMouseRequested,
@@ -353,9 +368,13 @@ final class RemoteCanvasView: MTKView {
         captureWatchdog?.cancel()
         captureWatchdog = nil
         guard isRelativeCaptured else { return }
-        _ = CGAssociateMouseAndMouseCursorPosition(1)
+        let result = CGAssociateMouseAndMouseCursorPosition(1)
+        if result != .success {
+            captureLogger.error("cursor-reassociation-failed")
+        }
         Self.captureOwner = nil
         window?.acceptsMouseMovedEvents = priorMouseMovedEvents
+        releaseKeys()
         showLocalCursor()
     }
 

@@ -4,6 +4,32 @@ import XCTest
 
 @MainActor
 final class SessionControllerTests: XCTestCase {
+    func testRelativeMouseModeRequiresConnectionAndServerAcceptance() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine)
+        controller.setRelativeMouseMode(true)
+        XCTAssertFalse(controller.relativeMouseRequested)
+        XCTAssertTrue(engine.requestedMouseModes.isEmpty)
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidConnect()
+        controller.setRelativeMouseMode(true)
+        XCTAssertTrue(controller.relativeMouseRequested)
+        XCTAssertFalse(controller.usesServerMouseMode)
+        XCTAssertEqual(engine.requestedMouseModes, [true])
+        engine.usesServerMouseMode = true
+        XCTAssertTrue(controller.usesServerMouseMode)
+        controller.setRelativeMouseMode(true)
+        XCTAssertEqual(engine.requestedMouseModes, [true])
+        controller.setRelativeMouseMode(false)
+        XCTAssertFalse(controller.relativeMouseRequested)
+        XCTAssertEqual(engine.requestedMouseModes, [true, false])
+        XCTAssertTrue(engine.didReleaseKeys)
+        controller.setRelativeMouseMode(true)
+        controller.cancel()
+        XCTAssertFalse(controller.relativeMouseRequested)
+        XCTAssertFalse(controller.usesServerMouseMode)
+    }
+
     func testFirstFrameObservationResetsWhenDisplayIsLost() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine)
@@ -604,6 +630,9 @@ private final class MockEngine: SpiceEngineing {
     var attachedRenderer: AnyObject?
     var detachedRenderer: AnyObject?
     var requestedResolutions: [CGSize] = []
+    var usesServerMouseMode = false
+    var requestedMouseModes: [Bool] = []
+    func requestRelativeMouseMode(_ enabled: Bool) { requestedMouseModes.append(enabled) }
 
     func startWorker() throws {}
 
