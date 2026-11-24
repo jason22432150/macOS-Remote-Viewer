@@ -309,7 +309,13 @@ final class SessionControllerTests: XCTestCase {
         controller.updateViewportSize(CGSize(width: 1600, height: 900))
         XCTAssertEqual(engine.requestedResolutions.count, 1)
 
-        try await Task.sleep(for: .milliseconds(120))
+        // CI scheduling may delay either retry timer; wait for the condition,
+        // not an assumption about exact scheduler timing.
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while !controller.guestDidNotApplyResolution && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(engine.requestedResolutions.count, 2)
         XCTAssertTrue(controller.guestDidNotApplyResolution)
     }

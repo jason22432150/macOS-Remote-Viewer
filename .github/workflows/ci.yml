@@ -13,19 +13,20 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Swift toolchain
         run: swift --version
       - name: Core tests
         run: swift test
       - name: CocoaSpice overlay tests
+        if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport/cocoaspice -p 'test_*.py'
 
   app:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Xcode
         run: xcodebuild -version
       - name: Install native dependencies

@@ -4,6 +4,7 @@ import SwiftUI
 import CocoaSpiceRenderer
 
 /// 所有 MTKView 共用同一顆 Metal device，避免 CSDisplay 因 device 指標不同而拒絕重掛 renderer。
+@MainActor
 private enum SharedMetalDevice {
     static let systemDefault: MTLDevice? = MTLCreateSystemDefaultDevice()
 }

@@ -54,6 +54,9 @@ done
   echo "MACOSX_DEPLOYMENT_TARGET = $sdk_version"
   echo "SWIFT_OBJC_BRIDGING_HEADER = MacRemoteViewer/Engine/MacRemoteViewer-Bridging-Header.h"
   echo "SWIFT_STRICT_CONCURRENCY = complete"
+  # Xcode 16 mixed Swift/ObjC bridging PCH can load duplicate SPM Clang module maps.
+  echo "SWIFT_ENABLE_EXPLICIT_MODULES = NO"
+  echo "SWIFT_PRECOMPILE_BRIDGING_HEADER = NO"
 } > "$OUT"
 
 echo "已寫入 $OUT"

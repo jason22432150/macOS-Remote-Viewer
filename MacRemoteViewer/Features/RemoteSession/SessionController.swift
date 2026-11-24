@@ -262,7 +262,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         }
     }
 
-    private func flushResolutionIfNeeded(force: Bool = false) {
+    private func flushResolutionIfNeeded() {
         guard state == .connected else { return }
         guard agent.supportsMonitorsConfig else { return }
         guard let frame = GuestResolutionPolicy.targetFrame(
@@ -272,14 +272,12 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         guard GuestResolutionPolicy.shouldRequest(
             frame,
             currentDisplay: displaySize,
-            lastRequested: force ? nil : lastRequestedFrame
+            lastRequested: lastRequestedFrame
         ) else {
             return
         }
-        if !force {
-            resolutionRetryCount = 0
-            guestDidNotApplyResolution = false
-        }
+        resolutionRetryCount = 0
+        guestDidNotApplyResolution = false
         lastRequestedFrame = frame
         diagnostics.info("guest-resolution \(frame.width)x\(frame.height)")
         engine.requestResolution(CGSize(width: frame.width, height: frame.height))
@@ -293,27 +291,26 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
         let requested = lastRequestedFrame
         let delay = resolutionRetryDelay
         resolutionRetryTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: delay)
-            } catch {
-                return
-            }
-            guard let self, let requested, self.lastRequestedFrame == requested else { return }
-            let remaining = self.resolutionRetryLimit - self.resolutionRetryCount
-            guard GuestResolutionPolicy.shouldRetry(
-                requested: requested,
-                currentDisplay: self.displaySize,
-                remainingAttempts: remaining
-            ) else {
-                if self.displaySize != requested {
+            guard let requested else { return }
+            // Keep a single task for this target instead of cancelling and spawning
+            // a replacement from inside the retry callback.
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: delay) } catch { return }
+                guard let self, self.state == .connected, self.agent.supportsMonitorsConfig,
+                      self.lastRequestedFrame == requested else { return }
+                if self.displaySize == requested {
+                    self.resolutionRetryTask = nil
+                    return
+                }
+                guard self.resolutionRetryCount < self.resolutionRetryLimit else {
                     self.guestDidNotApplyResolution = true
                     self.diagnostics.info("guest-resolution-unapplied \(requested.width)x\(requested.height)")
+                    self.resolutionRetryTask = nil
+                    return
                 }
-                self.resolutionRetryTask = nil
-                return
+                self.resolutionRetryCount += 1
+                self.engine.requestResolution(CGSize(width: requested.width, height: requested.height))
             }
-            self.resolutionRetryCount += 1
-            self.flushResolutionIfNeeded(force: true)
         }
     }
 
