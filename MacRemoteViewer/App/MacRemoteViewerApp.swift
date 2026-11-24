@@ -85,8 +85,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 安裝後立刻登錄文件類型，否則 Finder「打開方式」可能看不到這個 App。
         LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
         presentMainWindowWhenReady()
-        if ProcessInfo.processInfo.arguments.contains("--startup-smoke-test") {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--startup-smoke-test") {
             runStartupSmokeTest()
+        } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
+            guard index + 1 < arguments.count else { Darwin.exit(2) }
+            runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        }
+    }
+
+    /// Integration-only probe. Restrict it to a synthetic loopback profile; never
+    /// send a real PVE ticket or enable clipboard, source deletion or a proxy.
+    private func runLoopbackTLSProbe(file: URL) {
+        Task { @MainActor in
+            let engine = SpiceEngineAdapter()
+            let controller = SessionController(engine: engine, connectionTimeout: .seconds(12))
+            do {
+                let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                let profile = try VVParser().parse(data: data)
+                guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                      profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
+                    throw SessionError.cancelled
+                }
+                controller.setClipboardSharingEnabled(false)
+                controller.open(profile)
+                let deadline = ContinuousClock.now + .seconds(15)
+                while ContinuousClock.now < deadline {
+                    switch controller.state {
+                    case .failed(let error):
+                        // Do not expose certificate contents, credentials or raw library messages.
+                        print(error == .tls ? "MRV_TLS_PROBE_REJECTED_TLS" : "MRV_TLS_PROBE_TERMINAL")
+                        controller.cancel()
+                        fflush(nil)
+                        Darwin.exit(0)
+                    case .disconnected:
+                        controller.cancel()
+                        print("MRV_TLS_PROBE_TERMINAL")
+                        fflush(nil)
+                        Darwin.exit(0)
+                    case .connected:
+                        // The fixture implements TLS and observes the link header only.
+                        throw SessionError.unknown(code: "unexpected-connected")
+                    default:
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                }
+                throw SessionError.network
+            } catch {
+                controller.cancel()
+                print("MRV_TLS_PROBE_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
         }
     }
 

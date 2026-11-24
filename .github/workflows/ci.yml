@@ -75,6 +75,8 @@ jobs:
         run: python3 BuildSupport/verify-dmg.py dist/*.dmg --bom dist/*.bom.json
       - name: Smoke test copied app from final DMG
         run: python3 BuildSupport/verify-dmg.py dist/*.dmg --bom dist/*.bom.json --smoke
+      - name: Exercise real SPICE TLS link on loopback
+        run: python3 BuildSupport/test-loopback-tls.py --app "dist/work/Mac Remote Viewer.app"
       - name: Upload ad-hoc signed preview DMG, SBOM and build provenance
         uses: actions/upload-artifact@v4
         with:
