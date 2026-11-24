@@ -255,7 +255,11 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     nonisolated func spiceInputAvailable(_ connection: CSConnection, input: CSInput) {
         hopToMain(from: connection) { adapter in
             adapter.input = input
-            input.requestMouseMode(adapter.relativeMouseRequested)
+            // spice-gtk already defaults to client mouse mode. Do not
+            // inject a redundant main-channel message during channel setup.
+            if adapter.relativeMouseRequested {
+                input.requestMouseMode(true)
+            }
         }
     }
 

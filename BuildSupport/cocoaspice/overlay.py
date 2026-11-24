@@ -1337,6 +1337,90 @@ def overlay_channel_lifetime_guards(checkout: Path) -> None:
     ])
 
 
+def overlay_connection_lifecycle(checkout: Path) -> None:
+    """Do not report disconnected while the live SpiceSession still has channels."""
+    impl = checkout / "Sources" / "CocoaSpice" / "CSConnection.m"
+    _replace_once(impl, [
+        ('#import <spice/vd_agent.h>', '#import <spice/vd_agent.h>\n#import <stdlib.h>\n#import <stdio.h>'),
+        ("@property (nonatomic, readwrite) BOOL isTLSOnly;",
+         "@property (nonatomic, readwrite) BOOL isTLSOnly;\n@property (nonatomic) BOOL disconnectNotified;"),
+        ("""    NSInteger code = kCSConnectionErrorNone;
+    
+    switch (event) {""",
+         """    NSInteger code = kCSConnectionErrorNone;
+    if (getenv("MRV_GLIB_TRACE")) {
+        fprintf(stderr, "MRV_CONN_EVENT session=%p channel=%p event=%d\\n",
+                (void *)self.spiceSession, (void *)channel, (int)event);
+        fflush(stderr);
+    }
+    switch (event) {"""),
+        ("""    CSConnection *self = (__bridge CSConnection *)data;
+    int chid;
+    
+    g_object_get(channel, "channel-id", &chid, NULL);
+    SPICE_DEBUG("new channel (#%d)", chid);""",
+         """    CSConnection *self = (__bridge CSConnection *)data;
+    int chid = -1, type = -1;
+    if (s != self.spiceSession || !SPICE_IS_CHANNEL(channel)) return;
+    g_object_get(channel, "channel-id", &chid, "channel-type", &type, NULL);
+    if (getenv("MRV_GLIB_TRACE")) {
+        fprintf(stderr, "MRV_CONN_NEW session=%p channel=%p type=%d id=%d\\n",
+                (void *)s, (void *)channel, type, chid);
+        fflush(stderr);
+    }
+    SPICE_DEBUG("new channel (#%d)", chid);"""),
+        ("""    g_object_get(channel, "channel-id", &chid, NULL);
+    if (SPICE_IS_MAIN_CHANNEL(channel)) {""",
+         """    if (s != self.spiceSession || !SPICE_IS_CHANNEL(channel)) return;
+    int type = -1;
+    g_object_get(channel, "channel-id", &chid, "channel-type", &type, NULL);
+    if (getenv("MRV_GLIB_TRACE")) {
+        fprintf(stderr, "MRV_CONN_DESTROY session=%p channel=%p type=%d id=%d\\n",
+                (void *)s, (void *)channel, type, chid);
+        fflush(stderr);
+    }
+    if (SPICE_IS_MAIN_CHANNEL(channel)) {"""),
+        ("""    // ideally we do this in cs_connection_destroy() but because that happens so late, it opens us up
+    // to retain cycles if the caller waits for `spiceDisconnect:` to cleanup.
+    if (self.channels.count == 0) {
+        [self.delegate spiceDisconnected:self];
+    }""", """    // The wrapper array excludes the main channel. Empty wrappers alone
+    // do not mean the session disconnected (e.g. a display disappears).
+    // Do not wait for every external wrapper reference to be released either.
+    GList *remaining = spice_session_get_channels(s);
+    BOOL empty = remaining == NULL;
+    g_list_free(remaining);
+    if (!self.spiceMain && empty && !self.disconnectNotified) {
+        self.disconnectNotified = YES;
+        [self.delegate spiceDisconnected:self];
+    }"""),
+        ("""    SPICE_DEBUG("spice connection destroyed");
+    // this happens pretty late--after every SpiceChannel has been deallocated""",
+         """    SPICE_DEBUG("spice connection destroyed");
+    if (!self.disconnectNotified) {
+        self.disconnectNotified = YES;
+        [self.delegate spiceDisconnected:self];
+    }"""),
+        ("""        initiated = spice_session_connect(self.spiceSession);""",
+         """        self.disconnectNotified = NO;
+        if (getenv("MRV_GLIB_TRACE")) {
+            fprintf(stderr, "MRV_CONN_CONNECT session=%p\\n", (void *)self.spiceSession);
+            fflush(stderr);
+        }
+        initiated = spice_session_connect(self.spiceSession);"""),
+        ("""- (void)disconnect {
+    [CSMain.sharedInstance syncWith:^{
+        spice_session_disconnect(self.spiceSession);""",
+         """- (void)disconnect {
+    [CSMain.sharedInstance syncWith:^{
+        if (getenv("MRV_GLIB_TRACE")) {
+            fprintf(stderr, "MRV_CONN_DISCONNECT session=%p\\n", (void *)self.spiceSession);
+            fflush(stderr);
+        }
+        spice_session_disconnect(self.spiceSession);"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -1359,6 +1443,7 @@ def main() -> None:
     overlay_input_release_and_secure_attention(checkout)
     overlay_session_sharing_category(checkout)
     overlay_channel_lifetime_guards(checkout)
+    overlay_connection_lifecycle(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 
 
