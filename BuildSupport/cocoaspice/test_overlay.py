@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from overlay import (
     overlay_csmain,
@@ -247,8 +248,14 @@ class OverlayTests(unittest.TestCase):
             root = Path(raw)
             path = root / "Package.swift"
             path.write_text(PACKAGE_FIXTURE)
-            overlay_package_swift(root)
+            with patch("overlay.pkgconfig_tokens", side_effect=[
+                ["-I/fixture/include/spice", "-I/fixture/include/glib"],
+                ["-L/fixture/lib", "-lspice-client-glib-2.0", "-lglib-2.0", "-lgstreamer-1.0"],
+            ]) as pkgconfig:
+                overlay_package_swift(root)
+                self.assertEqual(pkgconfig.call_count, 2)
             text = path.read_text()
+            self.assertIn("-lspice-client-glib-2.0", text)
             self.assertIn(".unsafeFlags([", text)
             self.assertIn("-I", text)
             self.assertIn("linkerSettings", text)

@@ -8,7 +8,11 @@ final class SessionControllerTests: XCTestCase {
         let engine = MockEngine()
         let controller = SessionController(engine: engine, connectionTimeout: .milliseconds(20))
         controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
-        try await Task.sleep(for: .milliseconds(100))
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while controller.state == .connecting && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(controller.state, .failed(.network))
         engine.delegate?.engineDidConnect()
         engine.delegate?.engineDidDisconnect()
@@ -287,7 +291,11 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(engine.requestedResolutions.count, 1)
         XCTAssertFalse(controller.guestDidNotApplyResolution)
 
-        try await Task.sleep(for: .milliseconds(50))
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while engine.requestedResolutions.count < 2 && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(engine.requestedResolutions.count, 2)
         XCTAssertEqual(
             engine.requestedResolutions.last,
@@ -368,7 +376,11 @@ final class SessionControllerTests: XCTestCase {
         try connect(controller, engine: engine, monitorsConfig: true)
         engine.delegate?.engineDidUpdateDisplay(RemoteFrame(width: 1024, height: 768))
         controller.updateViewportSize(CGSize(width: 1600, height: 900))
-        try await Task.sleep(for: .milliseconds(120))
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while !controller.guestDidNotApplyResolution && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(controller.guestDidNotApplyResolution)
 
         controller.updateViewportSize(CGSize(width: 1280, height: 800))
