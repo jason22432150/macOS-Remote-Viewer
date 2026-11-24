@@ -269,10 +269,11 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     nonisolated func spiceAgentConnected(_ connection: CSConnection, supportingFeatures features: CSConnectionAgentFeature) {
+        let supportsClipboard = connection.pve_hasClipboardCapability()
         hopToMain(from: connection) { adapter in
             adapter.delegate?.engineDidUpdateAgent(AgentCapabilities(
                 isConnected: true,
-                supportsClipboard: adapter.connection?.pve_hasClipboardCapability() ?? false,
+                supportsClipboard: supportsClipboard,
                 supportsMonitorsConfig: features.contains(.monitorsConfig)
             ))
         }

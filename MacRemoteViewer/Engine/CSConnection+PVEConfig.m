@@ -1,35 +1,8 @@
 #import "CSConnection+PVEConfig.h"
 
-@import CocoaSpiceNoUsb;
-#import <objc/runtime.h>
-// Homebrew GLib／spice-gtk header 的 Doxygen 標記會灌爆 Xcode Issues。
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdocumentation"
-#import <glib.h>
-#import <spice-client.h>
-#import <spice/vd_agent.h>
-#pragma clang diagnostic pop
-
-/// GObject 指標不是 ObjC object，不能加 `__unsafe_unretained`。
-static void *pve_ivarRawPointer(CSConnection *object, const char *name) {
-    Ivar ivar = class_getInstanceVariable([CSConnection class], name);
-    if (!ivar) {
-        return NULL;
-    }
-    return *(void **)((uintptr_t)object + ivar_getOffset(ivar));
-}
-
+// The pinned CocoaSpice overlay exposes typed configuration methods.
+// No private ivar offsets, KVC, or raw GObject pointers escape the dependency.
 @implementation CSConnection (PVEConfig)
-
-- (SpiceSession *)pve_spiceSession {
-    SpiceSession *session = NULL;
-    @try {
-        session = (__bridge SpiceSession *)[self valueForKey:@"spiceSession"];
-    } @catch (__unused NSException *exception) {
-        session = (SpiceSession *)pve_ivarRawPointer(self, "_spiceSession");
-    }
-    return session;
-}
 
 - (BOOL)pve_applyHost:(NSString *)host
               tlsPort:(NSString *)tlsPort
@@ -39,63 +12,16 @@ static void *pve_ivarRawPointer(CSConnection *object, const char *name) {
              password:(NSString *)password
                 error:(NSError * _Nullable * _Nullable)error
 {
-    SpiceSession *session = [self pve_spiceSession];
-    if (!session) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"MacRemoteViewer.engine" code:1 userInfo:nil];
-        }
-        return NO;
+    BOOL ok = [self configurePVEHost:host tlsPort:tlsPort proxy:proxy
+                                  ca:caPEM certSubject:certSubject password:password];
+    if (!ok && error) {
+        *error = [NSError errorWithDomain:@"MacRemoteViewer.engine" code:1 userInfo:nil];
     }
-
-    @try {
-        [self setValue:@YES forKey:@"isTLSOnly"];
-    } @catch (__unused NSException *exception) {
-        // isTLSOnly 若無法寫入，仍以 GObject 屬性強制 TLS
-    }
-
-    gchar *channels[] = { "all", NULL };
-    g_object_set(session,
-                 "host", host.UTF8String,
-                 "tls-port", tlsPort.UTF8String,
-                 "port", NULL,
-                 "password", password.UTF8String,
-                 "cert-subject", certSubject.UTF8String,
-                 "secure-channels", channels,
-                 "enable-audio", FALSE,
-                 "enable-usbredir", FALSE,
-                 NULL);
-
-    SpiceSessionVerify verify = SPICE_SESSION_VERIFY_SUBJECT;
-    g_object_set(session, "verify", verify, NULL);
-
-    if (proxy.length > 0) {
-        g_object_set(session, "proxy", proxy.UTF8String, NULL);
-    }
-
-    GByteArray *caArray = g_byte_array_new();
-    g_byte_array_append(caArray, caPEM.bytes, (guint)caPEM.length);
-    g_object_set(session, "ca", caArray, NULL);
-    g_byte_array_unref(caArray);
-
-    // CA 信任與 public-key pinning 不同；明確清空 pubkey
-    g_object_set(session, "pubkey", NULL, NULL);
-    return YES;
-}
-
-- (SpiceMainChannel *)pve_spiceMain {
-    @try {
-        return (__bridge SpiceMainChannel *)[self valueForKey:@"spiceMain"];
-    } @catch (__unused NSException *exception) {
-        return (SpiceMainChannel *)pve_ivarRawPointer(self, "_spiceMain");
-    }
+    return ok;
 }
 
 - (BOOL)pve_hasClipboardCapability {
-    SpiceMainChannel *main = [self pve_spiceMain];
-    if (!main) {
-        return NO;
-    }
-    return spice_main_channel_agent_test_capability(main, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND);
+    return [self hasPVEClipboardCapability];
 }
 
 @end

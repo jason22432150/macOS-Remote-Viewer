@@ -9,6 +9,7 @@ import unittest
 
 from overlay import (
     overlay_csmain,
+    overlay_connection_pve_api,
     overlay_display_initial_frame,
     overlay_gst_ios_init,
     overlay_metal_renderer_complete_pending_draws,
@@ -366,6 +367,24 @@ class OverlayTests(unittest.TestCase):
                 text.find("[self _completeDraw];\n        self.renderSourceData = nil"),
                 text.find("self.renderSourceData = nil"),
             )
+
+    def test_connection_pve_api_uses_typed_properties_and_tls(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpice"
+            header = source / "include" / "CSConnection.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("- (BOOL)connect;")
+            impl = source / "CSConnection.m"
+            impl.write_text("- (BOOL)connect { return YES; }")
+            overlay_connection_pve_api(root)
+            self.assertIn("configurePVEHost:", header.read_text())
+            text = impl.read_text()
+            self.assertIn("self.isTLSOnly = YES", text)
+            self.assertIn('"port", NULL', text)
+            self.assertIn("SPICE_SESSION_VERIFY_SUBJECT", text)
+            self.assertIn("self.spiceMain", text)
+            self.assertNotIn("valueForKey", text)
 
     def test_session_private_sharing_category_is_renamed_to_avoid_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

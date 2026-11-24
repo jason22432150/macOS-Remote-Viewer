@@ -469,6 +469,64 @@ def overlay_metal_renderer_complete_pending_draws(impl: Path) -> None:
     )
 
 
+def overlay_connection_pve_api(checkout: Path) -> None:
+    """Expose a typed PVE configuration API inside the pinned CocoaSpice implementation."""
+    source = checkout / "Sources" / "CocoaSpice"
+    header = source / "include" / "CSConnection.h"
+    impl = source / "CSConnection.m"
+    declaration = """/// Configure a CA-verified, TLS-only PVE connection before connect.
+- (BOOL)configurePVEHost:(NSString *)host
+                 tlsPort:(NSString *)tlsPort
+                   proxy:(nullable NSString *)proxy
+                      ca:(NSData *)ca
+             certSubject:(NSString *)subject
+                password:(NSString *)password;
+/// Query on the SPICE worker when the agent capability callback fires.
+- (BOOL)hasPVEClipboardCapability;
+
+"""
+    implementation = """- (BOOL)configurePVEHost:(NSString *)host
+                 tlsPort:(NSString *)tlsPort
+                   proxy:(NSString *)proxy
+                      ca:(NSData *)ca
+             certSubject:(NSString *)subject
+                password:(NSString *)password
+{
+    if (!self.spiceSession || !host.length || !tlsPort.length || !ca.length || !subject.length) {
+        return NO;
+    }
+    self.isTLSOnly = YES;
+    gchar *channels[] = { "all", NULL };
+    g_object_set(self.spiceSession,
+                 "host", host.UTF8String,
+                 "tls-port", tlsPort.UTF8String,
+                 "port", NULL,
+                 "password", password.UTF8String,
+                 "cert-subject", subject.UTF8String,
+                 "secure-channels", channels,
+                 "enable-audio", FALSE,
+                 "enable-usbredir", FALSE,
+                 "verify", SPICE_SESSION_VERIFY_SUBJECT,
+                 "proxy", proxy.length ? proxy.UTF8String : NULL,
+                 "pubkey", NULL,
+                 NULL);
+    GByteArray *caArray = g_byte_array_new();
+    g_byte_array_append(caArray, ca.bytes, (guint)ca.length);
+    g_object_set(self.spiceSession, "ca", caArray, NULL);
+    g_byte_array_unref(caArray);
+    return YES;
+}
+
+- (BOOL)hasPVEClipboardCapability {
+    return self.spiceMain &&
+        spice_main_channel_agent_test_capability(self.spiceMain, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND);
+}
+
+"""
+    _replace_once(header, [("- (BOOL)connect;", declaration + "- (BOOL)connect;")])
+    _replace_once(impl, [("- (BOOL)connect {", implementation + "- (BOOL)connect {")])
+
+
 def overlay_session_sharing_category(checkout: Path) -> None:
     """`CSSession.m` 私有 `(Sharing)` 與公開 `CSSession+Sharing.h` 同名，會 duplicate category。
 
@@ -536,6 +594,7 @@ def main() -> None:
     overlay_metal_renderer_complete_pending_draws(
         checkout / "Sources" / "CocoaSpiceRenderer" / "CSMetalRenderer.m"
     )
+    overlay_connection_pve_api(checkout)
     overlay_session_sharing_category(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 
