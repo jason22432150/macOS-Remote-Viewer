@@ -402,6 +402,10 @@ class OverlayTests(unittest.TestCase):
             overlay_metal_pixel_probe(root)
             text = impl.read_text()
             self.assertIn("uint32_t pixel, double gpuSeconds", header.read_text())
+            self.assertIn("smokeRegionHandler", header.read_text())
+            self.assertIn("regionHandler ? 1280 : 256", text)
+            self.assertIn("destinationOffset:(i + 1) * 256", text)
+            self.assertIn("regionHandler(values[0], values[1], values[2], values[3], values[4]);", text)
             self.assertIn("gpuStart > 0 && gpuEnd > gpuStart", text)
             self.assertLess(text.index("if (rendered && sampleHandler && sampleBuffer)"),
                             text.index("commandBuffer.GPUStartTime"))

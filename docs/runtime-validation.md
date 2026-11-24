@@ -106,3 +106,7 @@ CI #45427763320 attempt 2 已通過 Native、Wrapper、完整 App 四 Session �
 ## GPU command buffer 時間量測
 
 CI #45431514695 已通過 19 組持續量測，完整 App 224 個 QXL draw commands 全數消費/釋放。後續 opt-in pixel probe 在 GPU 成功完成且有 readback buffer 時讀取 GPUStartTime/GPUEndTime，與像素一同回傳。每 phase/session 記錄有效/不可用數、總時間及最大時間（ns）；Python 核對 19 組計數與 readback 數一致。零、反向、非有限或超過 60 秒的異常時間戳標記 unavailable；不設 CI 速度閾值。正式 handler nil 不讀 timestamps。此量測包含 pixel blit，不是端到端延遲、螢幕 FPS 或 GPU 使用率；不同 queue 的時間不可直接加總推算 GPU busy。待 CI 確認實際時間戳可用性。
+
+## 局部 framebuffer 更新
+
+CI #45437464697 全部通過；19 組 GPU timestamps 無 unavailable，phase 平均 1.210–3.405 ms，最大 14.613 ms；完整 App 233 draws 全消費/釋放。新增獨立 partial fixture：第一個 full draw 為藍色，後續 QXL_DRAW_COPY 僅傳入 160×120 bitmap 至中央 (240,180)，交替紅綠；原 full draw modes 保留。新增 opt-in region callback 在同一 GPU command buffer 中取中心及四個 1/4、3/4 位置，只有此模式分配 1280 bytes，既有 center readback 仍 256 bytes。兩輪 TLS reconnect 均須取得紅/綠中心及四藍色外圍，拒絕非預期樣本並檢查正常 workspace 為空，Python 確認至少四次 partial commands。僅為五點取樣，不能證明每一像素正確、完全無撕裂或所有 dirty-rect/GL scanout 情況。正式使用兩 handler 均 nil，不增加 readback；待 CI 確認。

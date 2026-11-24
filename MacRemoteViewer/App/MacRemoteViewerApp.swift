@@ -62,7 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let isIntegrationProbe = ProcessInfo.processInfo.arguments.contains {
         ["--startup-smoke-test", "--loopback-tls-probe",
          "--loopback-spice-auth-probe", "--loopback-spice-display-probe",
-         "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe"].contains($0)
+         "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
+         "--loopback-spice-partial-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -120,6 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-spice-display-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackSpiceDisplayProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-partial-probe") {
+            guard arguments.count == index + 2 else { Darwin.exit(2) }
+            runLoopbackSpiceDisplayProbe(file: URL(fileURLWithPath: arguments[index + 1]), partial: true)
         } else if let index = arguments.firstIndex(of: "--loopback-spice-wrapper-probe") {
             guard arguments.count == index + 5 else { Darwin.exit(2) }
             runLoopbackSpiceWrapperProbe(files: arguments[(index + 1)...].map {
@@ -409,7 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Exercise actual display callbacks and Metal completion using the production canvas.
-    private func runLoopbackSpiceDisplayProbe(file: URL) {
+    private func runLoopbackSpiceDisplayProbe(file: URL, partial: Bool = false) {
         Task { @MainActor in
             let engine = SpiceEngineAdapter()
             let controller = SessionController(engine: engine,
@@ -434,15 +438,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.makeKeyAndOrderFront(nil)
                 for round in 0..<2 {
                     var colors = Set<UInt32>()
-                    canvas.setSmokePixelHandler { pixel, _ in
-                        let rgb = pixel & 0x00ffffff
-                        if colors.count < 16 && colors.insert(rgb).inserted {
-                            print("MRV_PIXEL_SAMPLE round=\(round + 1) rgb=\(String(rgb, radix: 16))")
+                    var regionMismatch = false
+                    var sawPatch = false
+                    if partial {
+                        canvas.setSmokeRegionHandler { center, a, b, c, d in
+                            let rgb = center & 0x00ffffff
+                            let outside = [a, b, c, d].map { $0 & 0x00ffffff }
+                            let isPatch = rgb == 0xff0000 || rgb == 0x00ff00
+                            // An initial empty surface may be observed before the
+                            // first real frame. Once initialized, every sample
+                            // must preserve the four blue exterior points.
+                            if outside.allSatisfy({ $0 == 0x0000ff }) &&
+                                (isPatch || (!sawPatch && rgb == 0x0000ff)) {
+                                if isPatch { sawPatch = true; colors.insert(rgb) }
+                            } else if sawPatch || rgb != 0 || outside.contains(where: { $0 != 0 }) {
+                                regionMismatch = true
+                                print("MRV_PARTIAL_MISMATCH center=\(String(rgb, radix: 16)) outside=\(outside)")
+                            }
+                        }
+                    } else {
+                        canvas.setSmokePixelHandler { pixel, _ in
+                            let rgb = pixel & 0x00ffffff
+                            if colors.count < 16 && colors.insert(rgb).inserted {
+                                print("MRV_PIXEL_SAMPLE round=\(round + 1) rgb=\(String(rgb, radix: 16))")
+                            }
                         }
                     }
                     controller.open(profile)
                     let deadline = ContinuousClock.now + .seconds(15)
                     while ContinuousClock.now < deadline {
+                        if regionMismatch { throw SessionError.unknown(code: "partial-pixel-mismatch") }
                         if case .failed = controller.state { throw SessionError.network }
                         if controller.state == .disconnected { throw SessionError.disconnected }
                         canvas.attachRendererIfNeeded()
@@ -456,12 +481,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard controller.state == .connected,
                           controller.displaySize == RemoteFrame(width: 640, height: 480),
                           controller.hasRenderedFrame, let elapsed = controller.firstFrameMilliseconds,
-                          colors.contains(0x00ff0000), colors.contains(0x0000ff00) else {
+                          colors.contains(0x00ff0000), colors.contains(0x0000ff00),
+                          !regionMismatch, !partial || model.sessions.isEmpty else {
                         print("MRV_DISPLAY_DIAGNOSTIC connected=\(controller.state == .connected) display=\(controller.displaySize != nil) rendered=\(controller.hasRenderedFrame) samples=\(colors.count)")
                         throw SessionError.displayTimeout
                     }
-                    print("MRV_SPICE_DISPLAY_ROUND_OK \(round + 1) 640x480 first-frame-ms=\(elapsed) pixels=red,green")
+                    if partial {
+                        print("MRV_SPICE_PARTIAL_ROUND_OK \(round + 1) 640x480 center=red,green exterior=blue,blue,blue,blue")
+                    } else {
+                        print("MRV_SPICE_DISPLAY_ROUND_OK \(round + 1) 640x480 first-frame-ms=\(elapsed) pixels=red,green")
+                    }
                     canvas.setSmokePixelHandler(nil)
+                    canvas.setSmokeRegionHandler(nil)
                     controller.cancel()
                     try await Task.sleep(for: .milliseconds(200))
                     guard controller.state == .disconnected, !controller.hasRenderedFrame,
@@ -469,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 canvas.prepareForRemoval()
                 window.orderOut(nil)
-                print("MRV_SPICE_DISPLAY_OK")
+                print(partial ? "MRV_SPICE_PARTIAL_OK" : "MRV_SPICE_DISPLAY_OK")
                 fflush(nil)
                 Darwin.exit(0)
             } catch {

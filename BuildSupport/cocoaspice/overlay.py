@@ -1236,20 +1236,23 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
     _replace_once(root / "include" / "CSMetalRenderer.h", [
         ("/// Modify upscaler and downscaler settings",
          "/// Test-only pixel and GPU seconds (zero if unavailable), delivered on main after completion.\n"
-         "@property (nonatomic, copy, nullable) void (^smokePixelHandler)(uint32_t pixel, double gpuSeconds);\n\n"
+         "@property (nonatomic, copy, nullable) void (^smokePixelHandler)(uint32_t pixel, double gpuSeconds);\n"
+         "/// Test-only same-draw center plus four quarter-position pixels.\n"
+         "@property (nonatomic, copy, nullable) void (^smokeRegionHandler)(uint32_t center, uint32_t a, uint32_t b, uint32_t c, uint32_t d);\n\n"
          "/// Modify upscaler and downscaler settings"),
     ])
     _replace_once(root / "CSMetalRenderer.m", [
         ("""    [self _renderCommand:commandBuffer
               drawSource:sourceData""",
          """    void (^sampleHandler)(uint32_t, double) = self.smokePixelHandler;
+    void (^regionHandler)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) = self.smokeRegionHandler;
     id<MTLTexture> drawableTexture = currentDrawable.texture;
     id<MTLBuffer> sampleBuffer = nil;
-    if (sampleHandler) [self _setViewportCGSize:CGSizeMake(drawableTexture.width, drawableTexture.height)];
-    if (sampleHandler && !view.framebufferOnly &&
+    if (sampleHandler || regionHandler) [self _setViewportCGSize:CGSizeMake(drawableTexture.width, drawableTexture.height)];
+    if ((sampleHandler || regionHandler) && !view.framebufferOnly &&
         drawableTexture.pixelFormat == MTLPixelFormatBGRA8Unorm &&
         drawableTexture.width && drawableTexture.height) {
-        sampleBuffer = [drawableTexture.device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+        sampleBuffer = [drawableTexture.device newBufferWithLength:(regionHandler ? 1280 : 256) options:MTLResourceStorageModeShared];
         if (sampleBuffer) renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
     }
 
@@ -1266,6 +1269,19 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
                         sourceSize:MTLSizeMake(1, 1, 1)
                           toBuffer:sampleBuffer destinationOffset:0
              destinationBytesPerRow:256 destinationBytesPerImage:256];
+            if (regionHandler) {
+                NSUInteger xs[] = { drawableTexture.width / 4, drawableTexture.width * 3 / 4,
+                                    drawableTexture.width / 4, drawableTexture.width * 3 / 4 };
+                NSUInteger ys[] = { drawableTexture.height / 4, drawableTexture.height / 4,
+                                    drawableTexture.height * 3 / 4, drawableTexture.height * 3 / 4 };
+                for (NSUInteger i = 0; i < 4; ++i) {
+                    [probe copyFromTexture:drawableTexture sourceSlice:0 sourceLevel:0
+                              sourceOrigin:MTLOriginMake(xs[i], ys[i], 0)
+                                sourceSize:MTLSizeMake(1, 1, 1)
+                                  toBuffer:sampleBuffer destinationOffset:(i + 1) * 256
+                     destinationBytesPerRow:256 destinationBytesPerImage:256];
+                }
+            }
             [probe endEncoding];
         } else {
             sampleBuffer = nil;
@@ -1280,7 +1296,7 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
          """            if (rendered && frameHandler) {
                 frameHandler();
             }
-            if (sampleHandler && (!rendered || !sampleBuffer)) {
+            if ((sampleHandler || regionHandler) && (!rendered || !sampleBuffer)) {
                 NSLog(@"MRV_PIXEL_READBACK_UNAVAILABLE gpuStatus=%lu buffer=%d", (unsigned long)commandBuffer.status, sampleBuffer != nil);
             }
             if (rendered && sampleHandler && sampleBuffer) {
@@ -1290,6 +1306,13 @@ def overlay_metal_pixel_probe(checkout: Path) -> None:
                 double gpuEnd = commandBuffer.GPUEndTime;
                 double gpuSeconds = (gpuStart > 0 && gpuEnd > gpuStart) ? gpuEnd - gpuStart : 0;
                 sampleHandler(pixel, gpuSeconds);
+            }
+            if (rendered && regionHandler && sampleBuffer) {
+                uint32_t values[5];
+                for (NSUInteger i = 0; i < 5; ++i) {
+                    memcpy(&values[i], (const uint8_t *)sampleBuffer.contents + i * 256, sizeof(uint32_t));
+                }
+                regionHandler(values[0], values[1], values[2], values[3], values[4]);
             }"""),
     ])
 

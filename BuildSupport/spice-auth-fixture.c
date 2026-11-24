@@ -125,13 +125,14 @@ static gboolean quit_loop(gpointer data) {
 }
 
 /* Fixed test-only CPU framebuffer. Never expose guest or host desktop memory. */
-enum { WIDTH = 640, HEIGHT = 480, DRAW_SLOTS = 16 };
+enum { WIDTH = 640, HEIGHT = 480, DRAW_SLOTS = 16, PATCH_W = 160, PATCH_H = 120 };
 static struct {
     uint32_t pixels[WIDTH * HEIGHT];
     QXLDrawable draws[DRAW_SLOTS];
     QXLImage images[DRAW_SLOTS];
     uint32_t red[WIDTH * HEIGHT];
     uint32_t green[WIDTH * HEIGHT];
+    uint32_t blue[WIDTH * HEIGHT];
 } framebuffer;
 #define pixels framebuffer.pixels
 static QXLInstance qxl;
@@ -139,6 +140,8 @@ static QXLInstance qxl;
 static gint draw_states[DRAW_SLOTS];
 static unsigned next_color;
 static unsigned palette_index;
+static gboolean partial_updates;
+static unsigned partial_submitted;
 static const uint32_t palettes[4][2] = {
     {0x00ff0000, 0x0000ff00}, /* red / green */
     {0x000000ff, 0x00ffff00}, /* blue / yellow */
@@ -176,8 +179,14 @@ static gboolean update_color(gpointer data) {
     memset(draw, 0, sizeof(*draw));
     draw->release_info.id = (uintptr_t)draw;
     draw->surface_id = 0;
-    draw->bbox.right = WIDTH;
-    draw->bbox.bottom = HEIGHT;
+    unsigned sequence = next_color++;
+    gboolean patch = partial_updates && sequence > 0;
+    unsigned width = patch ? PATCH_W : WIDTH;
+    unsigned height = patch ? PATCH_H : HEIGHT;
+    draw->bbox.left = patch ? (WIDTH - PATCH_W) / 2 : 0;
+    draw->bbox.top = patch ? (HEIGHT - PATCH_H) / 2 : 0;
+    draw->bbox.right = draw->bbox.left + width;
+    draw->bbox.bottom = draw->bbox.top + height;
     draw->clip.type = SPICE_CLIP_TYPE_NONE;
     draw->effect = QXL_EFFECT_OPAQUE;
     draw->type = QXL_DRAW_COPY;
@@ -185,20 +194,21 @@ static gboolean update_color(gpointer data) {
     draw->mm_time = (uint32_t)(g_get_monotonic_time() / 1000);
     QXLImage *image = &framebuffer.images[slot];
     memset(image, 0, sizeof(*image));
-    unsigned sequence = next_color++;
     image->descriptor.id = (uint64_t)sequence + 1;
     image->descriptor.type = SPICE_IMAGE_TYPE_BITMAP;
-    image->descriptor.width = WIDTH;
-    image->descriptor.height = HEIGHT;
+    image->descriptor.width = width;
+    image->descriptor.height = height;
     image->bitmap.format = SPICE_BITMAP_FMT_32BIT;
     image->bitmap.flags = QXL_BITMAP_DIRECT | QXL_BITMAP_TOP_DOWN;
-    image->bitmap.x = WIDTH;
-    image->bitmap.y = HEIGHT;
-    image->bitmap.stride = WIDTH * 4;
-    image->bitmap.data = (uintptr_t)(sequence % 2 ? framebuffer.green : framebuffer.red);
+    image->bitmap.x = width;
+    image->bitmap.y = height;
+    image->bitmap.stride = width * 4;
+    image->bitmap.data = (uintptr_t)(partial_updates && !patch ? framebuffer.blue :
+                                     (sequence % 2 ? framebuffer.green : framebuffer.red));
     draw->u.copy.src_bitmap = (uintptr_t)image;
-    draw->u.copy.src_area.right = WIDTH;
-    draw->u.copy.src_area.bottom = HEIGHT;
+    draw->u.copy.src_area.right = width;
+    draw->u.copy.src_area.bottom = height;
+    if (patch) ++partial_submitted;
     draw->u.copy.rop_descriptor = SPICE_ROPD_OP_PUT;
     g_atomic_int_inc(&submitted_draws);
     g_atomic_int_set(&draw_states[slot], 1);
@@ -271,6 +281,7 @@ static int setup_display(SpiceServer *server) {
     for (size_t i = 0; i < WIDTH * HEIGHT; ++i) {
         framebuffer.red[i] = palettes[palette_index][0];
         framebuffer.green[i] = palettes[palette_index][1];
+        if (partial_updates) framebuffer.blue[i] = 0x000000ff;
     }
     qxl.base.sif = &display_interface.base;
     qxl.id = 0;
@@ -297,7 +308,8 @@ static int setup_display(SpiceServer *server) {
 
 int main(int argc, char **argv) {
     if (argc < 6 || argc > 8) return 2;
-    int with_display = argc >= 7 && strcmp(argv[6], "display") == 0;
+    partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
+    int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates);
     if (argc >= 7 && !with_display) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;
@@ -338,6 +350,7 @@ int main(int argc, char **argv) {
         printf("DRAW_COUNTS submitted=%d consumed=%d released=%d\n",
                g_atomic_int_get(&submitted_draws), g_atomic_int_get(&consumed_draws),
                g_atomic_int_get(&released_draws));
+        if (partial_updates) printf("PARTIAL_COUNTS submitted=%u rect=240,180,160,120\n", partial_submitted);
         fflush(stdout);
     }
     spice_server_destroy(server);

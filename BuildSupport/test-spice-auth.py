@@ -25,7 +25,7 @@ def compile_fixture(destination):
                     "-o", str(destination), *flags], check=True, timeout=60)
 
 
-def test_case(app, root, fixture, name, server_ticket, success, display=False):
+def test_case(app, root, fixture, name, server_ticket, success, display=False, partial=False):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -37,7 +37,7 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
         command = [str(fixture), str(port), str(root / "trusted.pem"),
                    str(root / "server.pem"), str(root / "server.key"), server_ticket]
         if display:
-            command.append("display")
+            command.append("partial" if partial else "display")
         server = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 10
@@ -57,16 +57,26 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
-            mode = "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe"
+            mode = ("--loopback-spice-partial-probe" if partial else
+                    "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe")
             result = subprocess.run([str(exe), mode, str(profile)],
                                     cwd=root, env=env, capture_output=True, text=True, timeout=45)
             lines = result.stdout.splitlines()
-            expected = "MRV_SPICE_DISPLAY_OK" if display else ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED")
+            expected = ("MRV_SPICE_PARTIAL_OK" if partial else "MRV_SPICE_DISPLAY_OK" if display else
+                        ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED"))
             if result.returncode != 0 or expected not in lines:
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
-            if display:
+            if partial:
+                rounds = [line for line in lines if line.startswith("MRV_SPICE_PARTIAL_ROUND_OK ")]
+                if rounds != [f"MRV_SPICE_PARTIAL_ROUND_OK {i} 640x480 center=red,green exterior=blue,blue,blue,blue" for i in (1, 2)]:
+                    raise AssertionError("missing same-frame partial update results")
+                if any(line.startswith("MRV_PARTIAL_MISMATCH") for line in lines):
+                    raise AssertionError("partial update changed an exterior pixel")
+                for line in rounds:
+                    print(line)
+            elif display:
                 rounds = [line for line in lines if line.startswith("MRV_SPICE_DISPLAY_ROUND_OK ")]
                 if len(rounds) != 2 or any(not line.startswith(f"MRV_SPICE_DISPLAY_ROUND_OK {i} 640x480 first-frame-ms=")
                                            or not line.endswith(" pixels=red,green")
@@ -104,6 +114,11 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False):
             submitted, consumed, released = map(int, counts[0].groups())
             if not 0 < consumed <= submitted or not 0 <= released <= consumed:
                 raise AssertionError(f"invalid QXL worker counters: {submitted}/{consumed}/{released}")
+        if partial:
+            patches = [re.fullmatch(r"PARTIAL_COUNTS submitted=(\d+) rect=240,180,160,120", line)
+                       for line in lines if line.startswith("PARTIAL_COUNTS ")]
+            if len(patches) != 1 or patches[0] is None or int(patches[0].group(1)) < 4:
+                raise AssertionError("missing actual partial QXL draw commands")
         if success and initialized != ["MAIN_INITIALIZED tls=1"] * (2 if display else 3):
             raise AssertionError(f"{name}: unexpected TLS main-channel initializations: {initialized}")
         if not success and initialized:
@@ -329,6 +344,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "valid-ticket", tls.TICKET, True)
         test_case(args.app.resolve(), root, fixture, "wrong-ticket", "mrv-ci-other-ticket", False)
         test_case(args.app.resolve(), root, fixture, "display", tls.TICKET, True, display=True)
+        test_case(args.app.resolve(), root, fixture, "partial", tls.TICKET, True, display=True, partial=True)
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []
