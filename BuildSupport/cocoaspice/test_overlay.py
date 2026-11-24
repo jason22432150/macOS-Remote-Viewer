@@ -23,36 +23,7 @@ from overlay import (
     overlay_session_sharing_category,
 )
 
-CSMAIN_FIXTURE = """\
-- (id)init {
-    self = [super init];
-    if (self) {
-    if ((_main_context = g_main_context_new()) == NULL) {
-            return nil;
-        }
-    }
-    return self;
-}
-
-- (BOOL)spiceStart {
-    @synchronized (self) {
-        if (!self.running) {
-            spice_util_set_main_context(_main_context);
-            pthread_create(&spiceThread, &qosAttribute, &spice_main_loop, (__bridge_retained void *)self);
-        }
-    }
-    return YES;
-}
-
-- (void)spiceStop {
-    @synchronized (self) {
-        if (self.running) {
-            spice_util_set_main_context(NULL);
-            g_main_context_wakeup(_main_context);
-        }
-    }
-}
-"""
+CSMAIN_FIXTURE = "//\n// Copyright © 2022 osy. All rights reserved.\n//\n// Licensed under the Apache License, Version 2.0 (the \"License\");\n// you may not use this file except in compliance with the License.\n// You may obtain a copy of the License at\n//\n//     http://www.apache.org/licenses/LICENSE-2.0\n//\n// Unless required by applicable law or agreed to in writing, software\n// distributed under the License is distributed on an \"AS IS\" BASIS,\n// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n// See the License for the specific language governing permissions and\n// limitations under the License.\n//\n\n#import \"CSMain.h\"\n#import <glib.h>\n#import <spice-client.h>\n#import <pthread.h>\n#import \"gst_ios_init.h\"\n\n@interface CSMain ()\n\n@property (nonatomic, readwrite) BOOL running;\n@property (nonatomic) pthread_t spiceThread;\n\n@end\n\n@interface _CSMainBlock : NSObject\n\n@property (nonatomic, copy) dispatch_block_t userBlock;\n@property (nonatomic, nullable, strong) dispatch_group_t group;\n\n@end\n\n@implementation _CSMainBlock @end\n\n@implementation CSMain {\n    GMainContext *_main_context;\n    gint _loop_quit;\n}\n\nstatic void logHandler(const gchar *log_domain, GLogLevelFlags log_level,\n                       const gchar *message, gpointer user_data)\n{\n    GDateTime *now;\n    gchar *dateTimeStr;\n    const char *glog_domains = g_getenv(\"G_MESSAGES_DEBUG\");\n    LogHandler_t handler = (__bridge LogHandler_t)user_data;\n\n    if (!spice_util_get_debug() &&\n        ((log_level & (G_LOG_LEVEL_INFO | G_LOG_LEVEL_DEBUG)) != 0)) {\n        return;\n    }\n\n    char* levelStr = \"UNKNOWN\";\n    if (log_level & G_LOG_LEVEL_ERROR) {\n        levelStr = \"ERROR\";\n    } else if (log_level & G_LOG_LEVEL_CRITICAL) {\n        levelStr = \"CRITICAL\";\n    } else if (log_level & G_LOG_LEVEL_WARNING) {\n        levelStr = \"WARNING\";\n    } else if (log_level & G_LOG_LEVEL_MESSAGE) {\n        levelStr = \"MESSAGE\";\n    } else if (log_level & G_LOG_LEVEL_INFO) {\n        levelStr = \"INFO\";\n    } else if (log_level & G_LOG_LEVEL_DEBUG) {\n        levelStr = \"DEBUG\";\n    }\n    \n    now = g_date_time_new_now_local();\n    dateTimeStr = g_date_time_format(now, \"%Y-%m-%d %T\");\n    \n    if (handler) {\n        NSString *line = [NSString stringWithFormat:@\"%s,%03d %s %s-%s\\n\", dateTimeStr,\n                          g_date_time_get_microsecond(now) / 1000, levelStr,\n                          log_domain, message];\n        handler(line);\n    } else {\n        fprintf(stdout, \"%s,%03d %s %s-%s\\n\", dateTimeStr,\n                g_date_time_get_microsecond(now) / 1000, levelStr,\n                log_domain, message);\n    }\n    \n    g_date_time_unref(now);\n    g_free(dateTimeStr);\n}\n\nvoid *spice_main_loop(void *args) {\n    CSMain *self = (__bridge_transfer CSMain *)args;\n    \n    pthread_setname_np(\"SPICE Main Loop\");\n    gst_ios_init();\n    \n    g_main_context_ref(self->_main_context);\n    g_main_context_push_thread_default(self->_main_context);\n    // Iterate manually instead of g_main_loop_run() so every dispatch runs\n    // inside an autorelease pool: SPICE callbacks autorelease Objective-C\n    // objects (one MTLBlitCommandEncoder per gl_draw, cursors, images), and\n    // this thread lives for the whole app, so without a per-iteration drain\n    // they pin device memory forever.\n    while (!g_atomic_int_get(&self->_loop_quit)) {\n        @autoreleasepool {\n            g_main_context_iteration(self->_main_context, TRUE);\n        }\n    }\n    g_main_context_pop_thread_default(self->_main_context);\n    g_main_context_unref(self->_main_context);\n    \n    return NULL;\n}\n\n+ (CSMain *)sharedInstance {\n    static CSMain *sharedInstance = nil;\n    static dispatch_once_t onceToken;\n    dispatch_once(&onceToken, ^{\n        sharedInstance = [[self alloc] init];\n    });\n    return sharedInstance;\n}\n\n- (void *)glibMainContext {\n    return _main_context;\n}\n\n- (void)setLogHandler:(LogHandler_t)newLogHandler {\n    _logHandler = newLogHandler;\n    g_log_set_default_handler(logHandler, (__bridge gpointer)newLogHandler);\n}\n\n- (id)init {\n    self = [super init];\n    if (self) {\n        if ((_main_context = g_main_context_new()) == NULL) {\n            return nil;\n        }\n        g_log_set_default_handler(logHandler, NULL);\n    }\n    return self;\n}\n\n- (void)dealloc {\n    [self spiceStop];\n    g_main_context_unref(_main_context);\n    g_log_set_default_handler(g_log_default_handler, NULL);\n}\n\n- (void)spiceSetDebug:(BOOL)enabled {\n    spice_util_set_debug(enabled);\n}\n\n- (BOOL)spiceStart {\n    @synchronized (self) {\n        if (!self.running) {\n            pthread_t spiceThread;\n            g_atomic_int_set(&_loop_quit, FALSE);\n            spice_util_set_main_context(_main_context);\n            pthread_attr_t qosAttribute;\n            pthread_attr_init(&qosAttribute);\n            pthread_attr_set_qos_class_np(&qosAttribute, QOS_CLASS_USER_INTERACTIVE, 0);\n            if (pthread_create(&spiceThread, &qosAttribute, &spice_main_loop, (__bridge_retained void *)self) != 0) {\n                return NO;\n            }\n            self.running = YES;\n            self.spiceThread = spiceThread;\n        }\n    }\n    return YES;\n}\n\n- (void)spiceStop {\n    @synchronized (self) {\n        if (self.running) {\n            void *status;\n            spice_util_set_main_context(NULL);\n            g_atomic_int_set(&_loop_quit, TRUE);\n            g_main_context_wakeup(_main_context);\n            pthread_join(self.spiceThread, &status);\n            self.running = NO;\n            self.spiceThread = NULL;\n        }\n    }\n}\n\nstatic gboolean callBlockInMainContext(gpointer data) {\n    _CSMainBlock *block = (__bridge _CSMainBlock *)data;\n    block.userBlock();\n    return FALSE;\n}\n\nstatic void cleanupBlock(gpointer data) {\n    _CSMainBlock *block = (__bridge_transfer _CSMainBlock *)data;\n    block.userBlock = nil;\n    if (block.group) {\n        dispatch_group_leave(block.group);\n    }\n}\n\n- (void)asyncWithBlock:(_CSMainBlock *)block {\n    gpointer data = (__bridge_retained void *)block;\n    g_main_context_invoke_full(self.glibMainContext,\n                               G_PRIORITY_DEFAULT,\n                               callBlockInMainContext,\n                               data,\n                               cleanupBlock);\n}\n\n- (void)asyncWith:(dispatch_block_t)block {\n    _CSMainBlock *_block = [[_CSMainBlock alloc] init];\n    _block.userBlock = block;\n    [self asyncWithBlock:_block];\n}\n\n- (void)syncWith:(dispatch_block_t)block {\n    if ([self isCurrentContextMain]) {\n        block();\n    } else {\n        _CSMainBlock *_block = [[_CSMainBlock alloc] init];\n        dispatch_group_t mainContextGroup = dispatch_group_create();\n        dispatch_group_enter(mainContextGroup);\n        _block.userBlock = block;\n        _block.group = mainContextGroup;\n        [self asyncWithBlock:_block];\n        dispatch_group_wait(mainContextGroup, DISPATCH_TIME_FOREVER);\n    }\n}\n\n- (BOOL)isCurrentContextMain {\n    return g_main_context_is_owner(self.glibMainContext);\n}\n\n@end\n"
 
 DISPLAY_FIXTURE = r"""
     self.canvasData = NULL;
@@ -234,6 +205,11 @@ class OverlayTests(unittest.TestCase):
             self.assertNotIn("spice_util_set_main_context(NULL)", text)
             self.assertIn("g_main_context_ref(g_main_context_default())", text)
             self.assertNotIn("g_main_context_new()", text)
+            self.assertIn("g_main_context_acquire(self->_main_context)", text)
+            self.assertIn("dispatch_semaphore_wait(_workerReady", text)
+            self.assertIn("g_source_attach(source, self.glibMainContext)", text)
+            self.assertNotIn("g_main_context_invoke_full(", text)
+            self.assertIn("g_main_context_release(self->_main_context)", text)
 
     def test_gst_ios_init_uses_dynamic_gst_init(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -444,7 +420,13 @@ class OverlayTests(unittest.TestCase):
             header.parent.mkdir(parents=True)
             header.write_text("- (BOOL)connect;")
             impl = source / "CSConnection.m"
-            impl.write_text("- (BOOL)connect { return YES; }")
+            impl.write_text("""- (BOOL)connect {
+    return spice_session_connect(self.spiceSession);
+}
+
+- (void)disconnect {
+    spice_session_disconnect(self.spiceSession);
+}""")
             overlay_connection_pve_api(root)
             self.assertIn("configurePVEHost:", header.read_text())
             text = impl.read_text()
@@ -453,6 +435,7 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("SPICE_SESSION_VERIFY_SUBJECT", text)
             self.assertIn("self.spiceMain", text)
             self.assertNotIn("valueForKey", text)
+            self.assertEqual(text.count("[CSMain.sharedInstance syncWith:"), 2)
 
     def test_session_private_sharing_category_is_renamed_to_avoid_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -51,6 +51,71 @@ def overlay_csmain(checkout: Path) -> None:
             raise SystemExit(f"找不到 CSMain.m 預期片段:\n{old}")
         text = text.replace(old, new, 1)
     path.write_text(text)
+    _replace_once(path, [
+        ("    gint _loop_quit;", "    gint _loop_quit;\n    dispatch_semaphore_t _workerReady;\n    BOOL _workerOwnsContext;"),
+        ("""    gst_ios_init();
+    
+    g_main_context_ref(self->_main_context);
+    g_main_context_push_thread_default(self->_main_context);""",
+         """    g_main_context_ref(self->_main_context);
+    // Acquire explicitly: push_thread_default has no return value and merely
+    // emits a critical on failure. Never report a worker that lacks ownership.
+    if (!g_main_context_acquire(self->_main_context)) {
+        self->_workerOwnsContext = NO;
+        dispatch_semaphore_signal(self->_workerReady);
+        g_main_context_unref(self->_main_context);
+        return NULL;
+    }
+    g_main_context_push_thread_default(self->_main_context);
+    gst_ios_init();
+    self->_workerOwnsContext = YES;
+    dispatch_semaphore_signal(self->_workerReady);"""),
+        ("""    g_main_context_pop_thread_default(self->_main_context);
+    g_main_context_unref(self->_main_context);""",
+         """    g_main_context_pop_thread_default(self->_main_context);
+    g_main_context_release(self->_main_context);
+    g_main_context_unref(self->_main_context);"""),
+        ("""            if (pthread_create(&spiceThread, &qosAttribute, &spice_main_loop, (__bridge_retained void *)self) != 0) {
+                return NO;
+            }
+            self.running = YES;
+            self.spiceThread = spiceThread;""",
+         """            _workerReady = dispatch_semaphore_create(0);
+            _workerOwnsContext = NO;
+            void *retainedSelf = (__bridge_retained void *)self;
+            int result = pthread_create(&spiceThread, &qosAttribute, &spice_main_loop, retainedSelf);
+            pthread_attr_destroy(&qosAttribute);
+            if (result != 0) {
+                CFBridgingRelease(retainedSelf);
+                return NO;
+            }
+            // Do not let the AppKit thread create channels until the worker
+            // owns the default context and has initialized GStreamer.
+            dispatch_semaphore_wait(_workerReady, DISPATCH_TIME_FOREVER);
+            if (!_workerOwnsContext) {
+                pthread_join(spiceThread, NULL);
+                return NO;
+            }
+            self.running = YES;
+            self.spiceThread = spiceThread;"""),
+        ("""    g_main_context_invoke_full(self.glibMainContext,
+                               G_PRIORITY_DEFAULT,
+                               callBlockInMainContext,
+                               data,
+                               cleanupBlock);""",
+         """    if (g_main_context_is_owner(self.glibMainContext)) {
+        callBlockInMainContext(data);
+        cleanupBlock(data);
+        return;
+    }
+    // invoke_full may acquire an idle default context and execute inline on
+    // the caller. Explicit attachment preserves worker-only dispatch.
+    GSource *source = g_idle_source_new();
+    g_source_set_priority(source, G_PRIORITY_DEFAULT);
+    g_source_set_callback(source, callBlockInMainContext, data, cleanupBlock);
+    g_source_attach(source, self.glibMainContext);
+    g_source_unref(source);"""),
+    ])
 
 
 def overlay_display_initial_frame(checkout: Path) -> None:
