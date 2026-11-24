@@ -186,8 +186,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         guard foreign.isEmpty else { throw SessionError.unknown(code: "foreign-color") }
                         for i in live {
                             let controller = controllers[i]
-                            if case .failed = controller.state { throw SessionError.network }
-                            if controller.state == .disconnected { throw SessionError.disconnected }
+                            if case .failed(let error) = controller.state {
+                                print("MRV_MULTI_SESSION_FAILED session=\(i) error=\(error)")
+                                throw SessionError.network
+                            }
+                            if controller.state == .disconnected {
+                                print("MRV_MULTI_SESSION_DISCONNECTED session=\(i)")
+                                throw SessionError.disconnected
+                            }
                             canvases[i].attachRendererIfNeeded()
                             canvases[i].updateViewport()
                         }
@@ -232,6 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 fflush(nil)
                 Darwin.exit(0)
             } catch {
+                for i in controllers.indices {
+                    print("MRV_MULTI_FINAL session=\(i) connected=\(controllers[i].state == .connected) rendered=\(controllers[i].hasRenderedFrame) samples=\(observed[i].count)")
+                }
                 cleanUp()
                 print("MRV_MULTI_FAILED")
                 fflush(nil)

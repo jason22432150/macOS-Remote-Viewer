@@ -161,7 +161,7 @@ def test_multi(app, root, fixture):
             print(result.stdout[-8000:])
             if result.returncode:
                 print(result.stderr[-8000:])
-                raise AssertionError("multi: client failed")
+                raise AssertionError(f"multi: client failed (exit={result.returncode})")
             lines = result.stdout.splitlines()
             phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
             if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:
@@ -169,6 +169,9 @@ def test_multi(app, root, fixture):
             if "MRV_MULTI_CLOSE_OK live=3" not in lines or "MRV_MULTI_OK" not in lines:
                 raise AssertionError("multi: missing close/isolation success")
         finally:
+            # Give the peer disconnects a bounded interval to drain on each
+            # fixture's GLib loop before requesting orderly VM shutdown.
+            time.sleep(0.5)
             for server in servers:
                 if server.poll() is None:
                     server.terminate()

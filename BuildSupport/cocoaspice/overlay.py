@@ -558,7 +558,29 @@ def overlay_connection_pve_api(checkout: Path) -> None:
 
 """
     _replace_once(header, [("- (BOOL)connect;", declaration + "- (BOOL)connect;")])
-    _replace_once(impl, [("- (BOOL)connect {", implementation + "- (BOOL)connect {")])
+    _replace_once(impl, [
+        ("""- (BOOL)connect {
+    return spice_session_connect(self.spiceSession);
+}
+
+- (void)disconnect {
+    spice_session_disconnect(self.spiceSession);
+}""",
+         implementation + """- (BOOL)connect {
+    // Channel creation and coroutine scheduling must share the GLib context.
+    __block BOOL initiated = NO;
+    [CSMain.sharedInstance syncWith:^{
+        initiated = spice_session_connect(self.spiceSession);
+    }];
+    return initiated;
+}
+
+- (void)disconnect {
+    [CSMain.sharedInstance syncWith:^{
+        spice_session_disconnect(self.spiceSession);
+    }];
+}"""),
+    ])
 
 
 def overlay_session_sharing_category(checkout: Path) -> None:

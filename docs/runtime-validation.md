@@ -84,3 +84,5 @@ CI #45392068111 顯示已建立 Main/Display Channel、完成 GPU draw 與黑色
 ## 四個真實 Session 並行
 
 CI 的 multi probe 在同一 App 程序內開四個 loopback TLS SPICE server，分別提供紅/綠、藍/黃、青/洋紅、白/灰動態 bitmap。使用同一 Metal device、四個 production RemoteCanvasView 及四個獨立 SessionController/Adapter；以可見 2×2 grid 測試四輪 active 切換。每輪要求每個 canvas 重新取得自身兩色、無其他非黑色、保持 connected 並確認 active/background preferredFramesPerSecond 為 60/15。關閉第二組後剩餘三組須重新取得自身雙色，關閉組須清除 display/frame state。這是 canvas/controller 層的真實網路並行測試，並非 SwiftUI 分頁整合測試；不測 clipboard/guest input，FPS 設定不等於實際量測 FPS，亦不驗證完全隱藏或遮蔽視窗的 GPU 行為。
+
+CI #45396733101：Debug/Release 通過，單一 display 雙色通過；四組並行時出現重複 Main/Display 初始化、連線關閉及一組 fixture SIGSEGV。原始 CocoaSpice 的 connect/disconnect 直接在呼叫端操作 SpiceSession，overlay 改為 CSMain GLib context 同步序列化；callback 仍透過既有 MainActor hop。此變更針對已確認的執行緒歸屬風險，尚不能認定它就是重複連線的唯一原因。multi probe 增加各組失敗/斷線/最終狀態診斷；fixture 關閉前給予固定 500 ms 排空 peer disconnect，保留全部四組並行、雙色、channel 數量與退出狀態的嚴格驗證。
