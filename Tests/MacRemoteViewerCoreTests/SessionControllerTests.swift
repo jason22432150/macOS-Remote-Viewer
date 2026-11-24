@@ -402,15 +402,16 @@ final class SessionControllerTests: XCTestCase {
 
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(2)
-        while engine.requestedResolutions.count < 2 && clock.now < deadline {
+        // Observe the terminal condition instead of assuming that the test task
+        // resumes between the first and second retries on a loaded runner.
+        while !controller.guestDidNotApplyResolution && clock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(engine.requestedResolutions.count, 2)
-        XCTAssertEqual(
-            engine.requestedResolutions.last,
-            CGSize(width: 1600, height: 900)
-        )
-        XCTAssertFalse(controller.guestDidNotApplyResolution)
+        XCTAssertTrue(controller.guestDidNotApplyResolution)
+        XCTAssertEqual(engine.requestedResolutions, Array(repeating: CGSize(width: 1600, height: 900), count: 3))
+        // Exhaustion must not schedule another retry.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(engine.requestedResolutions.count, 3)
     }
 
     func testFlagsWhenGuestNeverAppliesRequestedSize() async throws {
