@@ -14,6 +14,7 @@ from overlay import (
     overlay_display_initial_frame,
     overlay_gst_ios_init,
     overlay_horizontal_scroll_compatibility,
+    overlay_input_release_and_secure_attention,
     overlay_metal_renderer_complete_pending_draws,
     overlay_metal_renderer_diagnostics,
     overlay_metal_frame_observation,
@@ -416,6 +417,24 @@ class OverlayTests(unittest.TestCase):
             self.assertIn("self->_scroll_delta_x -= ticks", result)
             self.assertIn("self->_key_state[i] = 0", result)
             self.assertIn("self->_scroll_delta_y = 0", result)
+
+    def test_secure_attention_and_pause_preserve_physical_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpice"
+            header = source / "include" / "CSInput.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("- (void)releaseKeys;")
+            impl = source / "CSInput.m"
+            impl.write_text("    uint32_t                _key_state[512 / 32];\n- (void)sendPause:(CSInputKey)type {\n    if (!self.channel) {\n        return;\n    }\n    [CSMain.sharedInstance asyncWith:^{\n        SpiceInputsChannel *inputs = self.channel;\n        /* Send proper scancodes. This will send same scancodes\n         * as hardware.\n         * The 0x21d is a sort of Third-Ctrl while\n         * 0x45 is the NumLock.\n         */\n        if (type == kCSInputKeyPress) {\n            spice_inputs_channel_key_press(inputs, 0x21d);\n            spice_inputs_channel_key_press(inputs, 0x45);\n        } else {\n            spice_inputs_channel_key_release(inputs, 0x21d);\n            spice_inputs_channel_key_release(inputs, 0x45);\n        }\n    }];\n}\n        self->_scroll_delta_x = 0;\n        self->_scroll_delta_y = 0;")
+            overlay_input_release_and_secure_attention(root)
+            result = impl.read_text()
+            self.assertIn("sendSecureAttention", header.read_text())
+            self.assertIn("if (!ctrlHeld) spice_inputs_channel_key_release", result)
+            self.assertIn("if (!altHeld) spice_inputs_channel_key_release", result)
+            self.assertIn("if (!deleteHeld) spice_inputs_channel_key_release", result)
+            self.assertIn("if (inputs && self->_pause_down)", result)
+            self.assertIn("self->_pause_down = NO", result)
 
     def test_connection_pve_api_uses_typed_properties_and_tls(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

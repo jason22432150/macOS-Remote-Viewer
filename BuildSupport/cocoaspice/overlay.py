@@ -700,6 +700,67 @@ def overlay_horizontal_scroll_compatibility(checkout: Path) -> None:
     ])
 
 
+def overlay_input_release_and_secure_attention(checkout: Path) -> None:
+    """Keep Pause and synthetic secure attention ordered with physical key events."""
+    source = checkout / "Sources" / "CocoaSpice"
+    header = source / "include" / "CSInput.h"
+    impl = source / "CSInput.m"
+    _replace_once(header, [
+        ("- (void)releaseKeys;", "- (void)releaseKeys;\n\n"
+         "/// Send Ctrl+Alt+Delete without releasing physically held modifiers.\n"
+         "- (void)sendSecureAttention;\n"),
+    ])
+    _replace_once(impl, [
+        ("    uint32_t                _key_state[512 / 32];",
+         "    uint32_t                _key_state[512 / 32];\n    BOOL                    _pause_down;"),
+        ("- (void)sendPause:(CSInputKey)type {\n    if (!self.channel) {\n        return;\n    }\n    [CSMain.sharedInstance asyncWith:^{\n        SpiceInputsChannel *inputs = self.channel;\n        /* Send proper scancodes. This will send same scancodes\n         * as hardware.\n         * The 0x21d is a sort of Third-Ctrl while\n         * 0x45 is the NumLock.\n         */\n        if (type == kCSInputKeyPress) {\n            spice_inputs_channel_key_press(inputs, 0x21d);\n            spice_inputs_channel_key_press(inputs, 0x45);\n        } else {\n            spice_inputs_channel_key_release(inputs, 0x21d);\n            spice_inputs_channel_key_release(inputs, 0x45);\n        }\n    }];\n}",
+         """- (void)sendPause:(CSInputKey)type {
+    if (!self.channel || self.disableInputs) return;
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceInputsChannel *inputs = self.channel;
+        if (!inputs || self.disableInputs) return;
+        BOOL pressed = type == kCSInputKeyPress;
+        if (self->_pause_down == pressed) return;
+        self->_pause_down = pressed;
+        if (pressed) {
+            spice_inputs_channel_key_press(inputs, 0x21d);
+            spice_inputs_channel_key_press(inputs, 0x45);
+        } else {
+            spice_inputs_channel_key_release(inputs, 0x21d);
+            spice_inputs_channel_key_release(inputs, 0x45);
+        }
+    }];
+}
+
+- (void)sendSecureAttention {
+    if (!self.channel || self.disableInputs) return;
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceInputsChannel *inputs = self.channel;
+        if (!inputs || self.disableInputs) return;
+        BOOL ctrlHeld = (self->_key_state[0x1d / 32] & (1u << (0x1d % 32))) ||
+                        (self->_key_state[0x11d / 32] & (1u << (0x11d % 32)));
+        BOOL altHeld = (self->_key_state[0x38 / 32] & (1u << (0x38 % 32))) ||
+                       (self->_key_state[0x138 / 32] & (1u << (0x138 % 32)));
+        BOOL deleteHeld = self->_key_state[0x153 / 32] & (1u << (0x153 % 32));
+        if (!ctrlHeld) spice_inputs_channel_key_press(inputs, 0x1d);
+        if (!altHeld) spice_inputs_channel_key_press(inputs, 0x38);
+        spice_inputs_channel_key_press(inputs, 0x153);
+        if (!deleteHeld) spice_inputs_channel_key_release(inputs, 0x153);
+        if (!altHeld) spice_inputs_channel_key_release(inputs, 0x38);
+        if (!ctrlHeld) spice_inputs_channel_key_release(inputs, 0x1d);
+    }];
+}"""),
+        ("        self->_scroll_delta_x = 0;\n        self->_scroll_delta_y = 0;",
+         """        if (inputs && self->_pause_down) {
+            spice_inputs_channel_key_release(inputs, 0x21d);
+            spice_inputs_channel_key_release(inputs, 0x45);
+        }
+        self->_pause_down = NO;
+        self->_scroll_delta_x = 0;
+        self->_scroll_delta_y = 0;"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -716,6 +777,7 @@ def main() -> None:
     overlay_metal_frame_observation(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
+    overlay_input_release_and_secure_attention(checkout)
     overlay_session_sharing_category(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")
 

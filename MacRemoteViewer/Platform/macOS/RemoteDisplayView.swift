@@ -34,7 +34,7 @@ struct RemoteDisplayView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: RemoteCanvasView, coordinator: ()) {
-        nsView.endRelativeCapture()
+        nsView.prepareForRemoval()
     }
 
     func updateNSView(_ nsView: RemoteCanvasView, context: Context) {
@@ -280,7 +280,8 @@ final class RemoteCanvasView: MTKView {
 
     /// 擷取輸入時把 Cmd+A 等 menu key equivalent 轉給 guest，避免本機選單先吃掉。
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard isActive, router?.captured == true, controller != nil else {
+        guard isActive, router?.captured == true, controller?.state == .connected,
+              controller?.displaySize != nil else {
             return super.performKeyEquivalent(with: event)
         }
         if isLocalQuitShortcut(event) {
@@ -330,11 +331,18 @@ final class RemoteCanvasView: MTKView {
         }
     }
 
+    func prepareForRemoval() {
+        endRelativeCapture()
+        releaseKeys()
+        showLocalCursor()
+    }
+
     func updateCaptureEligibility(requested: Bool, connected: Bool, hasDisplay: Bool) {
         if lastRelativeRequest != requested || !connected || !hasDisplay {
-            // Clear router bookkeeping when the controller releases remote input.
-            if lastRelativeRequest != requested { _ = router?.releaseAll() }
+            // The controller has released remote input; clear local tracking too.
+            _ = router?.releaseAll()
             if !requested || !connected || !hasDisplay { endRelativeCapture() }
+            if !connected || !hasDisplay { showLocalCursor() }
         }
         lastRelativeRequest = requested
     }
@@ -398,7 +406,8 @@ final class RemoteCanvasView: MTKView {
     }
 
     private func sendKey(_ event: NSEvent) {
-        guard isActive, let controller, let router, router.captured else { return }
+        guard isActive, let controller, let router, router.captured,
+              controller.state == .connected, controller.displaySize != nil else { return }
         for key in router.keyEvents(from: event) {
             controller.sendKey(key)
         }

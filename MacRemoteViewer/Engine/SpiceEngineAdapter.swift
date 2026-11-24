@@ -153,16 +153,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     func sendCtrlAltDelete() {
-        guard let input else { return }
-        let ctrl = 0x1D
-        let alt = 0x38
-        let delete = 0x153
-        input.send(.press, code: Int32(ctrl))
-        input.send(.press, code: Int32(alt))
-        input.send(.press, code: Int32(delete))
-        input.send(.release, code: Int32(delete))
-        input.send(.release, code: Int32(alt))
-        input.send(.release, code: Int32(ctrl))
+        input?.sendSecureAttention()
     }
 
     func setClipboardSharingEnabled(_ enabled: Bool) {
