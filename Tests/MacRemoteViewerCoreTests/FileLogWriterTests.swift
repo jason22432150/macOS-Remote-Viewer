@@ -27,6 +27,38 @@ final class FileLogWriterTests: XCTestCase {
         XCTAssertEqual(appended, "hello\nworld\n")
     }
 
+    func testLogRotationBoundsFileCountAndSize() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacRemoteViewer-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = FoundationFileLogWriter(directoryURL: directory, maximumFileBytes: 12, retainedRotations: 2)
+        for line in ["aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh", "iii", "jjj"] {
+            try writer.append(line)
+        }
+        let active = directory.appendingPathComponent(FoundationFileLogWriter.fileName(for: Date()))
+        XCTAssertEqual(try String(contentsOf: active, encoding: .utf8), "jjj\n")
+        XCTAssertEqual(try String(contentsOf: active.appendingPathExtension("1"), encoding: .utf8), "ggg\nhhh\niii\n")
+        XCTAssertEqual(try String(contentsOf: active.appendingPathExtension("2"), encoding: .utf8), "ddd\neee\nfff\n")
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])
+        XCTAssertEqual(files.count, 3)
+        for url in files {
+            XCTAssertLessThanOrEqual(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max, 12)
+        }
+    }
+
+    func testLogWriterRefusesSymbolicLink() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacRemoteViewer-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let target = directory.appendingPathComponent("untouched.txt")
+        try Data("original".utf8).write(to: target)
+        let active = directory.appendingPathComponent(FoundationFileLogWriter.fileName(for: Date()))
+        try FileManager.default.createSymbolicLink(at: active, withDestinationURL: target)
+        XCTAssertThrowsError(try FoundationFileLogWriter(directoryURL: directory).append("new log"))
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "original")
+    }
+
     func testSinkDoesNotWriteWhenDisabled() throws {
         let writer = MemoryFileLogWriter()
         let sink = FileLogSink(enabled: false, writer: writer)

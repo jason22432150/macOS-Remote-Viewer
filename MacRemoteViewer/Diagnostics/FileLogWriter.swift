@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import OSLog
 
 /// 檔案診斷紀錄的寫入端。測試可換成記憶體實作。
@@ -18,9 +19,15 @@ public enum FileLogLocation {
 
 public struct FoundationFileLogWriter: FileLogWriting, Sendable {
     public let directoryURL: URL
+    public let maximumFileBytes: Int
+    public let retainedRotations: Int
 
-    public init(directoryURL: URL = FileLogLocation.defaultDirectory) {
+    public init(directoryURL: URL = FileLogLocation.defaultDirectory,
+                maximumFileBytes: Int = 5 * 1024 * 1024,
+                retainedRotations: Int = 3) {
         self.directoryURL = directoryURL
+        self.maximumFileBytes = max(1, maximumFileBytes)
+        self.retainedRotations = min(max(1, retainedRotations), 10)
     }
 
     public func ensureDirectoryExists() throws {
@@ -31,18 +38,71 @@ public struct FoundationFileLogWriter: FileLogWriting, Sendable {
         try ensureDirectoryExists()
         let url = directoryURL.appendingPathComponent(Self.fileName(for: Date()), isDirectory: false)
         let data = Data((line + "\n").utf8)
-        if FileManager.default.fileExists(atPath: url.path) {
-            let handle = try FileHandle(forWritingTo: url)
-            do {
-                try handle.seekToEnd()
-                try handle.write(contentsOf: data)
-                try handle.close()
-            } catch {
-                try? handle.close()
-                throw error
+        guard data.count <= maximumFileBytes else { throw CocoaError(.fileWriteOutOfSpace) }
+        // The application uses a single serial AsyncFileLogWriter. Do not follow
+        // symlinks or write into special files, and create private log files.
+        var fd = try openLog(url)
+        defer { if fd >= 0 { Darwin.close(fd) } }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              info.st_nlink == 1, info.st_size >= 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        if info.st_size > Int64(maximumFileBytes - data.count) {
+            Darwin.close(fd)
+            fd = -1
+            try rotate(url)
+            fd = try openLog(url)
+        }
+        // O_APPEND prevents seek/write races. FileHandle does not own this fd.
+        try FileHandle(fileDescriptor: fd, closeOnDealloc: false).write(contentsOf: data)
+    }
+
+    private func openLog(_ url: URL) throws -> Int32 {
+        let fd = Darwin.open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, mode_t(0o600))
+        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              info.st_nlink == 1 else {
+            Darwin.close(fd)
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        return fd
+    }
+
+    private func rotate(_ url: URL) throws {
+        let fm = FileManager.default
+        func rotation(_ number: Int) -> URL {
+            url.appendingPathExtension(String(number))
+        }
+        func regularFileExists(_ candidate: URL) throws -> Bool {
+            var info = stat()
+            if lstat(candidate.path, &info) != 0 {
+                if errno == ENOENT { return false }
+                throw CocoaError(.fileWriteNoPermission)
             }
-        } else {
-            try data.write(to: url, options: .atomic)
+            guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_nlink == 1 else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            return true
+        }
+        // Refuse suspicious entries before touching any file.
+        for number in 1...retainedRotations {
+            _ = try regularFileExists(rotation(number))
+        }
+        if try regularFileExists(rotation(retainedRotations)) {
+            try fm.removeItem(at: rotation(retainedRotations))
+        }
+        if retainedRotations > 1 {
+            for number in stride(from: retainedRotations - 1, through: 1, by: -1) {
+                let source = rotation(number)
+                if try regularFileExists(source) {
+                    try fm.moveItem(at: source, to: rotation(number + 1))
+                }
+            }
+        }
+        if try regularFileExists(url) {
+            try fm.moveItem(at: url, to: rotation(1))
         }
     }
 
@@ -109,7 +169,7 @@ public final class AsyncFileLogWriter: FileLogWriting, @unchecked Sendable {
         guard let urls = try? FileManager.default.contentsOfDirectory(at: directoryURL,
             includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return }
         for url in urls {
-            guard url.lastPathComponent.range(of: #"^MacRemoteViewer-[0-9]{4}-[0-9]{2}-[0-9]{2}\.log$"#,
+            guard url.lastPathComponent.range(of: #"^MacRemoteViewer-[0-9]{4}-[0-9]{2}-[0-9]{2}\.log(\.([1-9]|10))?$"#,
                 options: .regularExpression) != nil,
                 let values = try? url.resourceValues(forKeys: keys),
                 values.isRegularFile == true, values.isSymbolicLink != true,

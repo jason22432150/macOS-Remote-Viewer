@@ -94,6 +94,10 @@ swift test
 - 尚未完成音效、多顯示器、圖片剪貼簿、USB、PVE API 自動換票。
 - Kali／XFCE 等 Linux 桌面可能不套用 SPICE monitors config；App 會重試並在 status bar 提示，無法在 client 端強制改 guest 桌面解析度。
 
+### 診斷日誌容量
+
+日誌預設每檔最多 5 MiB，同一天保留目前檔及三個輪替檔（合計上限約 20 MiB／日）；超過 30 天的本程式日誌與輪替檔會清理。日誌寫入不跟隨 symlink。
+
 ### 連線檔安全清理
 
 連線檔須為一般檔案，不接受 symlink 或 FIFO。成功連線且允許刪除時，程式會先在同目錄建立私有 `.macremoteviewer-cleanup-*` 暫存目錄，原子移動檔案並核對 inode / device / size / mtime 後才刪除。若原路徑被其他檔案占用而無法安全還原，暫存目錄會保留原檔，請手動檢查（Finder 可用 Command+Shift+. 顯示隱藏檔）。此機制不保證抵抗具有相同使用者權限的惡意程式。
