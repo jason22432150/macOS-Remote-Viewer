@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var observed = Array(repeating: Set<UInt32>(), count: 4)
             var foreign = Set<Int>()
             var live = Set(0..<4)
-            func cleanUp() {
+            @MainActor func cleanUp() {
                 for canvas in canvases {
                     canvas.setSmokePixelHandler(nil)
                     canvas.prepareForRemoval()
@@ -176,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Open all four before yielding to the main actor.
                 for i in 0..<4 { controllers[i].open(profiles[i]) }
 
-                func validatePhase(active: Int) async throws {
+                @MainActor func validatePhase(active: Int) async throws {
                     for i in live { canvases[i].setActive(i == active) }
                     // Reset observations for each phase: require fresh draws, not
                     // cached success from the previous foreground selection.
@@ -209,6 +209,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await validatePhase(active: active)
                     print("MRV_MULTI_PHASE_OK active=\(active) live=4 targets=60,15")
                 }
+                // Record all first-frame measurements before closing a controller,
+                // which deliberately resets its frame diagnostics.
+                for i in 0..<4 {
+                    if let elapsed = controllers[i].firstFrameMilliseconds {
+                        print("MRV_MULTI_FIRST_FRAME session=\(i) ms=\(elapsed)")
+                    }
+                }
                 // Disconnect one renderer while the remaining three continue.
                 canvases[1].setSmokePixelHandler(nil)
                 canvases[1].prepareForRemoval()
@@ -220,11 +227,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       controllers[1].displaySize == nil, !controllers[1].hasRenderedFrame,
                       foreign.isEmpty else { throw SessionError.cancelled }
                 print("MRV_MULTI_CLOSE_OK live=3")
-                for i in 0..<4 {
-                    if let elapsed = controllers[i].firstFrameMilliseconds {
-                        print("MRV_MULTI_FIRST_FRAME session=\(i) ms=\(elapsed)")
-                    }
-                }
                 cleanUp()
                 print("MRV_MULTI_OK")
                 fflush(nil)
