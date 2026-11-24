@@ -113,10 +113,11 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
                 items[type.rawValue] = data
             }
         }
+        let immutableItems = items
         let changed = snapshot.withLock { state -> Bool in
             guard state.enabled, state.generation == generation else { return false }
             state.changeCount = count
-            state.items = items
+            state.items = immutableItems
             return true
         }
         if announce && changed {

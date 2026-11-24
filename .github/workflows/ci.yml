@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core:
     runs-on: macos-15
@@ -35,5 +39,8 @@ jobs:
         run: |
           ./BuildSupport/bootstrap-cocoaspice.sh
           ./BuildSupport/generate-xcconfig.sh
-      - name: Build native app
-        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+      - name: Debug build
+        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Debug -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/mrv-debug" CODE_SIGNING_ALLOWED=NO build
+      - name: Release build
+        if: success() || failure()
+        run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Release -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/mrv-release" CODE_SIGNING_ALLOWED=NO build
