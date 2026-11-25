@@ -164,13 +164,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var identities: [String: ObjectIdentifier] = [:]
             var original: [SessionController] = []
             var live = Set(0..<4)
+            var generation = 0
+            var usedIDs = Set<String>()
+            let retiredControllers = NSHashTable<SessionController>.weakObjects()
+            let retiredCanvases = NSHashTable<RemoteCanvasView>.weakObjects()
 
             @MainActor func canvases(in view: NSView) -> [RemoteCanvasView] {
                 if let canvas = view as? RemoteCanvasView { return [canvas] }
                 return view.subviews.flatMap { canvases(in: $0) }
             }
             @MainActor func cleanup() {
-                for canvas in canvases(in: host) { canvas.setSmokePixelHandler(nil) }
+                generation += 1
+                for canvas in canvases(in: host) {
+                    canvas.setSmokePixelHandler(nil)
+                    retiredCanvases.add(canvas)
+                }
                 // Keep the host window visible while SwiftUI reconciles the
                 // empty workspace. Hiding it here can suspend view updates or
                 // let the app terminate before the final assertions run.
@@ -179,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
 
-            do {
+            @MainActor func readProfiles() throws -> [ConnectionProfile] {
                 let profiles = try files.map { file in
                     let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
                     let profile = try VVParser().parse(data: data)
@@ -193,13 +201,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       Set(profiles.map(\.sessionID)).count == 4, model.sessions.isEmpty else {
                     throw SessionError.cancelled
                 }
-                window.makeKeyAndOrderFront(nil)
-                workspaceModel.workspace.open(profiles)
+                let ids = Set(profiles.map(\.sessionID))
+                guard ids.isDisjoint(with: usedIDs) else { throw SessionError.cancelled }
+                usedIDs.formUnion(ids)
+                return profiles
+            }
+
+            @MainActor func openAndMount() async throws {
+                guard workspaceModel.sessions.isEmpty, canvases(in: host).isEmpty,
+                      original.isEmpty else { throw SessionError.cancelled }
+                generation += 1
+                let currentGeneration = generation
+                identities.removeAll()
+                observed = Array(repeating: Set<UInt32>(), count: 4)
+                foreign.removeAll()
+                live = Set(0..<4)
+                workspaceModel.workspace.open(try readProfiles())
                 original = workspaceModel.sessions
                 guard original.count == 4 else { throw SessionError.cancelled }
+                for controller in original { retiredControllers.add(controller) }
 
-                // Discover actual NSViewRepresentable children; do not create or
-                // attach a renderer manually, and never setActive from the probe.
+                // Discover actual NSViewRepresentable children; never manually
+                // drive rendering or force the selected state from the probe.
                 let mountDeadline = ContinuousClock.now + .seconds(15)
                 while ContinuousClock.now < mountDeadline {
                     let views = canvases(in: host)
@@ -210,7 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 throw SessionError.cancelled
                             }
                             identities[id] = ObjectIdentifier(view)
+                            retiredCanvases.add(view)
                             view.setSmokePixelHandler { pixel, _ in
+                                guard currentGeneration == generation else { return }
                                 let rgb = pixel & 0x00ffffff
                                 if expected[i].contains(rgb) { observed[i].insert(rgb) }
                                 else if rgb != 0 { foreign.insert(i) }
@@ -221,6 +246,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await Task.sleep(for: .milliseconds(50))
                 }
                 guard identities.count == 4 else { throw SessionError.displayTimeout }
+            }
+
+            do {
+                window.makeKeyAndOrderFront(nil)
+                try await openAndMount()
 
                 @MainActor func validateSelection(_ selected: Int) async throws {
                     let selectedID = original[selected].sessionID
@@ -285,7 +315,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // Sustained production workspace stress, with monotonic time
                 // and current (not high-water) resident memory observations.
-                @MainActor func snapshot(_ phase: Int, since start: ContinuousClock.Instant) throws {
+                @MainActor func snapshot(_ phase: Int, since start: ContinuousClock.Instant,
+                                         marker: String = "MRV_WORKSPACE_SOAK") throws {
                     var info = mach_task_basic_info()
                     var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
                     let result = withUnsafeMutablePointer(to: &info) { pointer in
@@ -302,7 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
                     let cpu = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6 +
                               Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
-                    print("MRV_WORKSPACE_SOAK phase=\(phase) elapsed-ms=\(Int(seconds * 1000)) rss-bytes=\(info.resident_size) peak-rss-bytes=\(usage.ru_maxrss) cpu-ms=\(Int(cpu * 1000)) live=\(live.count)")
+                    print("\(marker) phase=\(phase) elapsed-ms=\(Int(seconds * 1000)) rss-bytes=\(info.resident_size) peak-rss-bytes=\(usage.ru_maxrss) cpu-ms=\(Int(cpu * 1000)) live=\(live.count)")
                     fflush(nil)
                 }
                 let soakStart = ContinuousClock.now
@@ -365,6 +396,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 live.removeAll()
                 try snapshot(7, since: soakStart)
+
+                // Drop the probe's strong references before measuring survivors.
+                original.removeAll()
+                let churnStart = ContinuousClock.now
+                try await Task.sleep(for: .seconds(1))
+                try snapshot(0, since: churnStart, marker: "MRV_WORKSPACE_CHURN")
+                print("MRV_WORKSPACE_WEAK round=0 controllers=\(retiredControllers.allObjects.count) canvases=\(retiredCanvases.allObjects.count)")
+                for round in 1...3 {
+                    try await openAndMount()
+                    for selected in 0..<4 {
+                        workspaceModel.selectSession(original[selected].sessionID)
+                        try await validateSelection(selected)
+                    }
+                    print("MRV_WORKSPACE_CHURN_OPEN_OK round=\(round) live=4")
+                    cleanup()
+                    let closeDeadline = ContinuousClock.now + .seconds(5)
+                    while !canvases(in: host).isEmpty && ContinuousClock.now < closeDeadline {
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    guard workspaceModel.sessions.isEmpty, workspaceModel.selectedSessionID == nil,
+                          canvases(in: host).isEmpty, model.sessions.isEmpty, foreign.isEmpty,
+                          original.allSatisfy({ $0.state == .disconnected && $0.displaySize == nil && !$0.hasRenderedFrame }) else {
+                        throw SessionError.cancelled
+                    }
+                    live.removeAll()
+                    original.removeAll()
+                    // Allow queued callbacks/autorelease pools to settle.
+                    try await Task.sleep(for: .seconds(1))
+                    try snapshot(round, since: churnStart, marker: "MRV_WORKSPACE_CHURN")
+                    print("MRV_WORKSPACE_WEAK round=\(round) controllers=\(retiredControllers.allObjects.count) canvases=\(retiredCanvases.allObjects.count)")
+                    print("MRV_WORKSPACE_CHURN_CLOSE_OK round=\(round) live=0 views=0")
+                }
+                guard usedIDs.count == 16 else { throw SessionError.cancelled }
+                print("MRV_WORKSPACE_CHURN_OK cycles=4 sessions=16")
                 print("MRV_PROBE_WORKSPACE_EMPTY")
                 print("MRV_WORKSPACE_OK")
                 fflush(nil)

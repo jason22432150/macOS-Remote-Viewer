@@ -309,7 +309,8 @@ static int setup_display(SpiceServer *server) {
 int main(int argc, char **argv) {
     if (argc < 6 || argc > 8) return 2;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
-    int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates);
+    gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
+    int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates || workspace);
     if (argc >= 7 && !with_display) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;
@@ -321,7 +322,7 @@ int main(int argc, char **argv) {
     if (!server) return 1;
     spice_server_set_addr(server, "127.0.0.1", SPICE_ADDR_FLAG_IPV4_ONLY);
     if (spice_server_set_tls(server, port, argv[2], argv[3], argv[4], NULL, NULL, NULL) ||
-        spice_server_set_ticket(server, argv[5], 180, 0, 0) ||
+        spice_server_set_ticket(server, argv[5], workspace ? 600 : 180, 0, 0) ||
         spice_server_set_channel_security(server, NULL, SPICE_CHANNEL_SECURITY_SSL) ||
         spice_server_init(server, &core)) {
         fprintf(stderr, "SPICE fixture initialization failed\n");

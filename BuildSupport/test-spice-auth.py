@@ -241,6 +241,48 @@ def validate_workspace_soak(lines):
           f"cpu-percent={100*(end[3]-start[3])/(end[0]-start[0]):.2f}")
 
 
+def validate_workspace_churn(lines):
+    """Check actual reconnect cycles; weak-reference counts are diagnostic."""
+    samples = []
+    weak = []
+    metric = re.compile(
+        r"MRV_WORKSPACE_CHURN phase=(\d+) elapsed-ms=(\d+) rss-bytes=(\d+) "
+        r"peak-rss-bytes=(\d+) cpu-ms=(\d+) live=(\d+)")
+    weak_pattern = re.compile(r"MRV_WORKSPACE_WEAK round=(\d+) controllers=(\d+) canvases=(\d+)")
+    for line in lines:
+        if line.startswith("MRV_WORKSPACE_CHURN "):
+            m = metric.fullmatch(line)
+            if not m:
+                raise AssertionError("invalid churn resource sample")
+            phase, elapsed, rss, peak, cpu, live = map(int, m.groups())
+            if phase != len(samples) or phase > 3 or not rss or not peak or live:
+                raise AssertionError(f"invalid churn phase: {line}")
+            if samples and (elapsed <= samples[-1][0] or peak < samples[-1][2] or cpu < samples[-1][3]):
+                raise AssertionError("non-monotonic churn resource samples")
+            samples.append((elapsed, rss, peak, cpu))
+        elif line.startswith("MRV_WORKSPACE_WEAK "):
+            m = weak_pattern.fullmatch(line)
+            if not m:
+                raise AssertionError("invalid churn weak-reference sample")
+            phase, controllers, canvases = map(int, m.groups())
+            if phase != len(weak) or phase > 3 or max(controllers, canvases) > 4 * (phase + 1):
+                raise AssertionError(f"invalid survivor count: {line}")
+            weak.append((controllers, canvases))
+    if len(samples) != 4 or len(weak) != 4:
+        raise AssertionError("incomplete churn metrics")
+    expected = []
+    for i in range(1, 4):
+        expected.extend([f"MRV_WORKSPACE_CHURN_OPEN_OK round={i} live=4",
+                         f"MRV_WORKSPACE_CHURN_CLOSE_OK round={i} live=0 views=0"])
+    markers = [line for line in lines if line.startswith(("MRV_WORKSPACE_CHURN_OPEN_OK ", "MRV_WORKSPACE_CHURN_CLOSE_OK "))]
+    if markers != expected or lines.count("MRV_WORKSPACE_CHURN_OK cycles=4 sessions=16") != 1:
+        raise AssertionError("incomplete repeated workspace lifecycle")
+    for i, ((elapsed, rss, peak, cpu), (controllers, canvases)) in enumerate(zip(samples, weak)):
+        print(f"METRIC workspace-churn round={i} rss-MiB={rss/1048576:.2f} "
+              f"rss-delta-MiB={(rss-samples[0][1])/1048576:.2f} "
+              f"weak-controllers={controllers} weak-canvases={canvases}")
+
+
 def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
@@ -267,7 +309,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 server = subprocess.Popen([
                     str(fixture), str(port), str(root / "trusted.pem"),
                     str(root / "server.pem"), str(root / "server.key"), tls.TICKET,
-                    "display", str(i),
+                    "workspace" if workspace else "display", str(i),
                 ], stdout=output, stderr=subprocess.STDOUT)
                 servers.append(server)
             deadline = time.monotonic() + 10
@@ -304,7 +346,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                         "--loopback-spice-workspace-probe" if workspace else "--loopback-spice-multi-probe")
                 command = [str(exe), mode, *map(str, profiles)]
             result = subprocess.run(command, cwd=root, env=env,
-                                    capture_output=True, text=True, timeout=420 if workspace else 110)
+                                    capture_output=True, text=True, timeout=540 if workspace else 110)
             print(result.stdout[-12000:])
             if result.stderr:
                 print(result.stderr[-16000:])
@@ -316,8 +358,12 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
             if native_probe is None:
                 connect_calls = [line for line in result.stderr.splitlines()
                                  if line.startswith("MRV_CONN_CONNECT session=")]
-                if len(connect_calls) != 4 or len(set(connect_calls)) != 4:
-                    raise AssertionError(f"probe: expected exactly four unique connect calls, got {len(connect_calls)}")
+                expected_connects = 16 if workspace else 4
+                # Allocators may reuse a freed GObject address in a later cycle.
+                # Each simultaneous batch must still contain four distinct sessions.
+                if len(connect_calls) != expected_connects or any(
+                        len(set(connect_calls[i:i+4])) != 4 for i in range(0, len(connect_calls), 4)):
+                    raise AssertionError(f"probe: expected {expected_connects} connect calls in distinct four-session batches, got {len(connect_calls)}")
                 if "MRV_PROBE_WORKSPACE_EMPTY" not in lines:
                     raise AssertionError("probe: normal workspace must remain empty")
             if native_probe is not None:
@@ -333,6 +379,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 if switches != expected:
                     raise AssertionError("workspace: incomplete SwiftUI selection checks")
                 validate_workspace_soak(lines)
+                validate_workspace_churn(lines)
                 for marker in ("MRV_WORKSPACE_SOAK_OK seconds=60 checkpoints=7",
                                "MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3",
                                "MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2",
@@ -369,7 +416,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 raise AssertionError(f"{log.stem}: abnormal exit")
             for channel in ("MAIN", "DISPLAY"):
                 initialized = [line for line in lines if line.startswith(f"{channel}_INITIALIZED ")]
-                if initialized != [f"{channel}_INITIALIZED tls=1"]:
+                if initialized != [f"{channel}_INITIALIZED tls=1"] * (4 if workspace else 1):
                     raise AssertionError(f"{log.stem}: unexpected channels: {initialized}")
             counts = [re.fullmatch(r"DRAW_COUNTS submitted=(\d+) consumed=(\d+) released=(\d+)", line)
                       for line in lines if line.startswith("DRAW_COUNTS ")]
