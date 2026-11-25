@@ -76,7 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ["--startup-smoke-test", "--loopback-tls-probe",
          "--loopback-spice-auth-probe", "--loopback-spice-display-probe",
          "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
-         "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe"].contains($0)
+         "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
+         "--loopback-spice-agent-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -128,6 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-agent-probe") {
+            guard arguments.count == index + 3,
+                  ["full", "limited"].contains(arguments[index + 2]) else { Darwin.exit(2) }
+            runLoopbackSpiceAgentProbe(file: URL(fileURLWithPath: arguments[index + 1]),
+                                       full: arguments[index + 2] == "full")
         } else if let index = arguments.firstIndex(of: "--loopback-spice-auth-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackSpiceAuthProbe(file: URL(fileURLWithPath: arguments[index + 1]))
@@ -866,6 +872,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A real SPICE server supplies the main channel, not a guest display.
     /// Reuse the same engine/controller to exercise disconnect and reconnect.
+    /// Exercise actual guest-agent capability updates through the packaged
+    /// CocoaSpice main channel, without touching the host clipboard.
+    private func runLoopbackSpiceAgentProbe(file: URL, full: Bool) {
+        Task { @MainActor in
+            let controller = SessionController(engine: SpiceEngineAdapter(),
+                connectionTimeout: .seconds(8), displayTimeout: .zero)
+            do {
+                let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                let profile = try VVParser().parse(data: data)
+                guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                      profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile,
+                      model.sessions.isEmpty else { throw SessionError.cancelled }
+                controller.setClipboardSharingEnabled(false)
+                controller.open(profile)
+                let deadline = ContinuousClock.now + .seconds(15)
+                var matchedAt: ContinuousClock.Instant?
+                var matched = false
+                while ContinuousClock.now < deadline {
+                    if case .failed = controller.state { throw SessionError.network }
+                    if controller.state == .disconnected { throw SessionError.disconnected }
+                    if controller.state == .connected {
+                        let caps = controller.agent
+                        if caps.isConnected && caps.supportsMonitorsConfig == full &&
+                            caps.supportsClipboard == full {
+                            if let since = matchedAt {
+                                if !matched && since.duration(to: ContinuousClock.now) >= .milliseconds(500) {
+                                    matched = true
+                                    print("MRV_AGENT_CAPS_OK monitors=\(full ? 1 : 0) clipboard=\(full ? 1 : 0)")
+                                }
+                            } else {
+                                matchedAt = ContinuousClock.now
+                            }
+                        } else {
+                            matchedAt = nil
+                        }
+                        if matched && !caps.isConnected {
+                            guard !caps.supportsMonitorsConfig, !caps.supportsClipboard,
+                                  model.sessions.isEmpty else { throw SessionError.cancelled }
+                            print("MRV_AGENT_REMOVED_OK main=connected")
+                            controller.cancel()
+                            guard controller.state == .disconnected, !controller.agent.isConnected,
+                                  !controller.agent.supportsMonitorsConfig,
+                                  !controller.agent.supportsClipboard else { throw SessionError.cancelled }
+                            print("MRV_SPICE_AGENT_OK")
+                            fflush(nil)
+                            Darwin.exit(0)
+                        }
+                    }
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                print("MRV_AGENT_TIMEOUT connected=\(controller.agent.isConnected) monitors=\(controller.agent.supportsMonitorsConfig) clipboard=\(controller.agent.supportsClipboard)")
+                throw SessionError.network
+            } catch {
+                controller.cancel()
+                print("MRV_SPICE_AGENT_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
     private func runLoopbackSpiceAuthProbe(file: URL) {
         Task { @MainActor in
             let engine = SpiceEngineAdapter()

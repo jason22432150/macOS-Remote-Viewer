@@ -25,7 +25,7 @@ def compile_fixture(destination):
                     "-o", str(destination), *flags], check=True, timeout=60)
 
 
-def test_case(app, root, fixture, name, server_ticket, success, display=False, partial=False):
+def test_case(app, root, fixture, name, server_ticket, success, display=False, partial=False, agent=None):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -36,7 +36,9 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
     with log.open("wb") as output:
         command = [str(fixture), str(port), str(root / "trusted.pem"),
                    str(root / "server.pem"), str(root / "server.key"), server_ticket]
-        if display:
+        if agent is not None:
+            command.append("agent-" + agent)
+        elif display:
             command.append("partial" if partial else "display")
         server = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
         try:
@@ -59,16 +61,28 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
             mode = ("--loopback-spice-partial-probe" if partial else
                     "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe")
-            result = subprocess.run([str(exe), mode, str(profile)],
-                                    cwd=root, env=env, capture_output=True, text=True, timeout=45)
+            client = [str(exe), mode, str(profile)]
+            if agent is not None:
+                client = [str(exe), "--loopback-spice-agent-probe", str(profile), agent]
+            result = subprocess.run(client, cwd=root, env=env, capture_output=True, text=True, timeout=45)
             lines = result.stdout.splitlines()
             expected = ("MRV_SPICE_PARTIAL_OK" if partial else "MRV_SPICE_DISPLAY_OK" if display else
                         ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED"))
+            if agent is not None:
+                expected = "MRV_SPICE_AGENT_OK"
             if result.returncode != 0 or expected not in lines:
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
-            if partial:
+            if agent is not None:
+                capability = int(agent == "full")
+                markers = [f"MRV_AGENT_CAPS_OK monitors={capability} clipboard={capability}",
+                           "MRV_AGENT_REMOVED_OK main=connected", "MRV_SPICE_AGENT_OK"]
+                actual = [line for line in lines if line.startswith(("MRV_AGENT_CAPS_OK ", "MRV_AGENT_REMOVED_OK ", "MRV_SPICE_AGENT_OK"))]
+                if actual != markers:
+                    raise AssertionError(f"{name}: unexpected agent lifecycle {actual}")
+                print("\n".join(actual))
+            elif partial:
                 rounds = [line for line in lines if line.startswith("MRV_SPICE_PARTIAL_ROUND_OK ")]
                 if rounds != [f"MRV_SPICE_PARTIAL_ROUND_OK {i} 640x480 center=red,green exterior=blue,blue,blue,blue" for i in (1, 2)]:
                     raise AssertionError("missing same-frame partial update results")
@@ -84,7 +98,7 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                     raise AssertionError("did not complete both actual display rounds")
                 for line in rounds:
                     print(line)
-            if success and not display and [line for line in lines if line.startswith("MRV_SPICE_AUTH_ROUND_OK ")] != [
+            if success and not display and agent is None and [line for line in lines if line.startswith("MRV_SPICE_AUTH_ROUND_OK ")] != [
                     f"MRV_SPICE_AUTH_ROUND_OK {i}" for i in range(1, 4)]:
                 raise AssertionError("did not complete all three reconnect rounds")
         finally:
@@ -119,7 +133,13 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                        for line in lines if line.startswith("PARTIAL_COUNTS ")]
             if len(patches) != 1 or patches[0] is None or int(patches[0].group(1)) < 4:
                 raise AssertionError("missing actual partial QXL draw commands")
-        if success and initialized != ["MAIN_INITIALIZED tls=1"] * (2 if display else 3):
+        if agent is not None:
+            capability = int(agent == "full")
+            required = ["AGENT_CLIENT_CAPS", f"AGENT_CAPS_SENT monitors={capability} clipboard={capability}",
+                        "AGENT_CAPS_DELIVERED", "AGENT_REMOVED", "AGENT_RESULT received=1 delivered=1 removed=1 error=0"]
+            if any(lines.count(marker) != 1 for marker in required):
+                raise AssertionError(f"{name}: incomplete synthetic guest-agent exchange")
+        if success and initialized != ["MAIN_INITIALIZED tls=1"] * (1 if agent is not None else 2 if display else 3):
             raise AssertionError(f"{name}: unexpected TLS main-channel initializations: {initialized}")
         if not success and initialized:
             raise AssertionError(f"{name}: rejected ticket initialized a channel")
@@ -471,6 +491,8 @@ def main():
         test_case(args.app.resolve(), root, fixture, "wrong-ticket", "mrv-ci-other-ticket", False)
         test_case(args.app.resolve(), root, fixture, "display", tls.TICKET, True, display=True)
         test_case(args.app.resolve(), root, fixture, "partial", tls.TICKET, True, display=True, partial=True)
+        test_case(args.app.resolve(), root, fixture, "agent-full", tls.TICKET, True, agent="full")
+        test_case(args.app.resolve(), root, fixture, "agent-limited", tls.TICKET, True, agent="limited")
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []

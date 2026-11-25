@@ -4,6 +4,7 @@
 #include <spice.h>
 #include <spice/enums.h>
 #include <spice/qxl_dev.h>
+#include <spice/vd_agent.h>
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
@@ -306,12 +307,148 @@ static int setup_display(SpiceServer *server) {
     return 0;
 }
 
+/* Synthetic guest agent, deliberately limited to capabilities negotiation.
+ * No guest filesystem, clipboard contents, or external virtio endpoint.
+ * VDI framing follows the public spice-protocol vd_agent.h declarations.
+ */
+static SpiceCharDeviceInstance agent_device;
+static gboolean agent_full, agent_attached, agent_error;
+static gboolean agent_received_caps, agent_sent_caps;
+static gint64 agent_delivered_at;
+static uint8_t agent_rx[65536], agent_tx[128];
+static size_t agent_rx_len, agent_tx_len, agent_tx_pos;
+
+static void agent_state(SpiceCharDeviceInstance *sin, int connected) {
+    (void)sin;
+    printf("AGENT_DEVICE_STATE connected=%d\n", connected);
+    fflush(stdout);
+}
+
+static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len) {
+    (void)sin;
+    if (len <= 0) return 0;
+    if ((size_t)len > sizeof(agent_rx) - agent_rx_len) {
+        agent_error = TRUE;
+        return -1;
+    }
+    memcpy(agent_rx + agent_rx_len, buf, (size_t)len);
+    agent_rx_len += (size_t)len;
+    // Handle partial char-device writes, and never trust a chunk length.
+    while (agent_rx_len >= sizeof(VDIChunkHeader)) {
+        VDIChunkHeader chunk;
+        memcpy(&chunk, agent_rx, sizeof(chunk));
+        uint32_t size = GUINT32_FROM_LE(chunk.size);
+        if (size > sizeof(agent_rx) - sizeof(chunk)) {
+            agent_error = TRUE;
+            return -1;
+        }
+        size_t total = sizeof(chunk) + size;
+        if (agent_rx_len < total) break;
+        if (GUINT32_FROM_LE(chunk.port) == VDP_CLIENT_PORT && size >= sizeof(VDAgentMessage)) {
+            VDAgentMessage msg;
+            memcpy(&msg, agent_rx + sizeof(chunk), sizeof(msg));
+            if (GUINT32_FROM_LE(msg.protocol) == VD_AGENT_PROTOCOL &&
+                GUINT32_FROM_LE(msg.type) == VD_AGENT_ANNOUNCE_CAPABILITIES &&
+                GUINT32_FROM_LE(msg.size) >= sizeof(uint32_t) &&
+                GUINT32_FROM_LE(msg.size) == size - sizeof(msg)) {
+                if (!agent_received_caps) {
+                    agent_received_caps = TRUE;
+                    puts("AGENT_CLIENT_CAPS");
+                    fflush(stdout);
+                }
+            }
+        }
+        memmove(agent_rx, agent_rx + total, agent_rx_len - total);
+        agent_rx_len -= total;
+    }
+    return len;
+}
+
+static int agent_read(SpiceCharDeviceInstance *sin, uint8_t *buf, int len) {
+    (void)sin;
+    if (len <= 0 || agent_tx_pos >= agent_tx_len) return 0;
+    size_t count = MIN((size_t)len, agent_tx_len - agent_tx_pos);
+    memcpy(buf, agent_tx + agent_tx_pos, count);
+    agent_tx_pos += count;
+    if (agent_tx_pos == agent_tx_len) {
+        agent_delivered_at = g_get_monotonic_time();
+        puts("AGENT_CAPS_DELIVERED");
+        fflush(stdout);
+    }
+    return (int)count;
+}
+
+static SpiceCharDeviceInterface agent_interface = {
+    .base = {
+        .type = SPICE_INTERFACE_CHAR_DEVICE,
+        .description = "MRV synthetic capability-only guest agent",
+        .major_version = SPICE_INTERFACE_CHAR_DEVICE_MAJOR,
+        .minor_version = SPICE_INTERFACE_CHAR_DEVICE_MINOR,
+    },
+    .state = agent_state,
+    .write = agent_write,
+    .read = agent_read,
+};
+
+static gboolean agent_tick(gpointer data) {
+    (void)data;
+    if (!agent_attached || agent_error) return G_SOURCE_CONTINUE;
+    if (agent_received_caps && !agent_sent_caps) {
+        // Reply only after the client negotiated the agent data channel.
+        uint32_t caps[2] = {0, 0};
+        VD_AGENT_SET_CAPABILITY(caps, VD_AGENT_CAP_REPLY);
+        if (agent_full) {
+            VD_AGENT_SET_CAPABILITY(caps, VD_AGENT_CAP_MONITORS_CONFIG);
+            VD_AGENT_SET_CAPABILITY(caps, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND);
+        }
+        uint32_t payload[3] = {GUINT32_TO_LE(0), GUINT32_TO_LE(caps[0]), GUINT32_TO_LE(caps[1])};
+        VDAgentMessage msg = {0};
+        msg.protocol = GUINT32_TO_LE(VD_AGENT_PROTOCOL);
+        msg.type = GUINT32_TO_LE(VD_AGENT_ANNOUNCE_CAPABILITIES);
+        msg.size = GUINT32_TO_LE(sizeof(payload));
+        VDIChunkHeader chunk = {
+            .port = GUINT32_TO_LE(VDP_CLIENT_PORT),
+            .size = GUINT32_TO_LE(sizeof(msg) + sizeof(payload)),
+        };
+        memcpy(agent_tx, &chunk, sizeof(chunk));
+        memcpy(agent_tx + sizeof(chunk), &msg, sizeof(msg));
+        memcpy(agent_tx + sizeof(chunk) + sizeof(msg), payload, sizeof(payload));
+        agent_tx_len = sizeof(chunk) + sizeof(msg) + sizeof(payload);
+        agent_sent_caps = TRUE;
+        printf("AGENT_CAPS_SENT monitors=%d clipboard=%d\n", agent_full, agent_full);
+        fflush(stdout);
+        spice_server_char_device_wakeup(&agent_device);
+    } else if (agent_sent_caps && agent_tx_pos < agent_tx_len) {
+        spice_server_char_device_wakeup(&agent_device);
+    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= 3000000) {
+        // Real server-side hot removal, not a fabricated client callback.
+        agent_attached = FALSE;
+        if (spice_server_remove_interface(&agent_device.base)) {
+            agent_error = TRUE;
+        } else {
+            puts("AGENT_REMOVED");
+            fflush(stdout);
+        }
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+static int setup_agent(SpiceServer *server) {
+    agent_device.base.sif = &agent_interface.base;
+    agent_device.subtype = "vdagent";
+    if (spice_server_add_interface(server, &agent_device.base)) return 1;
+    agent_attached = TRUE;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 6 || argc > 8) return 2;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
     gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
     int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates || workspace);
-    if (argc >= 7 && !with_display) return 2;
+    gboolean with_agent = argc == 7 && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-limited") == 0);
+    agent_full = with_agent && strcmp(argv[6], "agent-full") == 0;
+    if (argc >= 7 && !with_display && !with_agent) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;
         palette_index = (unsigned)(argv[7][0] - '0');
@@ -329,6 +466,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (with_display && setup_display(server)) return 1;
+    if (with_agent && setup_agent(server)) return 1;
     // A primary surface can be sent while the virtual machine is stopped.
     // The red worker will not consume QXL commands until VM start.
     if (with_display) {
@@ -336,9 +474,11 @@ int main(int argc, char **argv) {
         printf("VM_STARTED\n");
         fflush(stdout);
     }
+    if (with_agent) spice_server_vm_start(server);
     GMainLoop *loop = g_main_loop_new(NULL, FALSE);
     guint signal_source = g_unix_signal_add(SIGTERM, quit_loop, loop);
     guint update_source = with_display ? g_timeout_add(250, update_color, NULL) : 0;
+    guint agent_source = with_agent ? g_timeout_add(50, agent_tick, NULL) : 0;
     printf("READY\n");
     fflush(stdout);
     g_main_loop_run(loop);
@@ -354,7 +494,15 @@ int main(int argc, char **argv) {
         if (partial_updates) printf("PARTIAL_COUNTS submitted=%u rect=240,180,160,120\n", partial_submitted);
         fflush(stdout);
     }
+    if (agent_source) g_source_remove(agent_source);
+    if (with_agent) {
+        if (agent_attached) spice_server_remove_interface(&agent_device.base);
+        spice_server_vm_stop(server);
+        printf("AGENT_RESULT received=%d delivered=%d removed=%d error=%d\n",
+               agent_received_caps, agent_delivered_at != 0, !agent_attached, agent_error);
+        fflush(stdout);
+    }
     spice_server_destroy(server);
     g_main_loop_unref(loop);
-    return 0;
+    return agent_error ? 1 : 0;
 }
