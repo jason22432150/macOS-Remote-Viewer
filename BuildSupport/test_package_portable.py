@@ -111,6 +111,27 @@ class PortablePackagingTests(unittest.TestCase):
             self.assertEqual(entries[0]["status"], "missing-review-required")
             self.assertEqual(entries[0]["source_fallback_error"], "ValueError")
 
+    def test_source_notice_recognizes_reuse_license_directory(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+            for name, body in [
+                ("json-glib-1.10.8/LICENSES/LGPL-2.1-or-later.txt", b"synthetic LGPL"),
+                ("json-glib-1.10.8/LICENSES/MIT.txt", b"synthetic MIT"),
+                ("json-glib-1.10.8/src/MIT.txt", b"not a notice"),
+                ("json-glib-1.10.8/LICENSES/../../outside.txt", b"escape"),
+            ]:
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                archive.addfile(info, io.BytesIO(body))
+            link = tarfile.TarInfo("json-glib-1.10.8/LICENSES/CC0-1.0.txt")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            archive.addfile(link)
+        self.assertEqual(audit.source_notice_candidates("json-glib", stream.getvalue()), {
+            "json-glib-1.10.8/LICENSES/LGPL-2.1-or-later.txt": b"synthetic LGPL",
+            "json-glib-1.10.8/LICENSES/MIT.txt": b"synthetic MIT",
+        })
+
     def test_audit_report_cross_checks_keg_set_status_and_notice_bytes(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

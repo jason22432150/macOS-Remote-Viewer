@@ -192,7 +192,11 @@ def source_notice_candidates(name, data):
             if (not member.isfile() or path.is_absolute() or ".." in path.parts or
                     "\\" in member.name or len(path.parts) < 2):
                 continue
-            if path.name.lower().startswith(NOTICE_PREFIXES) and member.size <= 2 * 1024 * 1024:
+            # REUSE/SPDX projects put license texts under LICENSES/ with
+            # names such as LGPL-2.1-or-later.txt, not LICENSE-prefixed files.
+            is_notice = (path.name.lower().startswith(NOTICE_PREFIXES) or
+                         "licenses" in (part.lower() for part in path.parts[1:-1]))
+            if is_notice and member.size <= 2 * 1024 * 1024:
                 body = archive.extractfile(member).read()
                 relative = path.as_posix()
             elif name == "sqlite" and path.name == "sqlite3.c" and member.size >= 256:

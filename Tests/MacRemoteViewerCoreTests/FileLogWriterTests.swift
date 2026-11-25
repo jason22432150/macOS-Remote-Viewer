@@ -59,6 +59,37 @@ final class FileLogWriterTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "original")
     }
 
+    func testLogWriterMakesExistingOwnedFilePrivateBeforeAppend() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacRemoteViewer-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = FoundationFileLogWriter(directoryURL: directory)
+        try writer.ensureDirectoryExists()
+        let active = directory.appendingPathComponent(FoundationFileLogWriter.fileName(for: Date()))
+        try Data("old\n".utf8).write(to: active)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: active.path)
+        try writer.append("new")
+        let attributes = try FileManager.default.attributesOfItem(atPath: active.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual(try String(contentsOf: active, encoding: .utf8), "old\nnew\n")
+    }
+
+    func testLogWriterRefusesRedirectedOrSharedWritableDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacRemoteViewer-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let target = root.appendingPathComponent("target", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let link = root.appendingPathComponent("link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertThrowsError(try FoundationFileLogWriter(directoryURL: link).append("blocked"))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: target.path)
+        XCTAssertThrowsError(try FoundationFileLogWriter(directoryURL: target).append("blocked"))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
+    }
+
     func testSinkDoesNotWriteWhenDisabled() throws {
         let writer = MemoryFileLogWriter()
         let sink = FileLogSink(enabled: false, writer: writer)

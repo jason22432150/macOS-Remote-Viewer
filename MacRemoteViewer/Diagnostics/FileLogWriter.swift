@@ -31,7 +31,16 @@ public struct FoundationFileLogWriter: FileLogWriting, Sendable {
     }
 
     public func ensureDirectoryExists() throws {
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        var info = stat()
+        // Refuse a redirected or shared-writable leaf directory. Existing
+        // owner-only writable directories remain usable (including 0755).
+        guard lstat(directoryURL.path, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              info.st_uid == geteuid(), (info.st_mode & mode_t(0o022)) == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
     }
 
     public func append(_ line: String) throws {
@@ -63,7 +72,15 @@ public struct FoundationFileLogWriter: FileLogWriting, Sendable {
         guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-              info.st_nlink == 1 else {
+              info.st_nlink == 1, info.st_uid == geteuid() else {
+            Darwin.close(fd)
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        // O_CREAT's mode does not change an existing file. Tighten legacy
+        // permissions via the verified descriptor before appending, never
+        // through a path which might now refer to a different file.
+        if (info.st_mode & mode_t(0o7777)) != mode_t(0o600) &&
+            fchmod(fd, mode_t(0o600)) != 0 {
             Darwin.close(fd)
             throw CocoaError(.fileWriteNoPermission)
         }
@@ -81,7 +98,8 @@ public struct FoundationFileLogWriter: FileLogWriting, Sendable {
                 if errno == ENOENT { return false }
                 throw CocoaError(.fileWriteNoPermission)
             }
-            guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_nlink == 1 else {
+            guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_nlink == 1,
+                  info.st_uid == geteuid() else {
                 throw CocoaError(.fileWriteNoPermission)
             }
             return true
@@ -164,7 +182,8 @@ public final class AsyncFileLogWriter: FileLogWriting, @unchecked Sendable {
         let day = FoundationFileLogWriter.fileName(for: now)
         guard lastPrunedDay != day else { return }
         lastPrunedDay = day
-        guard let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) else { return }
+        guard (try? writer.ensureDirectoryExists()) != nil,
+              let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) else { return }
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
         guard let urls = try? FileManager.default.contentsOfDirectory(at: directoryURL,
             includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return }
