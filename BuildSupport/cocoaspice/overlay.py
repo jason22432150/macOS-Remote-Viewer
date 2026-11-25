@@ -1447,6 +1447,88 @@ def overlay_connection_lifecycle(checkout: Path) -> None:
     ])
 
 
+def overlay_drawable_demand(checkout: Path) -> None:
+    """Avoid acquiring a drawable for a clean or invisible frame."""
+    root = checkout / "Sources" / "CocoaSpiceRenderer"
+    _replace_once(root / "include" / "CSMetalRenderer.h", [
+        ("/// Modify upscaler and downscaler settings",
+         "/// Mark the retained frame dirty on main (e.g. when a tab becomes active).\n"
+         "- (void)requestPresentationRefresh;\n\n"
+         "/// Modify upscaler and downscaler settings"),
+    ])
+    _replace_once(root / "CSMetalRenderer.m", [
+        ("""    // Obtain a renderPassDescriptor generated from the view's drawable textures
+    MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
+    id<CAMetalDrawable> currentDrawable = view.currentDrawable;
+
+    if (renderPassDescriptor == nil || currentDrawable == nil) {
+        // 沒有 drawable 也要完成 copyBuffer callback，否則共用 spice thread 會卡住所有連線。
+        [self _completeDraw];
+        return;
+    }
+
+    const _CSRendererSourceData *sourceData = self.renderSourceData;
+
+    if (!self.renderNeedsUpdate || !sourceData.isVisible) {
+        [self _completeDraw];
+        return;
+    }
+
+    // Consume the flag: every content change re-sets it via
+    // invalidateRenderSource:, so without this the view keeps re-rendering
+    // an unchanged frame on every vsync forever.
+    self.renderNeedsUpdate = NO;
+
+    // synchronize with rendererQueue in order to access currentCommandBuffer
+    id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
+    commandBuffer.label = @"Draw Frame";""",
+         """    const _CSRendererSourceData *sourceData = self.renderSourceData;
+
+    // Do not ask MetalKit for a drawable on idle ticks. In particular,
+    // covered background tabs should not consume a drawable just to return.
+    // Pending invalidate completions must still be drained.
+    if (!self.renderNeedsUpdate || !sourceData.isVisible) {
+        [self _completeDraw];
+        return;
+    }
+
+    MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
+    id<CAMetalDrawable> currentDrawable = view.currentDrawable;
+    if (renderPassDescriptor == nil || currentDrawable == nil) {
+        [self _completeDraw];
+        return; // Retain dirty state until a drawable is available.
+    }
+
+    id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
+    if (!commandBuffer) {
+        [self _completeDraw];
+        return; // Retry the retained frame at a later draw.
+    }
+    self.renderNeedsUpdate = NO;
+    commandBuffer.label = @"Draw Frame";"""),
+        ("""    [self _setViewportCGSize:size];
+}
+
+- (void)setViewportOrigin:""",
+         """    [self _setViewportCGSize:size];
+    // A new drawable size must redraw even when the guest is static.
+    self.renderNeedsUpdate = YES;
+}
+
+- (void)requestPresentationRefresh {
+    // RemoteCanvasView calls this on the AppKit main thread.
+    self.renderNeedsUpdate = YES;
+}
+
+- (void)setViewportOrigin:"""),
+        ("""        [self _initializeUpscaler:upscaler downscaler:downscaler];
+    });""",
+         """        [self _initializeUpscaler:upscaler downscaler:downscaler];
+        self.renderNeedsUpdate = YES;
+    });"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -1464,6 +1546,7 @@ def main() -> None:
     overlay_canvas_gpu_lifetime(checkout)
     overlay_scanout_ownership(checkout)
     overlay_metal_pixel_probe(checkout)
+    overlay_drawable_demand(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)

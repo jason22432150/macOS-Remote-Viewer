@@ -55,7 +55,7 @@ struct RemoteDisplayView: NSViewRepresentable {
 final class RemoteCanvasView: MTKView {
     weak var controller: SessionController?
     var router: InputRouter?
-    /// Background tabs keep drawing to drain CocoaSpice copy completions, but at reduced FPS.
+    /// Keep background ticks at reduced FPS; the renderer only requests a drawable when dirty.
     private static let foregroundFPS = 60
     private static let backgroundFPS = 15
     private(set) var isActive = true
@@ -82,6 +82,7 @@ final class RemoteCanvasView: MTKView {
         if active {
             window?.makeFirstResponder(self)
             updateViewport()
+            metalRenderer?.requestPresentationRefresh()
             syncGuestResolution()
         } else {
             showLocalCursor()

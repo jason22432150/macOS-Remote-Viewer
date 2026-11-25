@@ -31,6 +31,21 @@ def main() -> None:
     require("memcpy((uint8_t *)submittedBuffer.contents" in draw, "dirty region not copied to owned staging memory")
     require("addCompletedHandler" in copy and "_addDrawCompletion" not in copy, "blit completion still depends on drawable")
     require("submittedCompletions" in gpu_draw, "draw completion batch missing")
+    dirty_guard = gpu_draw.index("if (!self.renderNeedsUpdate || !sourceData.isVisible)")
+    acquire_drawable = gpu_draw.index("view.currentRenderPassDescriptor")
+    consume_dirty = gpu_draw.index("self.renderNeedsUpdate = NO;")
+    require(dirty_guard < acquire_drawable < consume_dirty, "idle ticks still acquire drawables")
+    require(gpu_draw.index("if (!commandBuffer)") < consume_dirty, "failed command buffer consumes dirty state")
+    idle_guard = gpu_draw[dirty_guard:acquire_drawable]
+    require("[self _completeDraw];" in idle_guard, "idle ticks no longer drain pending completions")
+    unavailable_guard = gpu_draw[acquire_drawable:consume_dirty]
+    require(unavailable_guard.count("[self _completeDraw];") == 2, "unavailable drawable/command buffer does not drain completions")
+    resize = renderer.split("- (void)mtkView:", 1)[1].split("- (void)setViewportOrigin:", 1)[0]
+    require("self.renderNeedsUpdate = YES;" in resize.split("- (void)requestPresentationRefresh", 1)[0],
+            "resize does not invalidate static frame")
+    require("- (void)requestPresentationRefresh" in resize and
+            "self.renderNeedsUpdate = YES;" in resize.split("- (void)requestPresentationRefresh", 1)[1],
+            "foreground refresh does not mark retained frame dirty")
     require("for (completionCallback_t completion in submittedCompletions)" in gpu_draw, "old draw can drain newer completions")
     scanout_copy = display.split("- (void)copyScanoutRect:(CGRect)rect withCompletion:", 1)[1].split("- (void)rebuildCanvasTexture {", 1)[0]
     require("return presentTexture ?: self.glTexture" not in display, "server-owned IOSurface must not be presented")
