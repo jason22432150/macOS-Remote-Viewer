@@ -245,12 +245,29 @@ def validate_workspace_churn(lines):
     """Check actual reconnect cycles; weak-reference counts are diagnostic."""
     samples = []
     weak = []
+    batches = {}
+    unhost = []
     metric = re.compile(
         r"MRV_WORKSPACE_CHURN phase=(\d+) elapsed-ms=(\d+) rss-bytes=(\d+) "
         r"peak-rss-bytes=(\d+) cpu-ms=(\d+) live=(\d+)")
     weak_pattern = re.compile(r"MRV_WORKSPACE_WEAK round=(\d+) controllers=(\d+) canvases=(\d+)")
+    batch_pattern = re.compile(r"MRV_WORKSPACE_WEAK_BATCH sample=(\d+) batch=(\d+) controllers=(\d+) canvases=(\d+)")
+    unhost_pattern = re.compile(r"MRV_WORKSPACE_WEAK_UNHOST before=(\d+) controllers=(\d+) canvases=(\d+)")
     for line in lines:
-        if line.startswith("MRV_WORKSPACE_CHURN "):
+        if line.startswith("MRV_WORKSPACE_WEAK_BATCH "):
+            m = batch_pattern.fullmatch(line)
+            if not m:
+                raise AssertionError("invalid weak batch diagnostic")
+            sample, batch, controllers, canvases = map(int, m.groups())
+            if not 0 <= batch <= sample <= 3 or max(controllers, canvases) > 4 or (sample, batch) in batches:
+                raise AssertionError(f"invalid weak batch: {line}")
+            batches[(sample, batch)] = (controllers, canvases)
+        elif line.startswith("MRV_WORKSPACE_WEAK_UNHOST "):
+            m = unhost_pattern.fullmatch(line)
+            if not m:
+                raise AssertionError("invalid host teardown diagnostic")
+            unhost.append(tuple(map(int, m.groups())))
+        elif line.startswith("MRV_WORKSPACE_CHURN "):
             m = metric.fullmatch(line)
             if not m:
                 raise AssertionError("invalid churn resource sample")
@@ -270,6 +287,16 @@ def validate_workspace_churn(lines):
             weak.append((controllers, canvases))
     if len(samples) != 4 or len(weak) != 4:
         raise AssertionError("incomplete churn metrics")
+    if set(batches) != {(sample, batch) for sample in range(4) for batch in range(sample + 1)}:
+        raise AssertionError("missing per-batch weak references")
+    for sample, (controllers, canvases) in enumerate(weak):
+        if (controllers, canvases) != tuple(sum(batches[(sample, batch)][i] for batch in range(sample + 1))
+                                          for i in range(2)):
+            raise AssertionError("weak-reference totals disagree with batch counts")
+    if len(unhost) != 1 or max(unhost[0]) > 16:
+        raise AssertionError("missing or invalid final host teardown diagnostic")
+    before, after, canvases = unhost[0]
+    print(f"METRIC workspace-unhost controllers-before={before} controllers-after={after} canvases-after={canvases}")
     expected = []
     for i in range(1, 4):
         expected.extend([f"MRV_WORKSPACE_CHURN_OPEN_OK round={i} live=4",

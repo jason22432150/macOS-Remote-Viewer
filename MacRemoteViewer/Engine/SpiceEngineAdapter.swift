@@ -342,8 +342,10 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         from connection: CSConnection,
         _ body: @escaping @MainActor (SpiceEngineAdapter) -> Void
     ) {
-        Task { @MainActor in
-            guard self.connection === connection else { return }
+        // A queued callback must not extend the lifetime of a closed
+        // adapter. Still retain the originating connection for identity fencing.
+        Task { @MainActor [weak self] in
+            guard let self, self.connection === connection else { return }
             body(self)
         }
     }
