@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 import MetalKit
 import Darwin
+@preconcurrency import CocoaSpiceNoUsb
+import CocoaSpiceRenderer
 
 @main
 struct MacRemoteViewerApp: App {
@@ -80,7 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
          "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe",
          "--loopback-spice-clipboard-invalid-probe", "--loopback-spice-clipboard-late-probe",
-         "--loopback-spice-clipboard-reactivate-probe", "--loopback-spice-clipboard-bulk-probe"].contains($0)
+         "--loopback-spice-clipboard-reactivate-probe", "--loopback-spice-clipboard-bulk-probe",
+         "--scanout-runtime-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -129,6 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if arguments.contains("--startup-smoke-test") {
             runStartupSmokeTest()
+        } else if arguments.contains("--scanout-runtime-probe") {
+            runScanoutRuntimeProbe()
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
@@ -799,6 +804,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Exercise actual display callbacks and Metal completion using the production canvas.
+    private func runScanoutRuntimeProbe() {
+        Task { @MainActor in
+            do {
+                guard model.sessions.isEmpty, let device = MTLCreateSystemDefaultDevice() else {
+                    throw SessionError.engineUnavailable
+                }
+                let engine = SpiceEngineAdapter()
+                try engine.startWorker()
+                let view = MTKView(frame: CGRect(x: 0, y: 0, width: 64, height: 64), device: device)
+                view.isPaused = true
+                let renderer = CSMetalRenderer(metalKitView: view)
+                // Only the worker completion ends the probe. The parent
+                // Python process enforces a deadline if a fence never fires.
+                let ok = await withCheckedContinuation { continuation in
+                    CSDisplay.pve_testScanout(renderer) { ok in
+                        continuation.resume(returning: ok)
+                    }
+                }
+                guard ok else { throw SessionError.cancelled }
+                print("MRV_SCANOUT_RUNTIME_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                print("MRV_SCANOUT_RUNTIME_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
     private func runLoopbackSpiceDisplayProbe(file: URL, partial: Bool = false) {
         Task { @MainActor in
             let engine = SpiceEngineAdapter()

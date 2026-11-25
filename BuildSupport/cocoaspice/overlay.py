@@ -1739,6 +1739,154 @@ def overlay_clipboard_request_epochs(checkout: Path) -> None:
     ])
 
 
+def overlay_scanout_runtime_probe(checkout: Path) -> None:
+    """Exercise actual scanout code with a local IOSurface and real Metal queue.
+
+    The isolated display owns an unconnected SpiceChannel; no server data,
+    IOSurface ID lookup or fd passing is simulated by this probe.
+    """
+    source = checkout / "Sources" / "CocoaSpice"
+    _replace_once(source / "include" / "CSDisplay.h", [
+        ("- (void)screenshotWithCompletion:(screenshotCallback_t)completion;",
+         "- (void)screenshotWithCompletion:(screenshotCallback_t)completion;\n\n"
+         "/// Isolated integration probe; never modifies a live remote display.\n"
+         "+ (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer "
+         "completion:(void (^)(BOOL))completion NS_SWIFT_NAME(pve_testScanout(_:completion:));"),
+    ])
+    path = source / "CSDisplay.m"
+    _replace_once(path, [
+        ("#import <mach/vm_page_size.h>", "#import <mach/vm_page_size.h>\n#import <stdio.h>"),
+        ("#pragma mark - Display events",
+         """// Test helpers are used only by the explicit packaged-app probe.
+static BOOL mrv_fill_surface(IOSurfaceRef surface, uint32_t value, BOOL patch) {
+    if (IOSurfaceLock(surface, 0, NULL) != kIOReturnSuccess) return NO;
+    uint8_t *base = IOSurfaceGetBaseAddress(surface);
+    size_t stride = IOSurfaceGetBytesPerRow(surface);
+    if (base) {
+        for (size_t y = 0; y < 64; ++y) {
+            uint32_t *row = (uint32_t *)(base + y * stride);
+            for (size_t x = 0; x < 64; ++x)
+                if (!patch || (x >= 24 && x < 40 && y >= 24 && y < 40)) row[x] = value;
+        }
+    }
+    IOSurfaceUnlock(surface, 0, NULL);
+    return base != NULL;
+}
+
+static BOOL mrv_scanout_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue,
+                              NSUInteger x, NSUInteger y, uint32_t expected) {
+    if (!texture || texture.storageMode != MTLStorageModePrivate || texture.iosurface) return NO;
+    id<MTLBuffer> buffer = [queue.device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> command = [queue commandBuffer];
+    id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
+    if (!buffer || !encoder) return NO;
+    [encoder copyFromTexture:texture sourceSlice:0 sourceLevel:0
+                sourceOrigin:MTLOriginMake(x,y,0) sourceSize:MTLSizeMake(1,1,1)
+                    toBuffer:buffer destinationOffset:0 destinationBytesPerRow:256
+           destinationBytesPerImage:256];
+    [encoder endEncoding];
+    [command commit];
+    // This is test-only synchronous readback, never in the production copy path.
+    [command waitUntilCompleted];
+    return command.status == MTLCommandBufferStatusCompleted &&
+           (*(const uint32_t *)buffer.contents & 0x00ffffffu) == expected;
+}
+
++ (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer completion:(void (^)(BOOL))completion {
+    [CSMain.sharedInstance asyncWith:^{
+        SpiceSession *session = spice_session_new();
+        SpiceChannel *channel = spice_channel_new(session, SPICE_CHANNEL_DISPLAY, 0);
+        if (!channel) {
+            g_object_unref(session);
+            completion(NO);
+            return;
+        }
+        CSDisplay *display = [[CSDisplay alloc] initWithChannel:SPICE_DISPLAY_CHANNEL(channel)];
+        // No connection is initiated and no live display receives test pixels.
+        display.renderers = @[renderer];
+        display->_device = renderer.device;
+        NSDictionary *properties = @{
+            (__bridge NSString *)kIOSurfaceWidth: @64,
+            (__bridge NSString *)kIOSurfaceHeight: @64,
+            (__bridge NSString *)kIOSurfaceBytesPerElement: @4,
+            (__bridge NSString *)kIOSurfaceBytesPerRow: @256,
+            (__bridge NSString *)kIOSurfaceAllocSize: @16384,
+            (__bridge NSString *)kIOSurfacePixelFormat: @((uint32_t)0x42475241),
+        };
+        IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+        // Keep an independent owner to emulate the producer reusing its bytes.
+        void (^finish)(BOOL) = ^(BOOL ok) {
+            [display resetScanout];
+            display.renderers = @[];
+            if (surface) CFRelease(surface);
+            // The session owns its channel; CSDisplay owns a separate ref.
+            g_object_unref(session);
+            completion(ok);
+        };
+        if (!surface || !mrv_fill_surface(surface, 0x00ff0000, NO)) {
+            finish(NO);
+            return;
+        }
+        display.isGLEnabled = YES;
+        CFRetain(surface);
+        [display rebuildScanoutTextureWithSurface:surface width:64 height:64];
+        display.ready = YES;
+        if (!display.glTexture || display.texture) {
+            finish(NO);
+            return;
+        }
+        // A small first damage rect must still copy the whole surface.
+        [display copyScanoutRect:CGRectMake(24,24,16,16) withCompletion:^{
+            id<MTLCommandQueue> queue = renderer.commandQueue;
+            if (!CSMain.sharedInstance.isCurrentContextMain ||
+                !mrv_scanout_pixel(display.texture, queue, 32,32,0x00ff0000) ||
+                !mrv_scanout_pixel(display.texture, queue, 2,2,0x00ff0000)) {
+                finish(NO);
+                return;
+            }
+            puts("MRV_SCANOUT_FULL_COPY_OK"); fflush(stdout);
+            // Producer can overwrite its IOSurface after the copy fence.
+            if (!mrv_fill_surface(surface, 0x0000ff00, NO) ||
+                !mrv_scanout_pixel(display.texture, queue, 32,32,0x00ff0000)) {
+                finish(NO);
+                return;
+            }
+            puts("MRV_SCANOUT_PRIVATE_COPY_OK"); fflush(stdout);
+            [display copyScanoutRect:CGRectMake(24,24,16,16) withCompletion:^{
+                if (!mrv_scanout_pixel(display.texture, queue, 32,32,0x0000ff00) ||
+                    !mrv_scanout_pixel(display.texture, queue, 2,2,0x00ff0000)) {
+                    finish(NO);
+                    return;
+                }
+                puts("MRV_SCANOUT_PARTIAL_COPY_OK"); fflush(stdout);
+                // Submit a real GPU copy, invalidate its generation before
+                // its GLib completion can publish, then check the stale fence.
+                [display copyScanoutRect:CGRectMake(0,0,64,64) withCompletion:^{
+                    if (display.texture || display.presentTexture || display.glTexture) {
+                        finish(NO);
+                        return;
+                    }
+                    puts("MRV_SCANOUT_STALE_FENCE_OK"); fflush(stdout);
+                    // Invalid metadata must be rejected, consuming the ref.
+                    CFRetain(surface);
+                    [display rebuildScanoutTextureWithSurface:surface width:65 height:64];
+                    if (display.glTexture || display.presentTexture) {
+                        finish(NO);
+                        return;
+                    }
+                    puts("MRV_SCANOUT_BOUNDS_OK"); fflush(stdout);
+                    finish(YES);
+                }];
+                [display resetScanout];
+            }];
+        }];
+    }];
+}
+
+#pragma mark - Display events"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -1755,6 +1903,7 @@ def main() -> None:
     overlay_metal_frame_observation(checkout)
     overlay_canvas_gpu_lifetime(checkout)
     overlay_scanout_ownership(checkout)
+    overlay_scanout_runtime_probe(checkout)
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
     overlay_connection_pve_api(checkout)

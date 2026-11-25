@@ -685,6 +685,24 @@ def test_clipboard_isolation(app, root, fixture, late=False, reactivate=False):
     print("Real two-session clipboard isolation checks passed.")
 
 
+def test_scanout_runtime(app, root):
+    exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
+    env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+    env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+    result = subprocess.run([str(exe), "--scanout-runtime-probe"], cwd=root, env=env,
+                            capture_output=True, text=True, timeout=30)
+    print(result.stdout[-6000:])
+    if result.stderr:
+        print(result.stderr[-6000:])
+    expected = ["MRV_SCANOUT_FULL_COPY_OK", "MRV_SCANOUT_PRIVATE_COPY_OK",
+                "MRV_SCANOUT_PARTIAL_COPY_OK", "MRV_SCANOUT_STALE_FENCE_OK",
+                "MRV_SCANOUT_BOUNDS_OK", "MRV_SCANOUT_RUNTIME_OK"]
+    actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_SCANOUT_")]
+    if result.returncode != 0 or actual != expected:
+        raise AssertionError(f"scanout runtime: incomplete GPU copy checks {actual}")
+
+
 def test_clipboard_security(app, root):
     exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
@@ -729,6 +747,7 @@ def main():
         test_clipboard_isolation(args.app.resolve(), root, fixture)
         test_clipboard_isolation(args.app.resolve(), root, fixture, late=True)
         test_clipboard_isolation(args.app.resolve(), root, fixture, late=True, reactivate=True)
+        test_scanout_runtime(args.app.resolve(), root)
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []
