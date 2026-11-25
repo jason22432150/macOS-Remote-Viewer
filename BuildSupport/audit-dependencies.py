@@ -142,11 +142,121 @@ def collect_notices(kegs, output):
     return entries
 
 
+COMPLETE_STATUSES = {"matches", "no-known-matches"}
+INCOMPLETE_STATUSES = {"unverified-tap", "not-queried", "partial", "query-error", "pagination-limit"}
+
+
+def verify_report(bom_path, report_path, notices_path, *, require_complete=False):
+    """Cross-check exact observed keg set and report status against signed inventory.
+
+    This is evidence consistency, not advisory applicability or legal clearance.
+    """
+    bom = json.loads(bom_path.read_text())
+    report = json.loads(report_path.read_text())
+    if report.get("sbom_sha256") != sha256(bom_path):
+        raise ValueError("audit SBOM hash mismatch")
+    if report.get("notice_archive_sha256") != sha256(notices_path):
+        raise ValueError("audit notice archive hash mismatch")
+    if report.get("release_review_required") is not True or report.get("osv_endpoint") != OSV_URL:
+        raise ValueError("audit review/endpoint metadata mismatch")
+    expected = {(p["name"], p["version"]) for p in package_components(bom)}
+    if not expected or len(expected) != len(package_components(bom)):
+        raise ValueError("invalid SBOM keg set")
+
+    def keyed(items, label):
+        if not isinstance(items, list):
+            raise ValueError(f"invalid {label} inventory")
+        result = {}
+        for item in items:
+            key = (item["formula"], item["version"])
+            if key in result:
+                raise ValueError(f"duplicate {label} keg: {key}")
+            result[key] = item
+        if result.keys() != expected:
+            raise ValueError(f"{label} keg coverage mismatch")
+        return result
+
+    entries = keyed(report["packages"], "advisory")
+    notices = keyed(report["notices"], "notice")
+    for key, entry in entries.items():
+        status = entry.get("status")
+        ids = entry.get("advisory_ids")
+        if status not in COMPLETE_STATUSES | INCOMPLETE_STATUSES:
+            raise ValueError(f"unknown scan status for {key}")
+        if (not isinstance(ids, list) or
+                any(not isinstance(i, str) or not NAME.fullmatch(i) for i in ids) or
+                ids != sorted(set(ids))):
+            raise ValueError(f"invalid advisory IDs for {key}")
+        if ((status == "matches" and not ids) or (status == "no-known-matches" and ids) or
+                (status in COMPLETE_STATUSES and entry.get("tap") != "homebrew/core")):
+            raise ValueError(f"inconsistent scan status for {key}")
+    complete = all(e["status"] in COMPLETE_STATUSES for e in entries.values())
+    if report.get("scan_complete_for_observed_kegs") is not complete:
+        raise ValueError("inconsistent scan completeness flag")
+    with zipfile.ZipFile(notices_path) as archive:
+        members = archive.namelist()
+        if len(members) != len(set(members)) or "notice-inventory.json" not in members:
+            raise ValueError("invalid notice archive inventory")
+        if archive.getinfo("notice-inventory.json").file_size > 8 * 1024 * 1024:
+            raise ValueError("notice inventory too large")
+        inventory = json.loads(archive.read("notice-inventory.json"))
+        if inventory != report["notices"]:
+            raise ValueError("notice archive inventory mismatch")
+        recorded = {"notice-inventory.json"}
+        for (name, version), entry in notices.items():
+            files = entry["files"]
+            if entry["status"] != ("candidates-collected" if files else "missing-review-required"):
+                raise ValueError("inconsistent notice status")
+            for file in files:
+                path = file["path"]
+                relative = Path(path)
+                if (relative.is_absolute() or ".." in relative.parts or
+                        relative.parts[:2] != (name, version) or path in recorded):
+                    raise ValueError("invalid notice member path")
+                recorded.add(path)
+                if archive.getinfo(path).file_size > 2 * 1024 * 1024:
+                    raise ValueError("notice member too large")
+                if hashlib.sha256(archive.read(path)).hexdigest() != file["sha256"]:
+                    raise ValueError("notice member hash mismatch")
+        if set(members) != recorded:
+            raise ValueError("unrecorded notice archive member")
+    # Print bounded structured lines to CI logs, without implying no matches
+    # means safe. Missing notices and incomplete scans remain explicit.
+    for key in sorted(expected):
+        entry = entries[key]
+        print("MRV_DEPENDENCY_REVIEW " + json.dumps({
+            "formula": key[0], "version": key[1], "status": entry["status"],
+            "advisory_ids": entry["advisory_ids"], "notice_status": notices[key]["status"],
+        }, ensure_ascii=True, sort_keys=True))
+    print("MRV_DEPENDENCY_SUMMARY " + json.dumps({
+        "observed_kegs": len(expected), "complete": complete,
+        "matched_kegs": sum(e["status"] == "matches" for e in entries.values()),
+        "advisory_ids": sorted({i for e in entries.values() for i in e["advisory_ids"]}),
+        "incomplete_kegs": sum(e["status"] not in COMPLETE_STATUSES for e in entries.values()),
+        "missing_notice_kegs": sum(e["status"] == "missing-review-required" for e in notices.values()),
+        "release_review_required": True,
+    }, ensure_ascii=True, sort_keys=True))
+    if require_complete and not complete:
+        raise ValueError("incomplete observed-keg OSV coverage")
+    return complete
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("bom", type=Path)
-    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--verify-report", type=Path)
+    parser.add_argument("--notices", type=Path)
+    parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
+    if args.verify_report:
+        if not args.notices or args.manifest:
+            parser.error("--verify-report requires --notices instead of --manifest")
+        verify_report(args.bom, args.verify_report, args.notices,
+                      require_complete=args.require_complete)
+        return
+    if not args.manifest or args.notices or args.require_complete:
+        parser.error("audit generation requires --manifest")
     bom = json.loads(args.bom.read_text())
     manifest = json.loads(args.manifest.read_text())
     cellar = Path(subprocess.check_output(["brew", "--cellar"], text=True).strip()).resolve()
@@ -174,6 +284,7 @@ def main():
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     for path in (notices, report_path):
         path.with_name(path.name + ".sha256").write_text(f"{sha256(path)}  {path.name}\n", encoding="utf-8")
+    verify_report(args.bom, report_path, notices)
     print(f"Verified {len(kegs)} kegs; OSV coverage complete: {complete}; review advisory IDs and notices.")
     # A network outage must be visible in the report, but should not hide an otherwise usable preview.
     # The draft-release workflow requires complete queries and explicit human review.

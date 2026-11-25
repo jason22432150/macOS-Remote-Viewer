@@ -75,6 +75,7 @@ jobs:
           BOM_SHA="$(shasum -a 256 "$BOM_PATH" | cut -d ' ' -f 1)"
           NOTICES_SHA="$(shasum -a 256 "$NOTICES_PATH" | cut -d ' ' -f 1)"
           jq -e --arg bom "$BOM_SHA" --arg notices "$NOTICES_SHA" '.scan_complete_for_observed_kegs == true and .sbom_sha256 == $bom and .notice_archive_sha256 == $notices and .release_review_required == true' "$AUDIT_PATH"
+          python3 BuildSupport/audit-dependencies.py "$BOM_PATH" --verify-report "$AUDIT_PATH" --notices "$NOTICES_PATH" --require-complete
           MANIFEST="$(find release-artifact -type f -name native-build.json -print)"
           test -f "$MANIFEST"
           gh release create "$TAG" "$DMG_PATH" "$DMG_PATH.sha256" "$BOM_PATH" "$BOM_PATH.sha256" "$AUDIT_PATH" "$AUDIT_PATH.sha256" "$NOTICES_PATH" "$NOTICES_PATH.sha256" "$MANIFEST" --verify-tag --draft --title "Mac Remote Viewer $TAG" --notes "Ad-hoc signed ARM64 build; not notarized. Review the draft and distribution requirements before publishing."

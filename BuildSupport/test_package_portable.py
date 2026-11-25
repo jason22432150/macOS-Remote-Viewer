@@ -1,5 +1,7 @@
 """Regression tests for portable Mach-O edits; no app or Homebrew required."""
 import importlib.util
+import json
+import zipfile
 import shutil
 import tempfile
 import unittest
@@ -64,6 +66,66 @@ class PortablePackagingTests(unittest.TestCase):
             self.assertEqual(audit.scan(kegs)[0]["status"], "query-error")
         with patch.object(audit, "query_batch", return_value=[{}]):
             self.assertEqual(audit.scan(kegs)[0]["status"], "no-known-matches")
+
+    def test_audit_report_cross_checks_keg_set_status_and_notice_bytes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bom = root / "app.bom.json"
+            report = root / "audit.json"
+            notices = root / "notices.zip"
+            bom.write_text(json.dumps({"components": [
+                {"bom-ref": "homebrew:example@1.2", "name": "example", "version": "1.2"},
+                {"bom-ref": "homebrew:other@2.0", "name": "other", "version": "2.0"},
+            ]}))
+            license_path = root / "LICENSE"
+            license_path.write_text("synthetic notice")
+            notice_entries = [
+                {"formula": "example", "version": "1.2", "status": "candidates-collected",
+                 "files": [{"path": "example/1.2/LICENSE", "sha256": audit.sha256(license_path)}]},
+                {"formula": "other", "version": "2.0", "status": "missing-review-required", "files": []},
+            ]
+            def make_archive(changed=False):
+                with zipfile.ZipFile(notices, "w") as archive:
+                    archive.writestr("example/1.2/LICENSE", "changed" if changed else "synthetic notice")
+                    archive.writestr("notice-inventory.json", json.dumps(notice_entries))
+            make_archive()
+            payload = {
+                "sbom_sha256": audit.sha256(bom), "notice_archive_sha256": audit.sha256(notices),
+                "osv_endpoint": audit.OSV_URL, "release_review_required": True,
+                "scan_complete_for_observed_kegs": True, "notices": notice_entries,
+                "packages": [
+                    {"formula": "example", "version": "1.2", "tap": "homebrew/core",
+                     "status": "matches", "advisory_ids": ["TEST-1"]},
+                    {"formula": "other", "version": "2.0", "tap": "homebrew/core",
+                     "status": "no-known-matches", "advisory_ids": []},
+                ],
+            }
+            def verify(require=True):
+                report.write_text(json.dumps(payload))
+                with patch("builtins.print"):
+                    return audit.verify_report(bom, report, notices, require_complete=require)
+            self.assertTrue(verify())
+            other = payload["packages"].pop()
+            with self.assertRaisesRegex(ValueError, "advisory keg coverage mismatch"):
+                verify()
+            payload["packages"].append(other)
+            other["status"] = "query-error"
+            with self.assertRaisesRegex(ValueError, "inconsistent scan completeness"):
+                verify()
+            payload["scan_complete_for_observed_kegs"] = False
+            self.assertFalse(verify(require=False))
+            with self.assertRaisesRegex(ValueError, "incomplete observed-keg"):
+                verify()
+            other["status"] = "no-known-matches"
+            other["advisory_ids"] = ["TEST-2"]
+            with self.assertRaisesRegex(ValueError, "inconsistent scan status"):
+                verify()
+            other["advisory_ids"] = []
+            payload["scan_complete_for_observed_kegs"] = True
+            make_archive(changed=True)
+            payload["notice_archive_sha256"] = audit.sha256(notices)
+            with self.assertRaisesRegex(ValueError, "notice member hash mismatch"):
+                verify()
 
     def test_inventory_rejects_wrong_hash_and_missing_file(self):
         with tempfile.TemporaryDirectory() as raw:
