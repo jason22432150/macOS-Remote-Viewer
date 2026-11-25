@@ -80,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
          "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe",
          "--loopback-spice-clipboard-invalid-probe", "--loopback-spice-clipboard-late-probe",
-         "--loopback-spice-clipboard-reactivate-probe"].contains($0)
+         "--loopback-spice-clipboard-reactivate-probe", "--loopback-spice-clipboard-bulk-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -147,6 +147,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runClipboardIsolationProbe(files: arguments[(index + 1)...].map { URL(fileURLWithPath: $0) })
         } else if arguments.contains("--clipboard-security-probe") {
             runClipboardSecurityProbe()
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-bulk-probe") {
+            guard arguments.count == index + 2 else { Darwin.exit(2) }
+            runLoopbackSpiceClipboardProbe(file: URL(fileURLWithPath: arguments[index + 1]), bulk: true)
         } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-invalid-probe") {
             guard arguments.count == index + 2 else { Darwin.exit(2) }
             runLoopbackSpiceClipboardProbe(file: URL(fileURLWithPath: arguments[index + 1]), invalid: true)
@@ -1119,7 +1122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func runLoopbackSpiceClipboardProbe(file: URL, invalid: Bool = false) {
+    private func runLoopbackSpiceClipboardProbe(file: URL, invalid: Bool = false, bulk: Bool = false) {
         Task { @MainActor in
             let board = NSPasteboard.withUniqueName()
             let controller = SessionController(engine: SpiceEngineAdapter(pasteboardName: board.name),
@@ -1135,10 +1138,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 board.clearContents()
                 controller.setClipboardSharingEnabled(false)
                 controller.open(profile)
-                let deadline = ContinuousClock.now + .seconds(20)
+                let deadline = ContinuousClock.now + .seconds(bulk ? 42 : 20)
                 var sent = false
                 var received = false
                 var recovered = false
+                var boundaryReceived = false
+                let boundary = String(repeating: "A", count: bulk ? 16 * 1024 * 1024 : 0)
                 var preservedChangeCount: Int?
                 let recoveredText = "MRV recovered 繁中 🚀"
                 while ContinuousClock.now < deadline {
@@ -1159,6 +1164,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             preservedChangeCount = board.changeCount
                             print("MRV_CLIP_GUEST_UTF8_OK")
                         }
+                        if bulk && received && !recovered {
+                            // Avoid reading the large pasteboard repeatedly
+                            // unless a real change occurs.
+                            let count = board.changeCount
+                            if count != preservedChangeCount {
+                                let value = board.string(forType: .string)
+                                if !boundaryReceived && value == boundary {
+                                    boundaryReceived = true
+                                    preservedChangeCount = count
+                                    print("MRV_CLIP_BULK_BOUNDARY_OK bytes=16777216")
+                                } else if boundaryReceived && value == recoveredText {
+                                    recovered = true
+                                    print("MRV_CLIP_BULK_RECOVERY_OK")
+                                } else {
+                                    throw SessionError.cancelled
+                                }
+                            }
+                        }
                         if invalid && received && !recovered {
                             let value = board.string(forType: .string)
                             if value == recoveredText {
@@ -1174,8 +1197,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         if received && !controller.agent.isConnected {
                             guard !controller.agent.supportsClipboard, model.sessions.isEmpty,
-                                  (!invalid || recovered),
-                                  board.string(forType: .string) == (invalid ? recoveredText : guestText) else { throw SessionError.cancelled }
+                                  (!(invalid || bulk) || recovered),
+                                  (!bulk || boundaryReceived),
+                                  board.string(forType: .string) == ((invalid || bulk) ? recoveredText : guestText) else { throw SessionError.cancelled }
                             controller.setClipboardSharingEnabled(false)
                             controller.cancel()
                             guard controller.state == .disconnected else { throw SessionError.cancelled }

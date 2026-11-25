@@ -327,7 +327,10 @@ static gboolean agent_clipboard, clip_host_grab, clip_host_requested, clip_host_
 static gboolean clip_guest_grab, clip_guest_requested, clip_guest_sent;
 static const char *clip_host_text = "MRV Mac 繁體中文 ☀️\nline-2";
 static const char *clip_guest_text = "MRV Guest 測試剪貼簿 🚀\nline-2";
-static gboolean agent_isolation, agent_clipboard_invalid, agent_late;
+static gboolean agent_isolation, agent_clipboard_invalid, agent_late, agent_clipboard_bulk;
+static uint8_t *agent_bulk_tx;
+static const size_t clipboard_boundary = 16u * 1024u * 1024u;
+static unsigned bulk_drained;
 static gboolean late_grab, late_request, late_sent, late_drained;
 static const char *late_gate;
 static const char late_text[] = "MRV delayed inactive guest overwrite";
@@ -390,7 +393,7 @@ static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len
                     if (type == VD_AGENT_CLIPBOARD_REQUEST) ++clip_requests;
                     if (type == VD_AGENT_CLIPBOARD) ++clip_data;
                 }
-                if (agent_clipboard_invalid && clip_guest_sent && invalid_grab_pending &&
+                if ((agent_clipboard_invalid || agent_clipboard_bulk) && clip_guest_sent && invalid_grab_pending &&
                     type == VD_AGENT_CLIPBOARD_REQUEST && payload_size == sizeof(format) &&
                     format == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
                     ++invalid_requests;
@@ -474,9 +477,16 @@ static int agent_read(SpiceCharDeviceInstance *sin, uint8_t *buf, int len) {
     (void)sin;
     if (len <= 0 || agent_tx_pos >= agent_tx_len) return 0;
     size_t count = MIN((size_t)len, agent_tx_len - agent_tx_pos);
-    memcpy(buf, agent_tx + agent_tx_pos, count);
+    memcpy(buf, (agent_bulk_tx ? agent_bulk_tx : agent_tx) + agent_tx_pos, count);
     agent_tx_pos += count;
     if (agent_tx_pos == agent_tx_len) {
+        if (agent_bulk_tx) {
+            g_clear_pointer(&agent_bulk_tx, g_free);
+            ++bulk_drained;
+            invalid_at = g_get_monotonic_time();
+            printf("AGENT_CLIP_BULK_DRAINED stage=%u\n", invalid_stage);
+            fflush(stdout);
+        }
         if (!agent_delivered_at) {
             agent_delivered_at = g_get_monotonic_time();
             puts("AGENT_CAPS_DELIVERED");
@@ -519,6 +529,58 @@ static void agent_queue_clip(uint32_t message_type, const char *text, size_t tex
     if (text_len) memcpy(agent_tx + sizeof(chunk) + sizeof(msg) + sizeof(format), text, text_len);
     agent_tx_len = total;
     agent_tx_pos = 0;
+    spice_server_char_device_wakeup(&agent_device);
+}
+
+/* Construct only the two known bounded test payloads. The logical agent
+ * header occurs once; each VDI chunk has its own framing. */
+static void agent_queue_bulk(size_t bytes, uint8_t fill) {
+    if (!agent_clipboard_bulk || agent_bulk_tx || agent_tx_pos != agent_tx_len ||
+        (bytes != clipboard_boundary && bytes != clipboard_boundary + 1)) {
+        agent_error = TRUE;
+        return;
+    }
+    VDAgentMessage msg = {0};
+    msg.protocol = GUINT32_TO_LE(VD_AGENT_PROTOCOL);
+    msg.type = GUINT32_TO_LE(VD_AGENT_CLIPBOARD);
+    msg.size = GUINT32_TO_LE((uint32_t)(sizeof(uint32_t) + bytes));
+    uint32_t format = GUINT32_TO_LE(VD_AGENT_CLIPBOARD_UTF8_TEXT);
+    uint8_t header[sizeof(msg) + sizeof(format)];
+    memcpy(header, &msg, sizeof(msg));
+    memcpy(header + sizeof(msg), &format, sizeof(format));
+    size_t logical = sizeof(header) + bytes;
+    size_t chunks = (logical + VD_AGENT_MAX_DATA_SIZE - 1) / VD_AGENT_MAX_DATA_SIZE;
+    size_t total = logical + chunks * sizeof(VDIChunkHeader);
+    uint8_t *wire = g_try_malloc(total);
+    if (!wire) {
+        agent_error = TRUE;
+        return;
+    }
+    size_t offset = 0, output = 0;
+    while (offset < logical) {
+        size_t count = MIN((size_t)VD_AGENT_MAX_DATA_SIZE, logical - offset);
+        VDIChunkHeader chunk = {
+            .port = GUINT32_TO_LE(VDP_CLIENT_PORT),
+            .size = GUINT32_TO_LE((uint32_t)count),
+        };
+        memcpy(wire + output, &chunk, sizeof(chunk));
+        output += sizeof(chunk);
+        size_t prefix = offset < sizeof(header) ? MIN(count, sizeof(header) - offset) : 0;
+        if (prefix) memcpy(wire + output, header + offset, prefix);
+        memset(wire + output + prefix, fill, count - prefix);
+        offset += count;
+        output += count;
+    }
+    if (output != total) {
+        g_free(wire);
+        agent_error = TRUE;
+        return;
+    }
+    agent_bulk_tx = wire;
+    agent_tx_len = total;
+    agent_tx_pos = 0;
+    printf("AGENT_CLIP_BULK_QUEUED stage=%u bytes=%zu chunks=%zu\n", invalid_stage, bytes, chunks);
+    fflush(stdout);
     spice_server_char_device_wakeup(&agent_device);
 }
 
@@ -584,7 +646,7 @@ static gboolean agent_tick(gpointer data) {
         puts("AGENT_CLIP_GUEST_UTF8_SENT");
         fflush(stdout);
         agent_queue_clip(VD_AGENT_CLIPBOARD, clip_guest_text, strlen(clip_guest_text));
-        if (agent_clipboard_invalid) invalid_at = g_get_monotonic_time();
+        if (agent_clipboard_invalid || agent_clipboard_bulk) invalid_at = g_get_monotonic_time();
     } else if (agent_late && isolation_role == 1 && clip_guest_sent && !late_grab) {
         late_grab = TRUE;
         puts("AGENT_LATE_GRAB_SENT");
@@ -601,14 +663,17 @@ static gboolean agent_tick(gpointer data) {
         late_drained = TRUE;
         puts("AGENT_LATE_DATA_DRAINED");
         fflush(stdout);
-    } else if (agent_clipboard_invalid && clip_guest_sent && invalid_stage < 3) {
+    } else if ((agent_clipboard_invalid || agent_clipboard_bulk) && clip_guest_sent && invalid_stage < 3) {
         // Each malformed payload is sent only after a fresh actual request.
         // Leave a visible interval between writes to test board preservation.
         if (!invalid_grab_pending && invalid_requests == invalid_stage + 1) {
             ++invalid_stage;
             ++invalid_sent;
             invalid_at = g_get_monotonic_time();
-            if (invalid_stage == 1)
+            if (agent_clipboard_bulk && invalid_stage <= 2) {
+                agent_queue_bulk(clipboard_boundary + (invalid_stage == 2 ? 1 : 0),
+                                 invalid_stage == 1 ? 'A' : 'B');
+            } else if (invalid_stage == 1)
                 agent_queue_clip(VD_AGENT_CLIPBOARD, invalid_utf8, sizeof(invalid_utf8));
             else if (invalid_stage == 2)
                 agent_queue_clip(VD_AGENT_CLIPBOARD, invalid_nul, sizeof(invalid_nul));
@@ -638,7 +703,7 @@ static gboolean agent_tick(gpointer data) {
         create_primary(surface_width, surface_height);
         puts("AGENT_PRIMARY_RESIZED 1024x768");
         fflush(stdout);
-    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_late ? 45000000 : agent_isolation ? 16000000 : agent_clipboard ? 12000000 : agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
+    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_clipboard_bulk ? 35000000 : agent_late ? 45000000 : agent_isolation ? 16000000 : agent_clipboard ? 12000000 : agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
         // Real server-side hot removal, not a fabricated client callback.
         agent_attached = FALSE;
         if (spice_server_remove_interface(&agent_device.base)) {
@@ -679,7 +744,8 @@ int main(int argc, char **argv) {
         } else return 2;
     }
     agent_clipboard_invalid = argc == 7 && strcmp(argv[6], "agent-clipboard-invalid-full") == 0;
-    agent_clipboard = agent_isolation || agent_clipboard_invalid || (argc == 7 && strcmp(argv[6], "agent-clipboard-full") == 0);
+    agent_clipboard_bulk = argc == 7 && strcmp(argv[6], "agent-clipboard-bulk-full") == 0;
+    agent_clipboard = agent_isolation || agent_clipboard_invalid || agent_clipboard_bulk || (argc == 7 && strcmp(argv[6], "agent-clipboard-full") == 0);
     agent_resize = argc == 7 && strcmp(argv[6], "agent-monitor-resize-full") == 0;
     agent_monitor = agent_resize || (argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
                                   strcmp(argv[6], "agent-monitor-limited") == 0));
@@ -746,6 +812,7 @@ int main(int argc, char **argv) {
         if (agent_clipboard) printf("AGENT_CLIP_RESULT host=%d guest-request=%d guest-sent=%d\n",
                                     clip_host_ok, clip_guest_requested, clip_guest_sent && agent_tx_pos == agent_tx_len);
         if (agent_clipboard_invalid) printf("AGENT_CLIP_INVALID_RESULT requests=%u sent=%u\n", invalid_requests, invalid_sent);
+        if (agent_clipboard_bulk) printf("AGENT_CLIP_BULK_RESULT requests=%u sent=%u drained=%u\n", invalid_requests, invalid_sent, bulk_drained);
         if (agent_late && isolation_role == 1)
             printf("AGENT_LATE_RESULT requested=%d sent=%d drained=%d\n", late_request, late_sent, late_drained);
         if (agent_isolation) printf("AGENT_ISOLATION_RESULT role=%u probes=%u grabs=%u requests=%u data=%u\n",
@@ -755,6 +822,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
     }
     spice_server_destroy(server);
+    g_clear_pointer(&agent_bulk_tx, g_free);
     g_main_loop_unref(loop);
     return agent_error ? 1 : 0;
 }

@@ -62,25 +62,28 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             mode = ("--loopback-spice-partial-probe" if partial else
                     "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe")
             client = [str(exe), mode, str(profile)]
-            if agent in ("clipboard-full", "clipboard-invalid-full"):
-                mode = "--loopback-spice-clipboard-invalid-probe" if agent == "clipboard-invalid-full" else "--loopback-spice-clipboard-probe"
+            if agent in ("clipboard-full", "clipboard-invalid-full", "clipboard-bulk-full"):
+                mode = {"clipboard-invalid-full": "--loopback-spice-clipboard-invalid-probe",
+                        "clipboard-bulk-full": "--loopback-spice-clipboard-bulk-probe"}.get(agent, "--loopback-spice-clipboard-probe")
                 client = [str(exe), mode, str(profile)]
             elif agent is not None:
                 client = [str(exe), "--loopback-spice-agent-probe", str(profile), agent]
-            result = subprocess.run(client, cwd=root, env=env, capture_output=True, text=True, timeout=45)
+            result = subprocess.run(client, cwd=root, env=env, capture_output=True, text=True, timeout=50 if agent == "clipboard-bulk-full" else 45)
             lines = result.stdout.splitlines()
             expected = ("MRV_SPICE_PARTIAL_OK" if partial else "MRV_SPICE_DISPLAY_OK" if display else
                         ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED"))
             if agent is not None:
-                expected = "MRV_SPICE_CLIPBOARD_OK" if agent in ("clipboard-full", "clipboard-invalid-full") else "MRV_SPICE_AGENT_OK"
+                expected = "MRV_SPICE_CLIPBOARD_OK" if agent in ("clipboard-full", "clipboard-invalid-full", "clipboard-bulk-full") else "MRV_SPICE_AGENT_OK"
             if result.returncode != 0 or expected not in lines:
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
-            if agent in ("clipboard-full", "clipboard-invalid-full"):
+            if agent in ("clipboard-full", "clipboard-invalid-full", "clipboard-bulk-full"):
                 markers = ["MRV_CLIP_HOST_READY", "MRV_CLIP_GUEST_UTF8_OK"]
                 if agent == "clipboard-invalid-full":
                     markers.append("MRV_CLIP_INVALID_RECOVERY_OK")
+                if agent == "clipboard-bulk-full":
+                    markers.extend(["MRV_CLIP_BULK_BOUNDARY_OK bytes=16777216", "MRV_CLIP_BULK_RECOVERY_OK"])
                 markers.append("MRV_SPICE_CLIPBOARD_OK")
                 actual = [line for line in lines if line.startswith(("MRV_CLIP_", "MRV_SPICE_CLIPBOARD_OK"))]
                 if actual != markers:
@@ -166,7 +169,7 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                         "AGENT_CAPS_DELIVERED", "AGENT_REMOVED", "AGENT_RESULT received=1 delivered=1 removed=1 error=0"]
             if any(lines.count(marker) != 1 for marker in required):
                 raise AssertionError(f"{name}: incomplete synthetic guest-agent exchange")
-            if agent in ("clipboard-full", "clipboard-invalid-full"):
+            if agent in ("clipboard-full", "clipboard-invalid-full", "clipboard-bulk-full"):
                 clip_markers = ["AGENT_CLIP_HOST_GRAB", "AGENT_CLIP_HOST_REQUEST", "AGENT_CLIP_HOST_UTF8_OK",
                                 "AGENT_CLIP_GUEST_GRAB", "AGENT_CLIP_GUEST_REQUEST", "AGENT_CLIP_GUEST_UTF8_SENT"]
                 if agent == "clipboard-invalid-full":
@@ -176,6 +179,21 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 if agent == "clipboard-invalid-full":
                     clip_markers.append("AGENT_CLIP_INVALID_RESULT requests=3 sent=3")
                 actual_clip = [line for line in lines if line.startswith("AGENT_CLIP_")]
+                if agent == "clipboard-bulk-full":
+                    bulk_markers = [line for line in actual_clip if line.startswith("AGENT_CLIP_BULK_")]
+                    queued = [line for line in bulk_markers if line.startswith("AGENT_CLIP_BULK_QUEUED ")]
+                    if len(queued) != 2 or any(not re.fullmatch(
+                        rf"AGENT_CLIP_BULK_QUEUED stage={stage} bytes={16777216 + stage - 1} chunks=\d+", line)
+                        for stage, line in enumerate(queued, 1)):
+                        raise AssertionError("missing bounded bulk messages")
+                    if [line for line in bulk_markers if line.startswith("AGENT_CLIP_BULK_DRAINED ")] != [
+                            "AGENT_CLIP_BULK_DRAINED stage=1", "AGENT_CLIP_BULK_DRAINED stage=2"]:
+                        raise AssertionError("bulk messages not fully drained")
+                    if bulk_markers.count("AGENT_CLIP_BULK_RESULT requests=3 sent=3 drained=2") != 1:
+                        raise AssertionError("bulk clipboard transfer did not finish")
+                    actual_clip = [line for line in actual_clip if not line.startswith("AGENT_CLIP_BULK_")]
+                    clip_markers = clip_markers[:-1] + [marker for stage in range(1, 4)
+                        for marker in (f"AGENT_CLIP_INVALID_GRAB stage={stage}", f"AGENT_CLIP_INVALID_SENT stage={stage}")] + clip_markers[-1:]
                 if actual_clip != clip_markers:
                     raise AssertionError(f"{name}: incomplete wire clipboard exchange {actual_clip}")
             if agent.startswith("monitor-"):
@@ -706,6 +724,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-full", tls.TICKET, True, agent="clipboard-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-invalid-full", tls.TICKET, True, agent="clipboard-invalid-full")
+        test_case(args.app.resolve(), root, fixture, "agent-clipboard-bulk-full", tls.TICKET, True, agent="clipboard-bulk-full")
         test_clipboard_security(args.app.resolve(), root)
         test_clipboard_isolation(args.app.resolve(), root, fixture)
         test_clipboard_isolation(args.app.resolve(), root, fixture, late=True)
