@@ -1,5 +1,7 @@
 """Regression tests for portable Mach-O edits; no app or Homebrew required."""
 import importlib.util
+import io
+import tarfile
 import json
 import zipfile
 import shutil
@@ -66,6 +68,48 @@ class PortablePackagingTests(unittest.TestCase):
             self.assertEqual(audit.scan(kegs)[0]["status"], "query-error")
         with patch.object(audit, "query_batch", return_value=[{}]):
             self.assertEqual(audit.scan(kegs)[0]["status"], "no-known-matches")
+
+    def test_source_notice_fallback_is_version_checked_and_bounded(self):
+        formula = {"name": "glib", "tap": "homebrew/core", "revision": 0,
+                   "versions": {"stable": "2.90.1"},
+                   "urls": {"stable": {"url": "https://download.gnome.org/sources/glib/example.tar.xz",
+                                       "checksum": "a" * 64}}}
+        with patch.object(audit.subprocess, "check_output", return_value=json.dumps({"formulae": [formula]})):
+            metadata = audit.source_metadata("glib", "2.90.1")
+            self.assertEqual(metadata["sha256"], "a" * 64)
+            with self.assertRaisesRegex(ValueError, "version mismatch"):
+                audit.source_metadata("glib", "2.90.2")
+        with self.assertRaisesRegex(ValueError, "outside approved"):
+            audit.check_source_url("https://example.com/source.tar.gz", {"download.gnome.org"})
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+            for name, body in [("glib/COPYING", b"synthetic license"), ("../LICENSE", b"escape"),
+                               ("sqlite/sqlite3.c", b"public domain\n" + b" " * 5000)]:
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                archive.addfile(info, io.BytesIO(body))
+            link = tarfile.TarInfo("glib/LICENSE")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            archive.addfile(link)
+        candidates = audit.source_notice_candidates("glib", stream.getvalue())
+        self.assertEqual(candidates, {"glib/COPYING": b"synthetic license"})
+        sqlite = audit.source_notice_candidates("sqlite", stream.getvalue())
+        self.assertEqual(len(sqlite["sqlite/sqlite3.c.header.txt"]), 4096)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            keg = root / "keg"
+            keg.mkdir()
+            with patch.object(audit, "recover_source_notices", return_value=(candidates, metadata)):
+                entries = audit.collect_notices([("glib", "2.90.1", keg, "homebrew/core")], root / "notices.zip")
+            self.assertEqual(entries[0]["status"], "candidates-collected")
+            self.assertEqual(entries[0]["source_fallback"], metadata)
+            with zipfile.ZipFile(root / "notices.zip") as archive:
+                self.assertEqual(archive.read("glib/2.90.1/upstream-source/glib/COPYING"), b"synthetic license")
+            with patch.object(audit, "recover_source_notices", side_effect=ValueError("bad checksum")):
+                entries = audit.collect_notices([("glib", "2.90.1", keg, "homebrew/core")], root / "failed.zip")
+            self.assertEqual(entries[0]["status"], "missing-review-required")
+            self.assertEqual(entries[0]["source_fallback_error"], "ValueError")
 
     def test_audit_report_cross_checks_keg_set_status_and_notice_bytes(self):
         with tempfile.TemporaryDirectory() as raw:

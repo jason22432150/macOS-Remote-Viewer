@@ -3,10 +3,13 @@
 import argparse
 import datetime
 import hashlib
+import io
+import tarfile
 import json
 import re
 import subprocess
 import urllib.request
+from urllib.parse import urlsplit
 import zipfile
 from pathlib import Path
 
@@ -116,12 +119,110 @@ def scan(kegs):
     return reports
 
 
+# Recovery is deliberately restricted to the three observed missing kegs.
+# Current formula metadata must match the full installed stable keg version.
+# It identifies a candidate upstream release, not all downstream build patches.
+SOURCE_HOSTS = {
+    "glib": {"download.gnome.org"},
+    "json-glib": {"download.gnome.org"},
+    "sqlite": {"sqlite.org", "www.sqlite.org"},
+}
+NOTICE_PREFIXES = ("license", "licence", "copying", "copyright", "notice", "authors", "legal")
+SOURCE_LIMIT = 32 * 1024 * 1024
+
+
+def source_metadata(name, version):
+    if name not in SOURCE_HOSTS:
+        raise ValueError("unsupported fallback formula")
+    raw = subprocess.check_output(["brew", "info", "--json=v2", f"homebrew/core/{name}"],
+                                  text=True, timeout=30)
+    formulae = json.loads(raw)["formulae"]
+    if len(formulae) != 1:
+        raise ValueError("ambiguous source formula")
+    formula = formulae[0]
+    revision = formula["revision"]
+    stable = formula["versions"]["stable"]
+    expected = stable + (f"_{revision}" if revision else "")
+    if (formula["name"] != name or formula["tap"] != "homebrew/core" or
+            expected != version):
+        raise ValueError("source formula version mismatch")
+    source = formula["urls"]["stable"]
+    url, digest = source["url"], source["checksum"]
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("invalid source checksum")
+    check_source_url(url, SOURCE_HOSTS[name])
+    return {"url": url, "sha256": digest, "formula": name, "keg_version": version}
+
+
+def check_source_url(url, hosts):
+    parts = urlsplit(url)
+    if (parts.scheme != "https" or parts.hostname not in hosts or
+            parts.username or parts.password or parts.port not in (None, 443)):
+        raise ValueError("source URL outside approved HTTPS hosts")
+
+
+def fetch_source(metadata):
+    hosts = SOURCE_HOSTS[metadata["formula"]]
+
+    class RestrictedRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            check_source_url(newurl, hosts)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    check_source_url(metadata["url"], hosts)
+    opener = urllib.request.build_opener(RestrictedRedirect())
+    with opener.open(metadata["url"], timeout=30) as response:
+        check_source_url(response.geturl(), hosts)
+        data = response.read(SOURCE_LIMIT + 1)
+    if len(data) > SOURCE_LIMIT or hashlib.sha256(data).hexdigest() != metadata["sha256"]:
+        raise ValueError("source archive size/checksum mismatch")
+    return data
+
+
+def source_notice_candidates(name, data):
+    """Read bounded regular members only; never unpack a source archive."""
+    candidates = {}
+    expanded = 0
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r|*") as archive:
+        for count, member in enumerate(archive, 1):
+            expanded += max(0, member.size)
+            if count > 100000 or expanded > 256 * 1024 * 1024:
+                raise ValueError("source archive expansion limit")
+            path = Path(member.name)
+            if (not member.isfile() or path.is_absolute() or ".." in path.parts or
+                    "\\" in member.name or len(path.parts) < 2):
+                continue
+            if path.name.lower().startswith(NOTICE_PREFIXES) and member.size <= 2 * 1024 * 1024:
+                body = archive.extractfile(member).read()
+                relative = path.as_posix()
+            elif name == "sqlite" and path.name == "sqlite3.c" and member.size >= 256:
+                # The core source carries its public-domain dedication in
+                # the header rather than a conventional license file.
+                body = archive.extractfile(member).read(4096)
+                if b"public domain" not in body.lower():
+                    continue
+                relative = (path.parent / "sqlite3.c.header.txt").as_posix()
+            else:
+                continue
+            if relative in candidates or len(candidates) >= 256:
+                raise ValueError("duplicate/too many source notice members")
+            candidates[relative] = body
+    return candidates
+
+
+def recover_source_notices(name, version, tap):
+    if tap != "homebrew/core" or name not in SOURCE_HOSTS:
+        return {}, None
+    metadata = source_metadata(name, version)
+    return source_notice_candidates(name, fetch_source(metadata)), metadata
+
+
 def collect_notices(kegs, output):
-    """Collect candidate notices only from the exact installed keg, never follow external links."""
+    """Collect keg notices and bounded, version-checked source fallback candidates."""
     entries = []
-    prefixes = ("license", "licence", "copying", "copyright", "notice", "authors", "legal")
+    prefixes = NOTICE_PREFIXES
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, version, root, _ in kegs:
+        for name, version, root, tap in kegs:
             collected = []
             skipped = []
             for candidate in sorted(root.rglob("*")):
@@ -136,8 +237,21 @@ def collect_notices(kegs, output):
                 target = f"{name}/{version}/{relative.as_posix()}"
                 archive.write(candidate, target)
                 collected.append({"path": target, "sha256": sha256(candidate)})
-            entries.append({"formula": name, "version": version, "files": collected,
-                            "skipped": skipped, "status": "candidates-collected" if collected else "missing-review-required"})
+            entry = {"formula": name, "version": version, "files": collected, "skipped": skipped}
+            if not collected and name in SOURCE_HOSTS and tap == "homebrew/core":
+                try:
+                    recovered, metadata = recover_source_notices(name, version, tap)
+                    if metadata:
+                        entry["source_fallback"] = metadata
+                    for relative, body in sorted(recovered.items()):
+                        target = f"{name}/{version}/upstream-source/{relative}"
+                        archive.writestr(target, body)
+                        collected.append({"path": target, "sha256": hashlib.sha256(body).hexdigest()})
+                except (OSError, ValueError, KeyError, TypeError, tarfile.TarError,
+                        subprocess.SubprocessError) as error:
+                    entry["source_fallback_error"] = type(error).__name__
+            entry["status"] = "candidates-collected" if collected else "missing-review-required"
+            entries.append(entry)
         archive.writestr("notice-inventory.json", json.dumps(entries, indent=2) + "\n")
     return entries
 
@@ -205,6 +319,13 @@ def verify_report(bom_path, report_path, notices_path, *, require_complete=False
         recorded = {"notice-inventory.json"}
         for (name, version), entry in notices.items():
             files = entry["files"]
+            metadata = entry.get("source_fallback")
+            if metadata is not None:
+                if (name not in SOURCE_HOSTS or metadata["formula"] != name or
+                        metadata["keg_version"] != version or
+                        not re.fullmatch(r"[0-9a-f]{64}", metadata["sha256"])):
+                    raise ValueError("invalid source fallback metadata")
+                check_source_url(metadata["url"], SOURCE_HOSTS[name])
             if entry["status"] != ("candidates-collected" if files else "missing-review-required"):
                 raise ValueError("inconsistent notice status")
             for file in files:
@@ -213,6 +334,8 @@ def verify_report(bom_path, report_path, notices_path, *, require_complete=False
                 if (relative.is_absolute() or ".." in relative.parts or
                         relative.parts[:2] != (name, version) or path in recorded):
                     raise ValueError("invalid notice member path")
+                if len(relative.parts) > 2 and relative.parts[2] == "upstream-source" and metadata is None:
+                    raise ValueError("source notice without provenance")
                 recorded.add(path)
                 if archive.getinfo(path).file_size > 2 * 1024 * 1024:
                     raise ValueError("notice member too large")
@@ -227,6 +350,8 @@ def verify_report(bom_path, report_path, notices_path, *, require_complete=False
         print("MRV_DEPENDENCY_REVIEW " + json.dumps({
             "formula": key[0], "version": key[1], "status": entry["status"],
             "advisory_ids": entry["advisory_ids"], "notice_status": notices[key]["status"],
+            "source_fallback": notices[key].get("source_fallback"),
+            "source_fallback_error": notices[key].get("source_fallback_error"),
         }, ensure_ascii=True, sort_keys=True))
     print("MRV_DEPENDENCY_SUMMARY " + json.dumps({
         "observed_kegs": len(expected), "complete": complete,
