@@ -4,6 +4,66 @@ import XCTest
 
 @MainActor
 final class SessionControllerTests: XCTestCase {
+    func testControllerKeepsPresentationNotTransportCredentials() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine)
+        let base = try VVParser().parse(data: Data(Self.minimalVV().utf8))
+        let profile = ConnectionProfile(
+            sessionID: base.sessionID, title: "VM test",
+            host: "pvespiceproxy:synthetic-private-destination",
+            tlsPort: base.tlsPort, proxyURL: URL(string: "http://demo:synthetic-private-proxy@192.0.2.10:3128"),
+            caPEM: base.caPEM, hostSubject: base.hostSubject,
+            ticket: .init("synthetic-private-ticket"), deleteSourceFile: false,
+            toggleFullscreen: base.toggleFullscreen, releaseCursor: base.releaseCursor,
+            secureAttention: base.secureAttention, unknownFieldNames: base.unknownFieldNames,
+            sourceIdentity: nil
+        )
+        controller.open(profile)
+        XCTAssertTrue(engine.receivedExpectedCredentials)
+        let presentation = try XCTUnwrap(controller.profile)
+        XCTAssertEqual(presentation.title, "VM test")
+        XCTAssertEqual(presentation.remoteAddress, "192.0.2.10")
+        XCTAssertEqual(presentation.toggleFullscreen, profile.toggleFullscreen)
+        XCTAssertEqual(presentation.releaseCursor, profile.releaseCursor)
+        XCTAssertEqual(presentation.secureAttention, profile.secureAttention)
+        XCTAssertEqual(presentation.unknownFieldNames, profile.unknownFieldNames)
+        let labels = Set(Mirror(reflecting: presentation).children.compactMap(\.label))
+        XCTAssertEqual(labels, Set(["title", "remoteAddress", "toggleFullscreen",
+                                    "releaseCursor", "secureAttention", "unknownFieldNames"]))
+        XCTAssertFalse(String(reflecting: presentation).contains("synthetic-private"))
+        engine.delegate?.engineDidConnect()
+        XCTAssertEqual(controller.profile, presentation)
+        controller.cancel()
+        XCTAssertEqual(controller.profile, presentation)
+    }
+
+    func testFailedOrCancelledConnectionDoesNotDeletePendingSource() throws {
+        let files = MockFileAccessor()
+        let url = URL(fileURLWithPath: "/tmp/secret.vv")
+        let identity = SourceFileIdentity(path: url.path, fileNumber: 42, volumeIdentifier: 1,
+                                          size: 100, modificationTime: 10)
+        files.identities[url] = identity
+        let profile = try VVParser().parse(data: Data(Self.minimalVV().utf8), sourceIdentity: identity)
+        for action in 0..<3 {
+            let engine = MockEngine()
+            let controller = SessionController(engine: engine, files: files)
+            controller.open(profile)
+            switch action {
+            case 0: controller.cancel()
+            case 1: engine.delegate?.engineDidFail(.authenticationRejected)
+            default: engine.delegate?.engineDidDisconnect()
+            }
+            engine.delegate?.engineDidConnect()
+            XCTAssertTrue(files.removed.isEmpty)
+            XCTAssertEqual(controller.cleanupResult, .skipped)
+            // A fresh import without an identity cannot inherit a previous one.
+            controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+            engine.delegate?.engineDidConnect()
+            XCTAssertTrue(files.removed.isEmpty)
+            controller.cancel()
+        }
+    }
+
     func testRelativeMouseModeRequiresConnectionAndServerAcceptance() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine)
@@ -694,6 +754,7 @@ final class SessionControllerTests: XCTestCase {
 private final class MockEngine: SpiceEngineing {
     weak var delegate: SpiceEngineDelegate?
     var connectError: SessionError?
+    var receivedExpectedCredentials = false
     var didReleaseKeys = false
     var attachedRenderer: AnyObject?
     var detachedRenderer: AnyObject?
@@ -707,6 +768,9 @@ private final class MockEngine: SpiceEngineing {
     func startWorker() throws {}
 
     func connect(profile: ConnectionProfile) throws {
+        receivedExpectedCredentials = profile.ticket.value == "synthetic-private-ticket" &&
+            profile.host == "pvespiceproxy:synthetic-private-destination" &&
+            profile.proxyURL?.password == "synthetic-private-proxy"
         if let connectError {
             throw connectError
         }

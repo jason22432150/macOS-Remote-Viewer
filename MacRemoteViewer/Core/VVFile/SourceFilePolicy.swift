@@ -161,10 +161,14 @@ public struct SourceFileCleanup: Sendable {
         profile: ConnectionProfile,
         files: FileAccessing
     ) -> SourceCleanupResult {
-        guard deleteAfterSuccessfulConnect, profile.deleteSourceFile else {
-            return .skipped
-        }
-        guard let identity = profile.sourceIdentity, identity.fileNumber != 0,
+        deleteIfNeeded(sourceIdentity: profile.deleteSourceFile ? profile.sourceIdentity : nil, files: files)
+    }
+
+    /// Only an identity for a file explicitly marked for deletion is passed
+    /// by the controller. No authentication data is needed for cleanup.
+    public func deleteIfNeeded(sourceIdentity: SourceFileIdentity?, files: FileAccessing) -> SourceCleanupResult {
+        guard deleteAfterSuccessfulConnect else { return .skipped }
+        guard let identity = sourceIdentity, identity.fileNumber != 0,
               identity.volumeIdentifier != 0 else {
             return .skipped
         }

@@ -73,6 +73,27 @@ extension ConnectionProfile: CustomStringConvertible, CustomDebugStringConvertib
     }
 }
 
+/// UI-only projection. Do not store the transport profile in a controller:
+/// PVE's destination token, proxy credentials, ticket and CA are not needed
+/// to render a tab or dispatch a local shortcut.
+public struct SessionPresentationProfile: Sendable, Equatable {
+    public let title: String
+    public let remoteAddress: String?
+    public let toggleFullscreen: HotKeyChord
+    public let releaseCursor: HotKeyChord
+    public let secureAttention: HotKeyChord
+    public let unknownFieldNames: [String]
+
+    public init(_ profile: ConnectionProfile) {
+        title = profile.title
+        remoteAddress = SessionStatusText.displayAddress(from: profile)
+        toggleFullscreen = profile.toggleFullscreen
+        releaseCursor = profile.releaseCursor
+        secureAttention = profile.secureAttention
+        unknownFieldNames = profile.unknownFieldNames
+    }
+}
+
 /// 匯入當下的來源檔識別，刪除前用來避免誤刪被替換的檔案。
 public struct SourceFileIdentity: Sendable, Equatable {
     public let path: String

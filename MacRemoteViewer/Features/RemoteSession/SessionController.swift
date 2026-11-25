@@ -10,7 +10,9 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     /// `sessionID` 建立後不變，可供 `ForEach` 在非 MainActor 讀取。
     nonisolated public var id: String { sessionID }
     public private(set) var state: SessionState = .idle
-    public private(set) var profile: ConnectionProfile?
+    public private(set) var profile: SessionPresentationProfile?
+    // Retained only until successful connection, cancellation or failure.
+    @ObservationIgnored private var pendingSourceIdentity: SourceFileIdentity?
     public private(set) var agent: AgentCapabilities = AgentCapabilities()
     public private(set) var displaySize: RemoteFrame?
     public private(set) var relativeMouseRequested = false
@@ -78,7 +80,8 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
 
     public func open(_ profile: ConnectionProfile) {
         cancel()
-        self.profile = profile
+        self.profile = SessionPresentationProfile(profile)
+        pendingSourceIdentity = profile.deleteSourceFile ? profile.sourceIdentity : nil
         didCleanupSource = false
         cleanupResult = .skipped
         agent = AgentCapabilities()
@@ -108,6 +111,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     public func cancel() {
+        pendingSourceIdentity = nil
         resetResolutionSync()
         switch state {
         case .idle, .disconnected, .failed:
@@ -200,6 +204,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
 
     public func engineDidDisconnect() {
         guard state == .connecting || state == .connected else { return }
+        pendingSourceIdentity = nil
         resolutionTask?.cancel()
         resolutionTask = nil
         resolutionRetryTask?.cancel()
@@ -340,6 +345,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     private func fail(_ error: SessionError) {
+        pendingSourceIdentity = nil
         resetResolutionSync()
         state = .failed(error)
         agent = AgentCapabilities()
@@ -448,9 +454,11 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     }
 
     private func deleteSourceFileIfNeeded() {
-        guard !didCleanupSource, let profile else { return }
+        guard !didCleanupSource else { return }
         didCleanupSource = true
-        cleanupResult = cleanup.deleteIfNeeded(profile: profile, files: files)
+        let identity = pendingSourceIdentity
+        pendingSourceIdentity = nil
+        cleanupResult = cleanup.deleteIfNeeded(sourceIdentity: identity, files: files)
         switch cleanupResult {
         case .permissionDenied:
             diagnostics.info("source-file-retained-permission")

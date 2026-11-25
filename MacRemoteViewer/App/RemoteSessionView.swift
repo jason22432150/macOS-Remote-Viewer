@@ -98,7 +98,7 @@ struct RemoteSessionView: View {
     private var statusBar: some View {
         HStack {
             Text(statusText)
-            if let remoteIP = SessionStatusText.remoteIP(from: controller.profile, language: language) {
+            if let remoteIP = SessionStatusText.remoteIP(fromPresentation: controller.profile, language: language) {
                 Text("·")
                     .foregroundStyle(.secondary)
                 Text(remoteIP)

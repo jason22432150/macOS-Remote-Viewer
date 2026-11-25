@@ -8,6 +8,12 @@ public enum SessionStatusText {
         return interpolate(L10n.string(.statusRemoteIP, language: language), value: address)
     }
 
+    /// Format a pre-filtered UI projection without retaining transport secrets.
+    public static func remoteIP(fromPresentation profile: SessionPresentationProfile?, language: AppLanguage) -> String? {
+        guard let address = profile?.remoteAddress else { return nil }
+        return interpolate(L10n.string(.statusRemoteIP, language: language), value: address)
+    }
+
     /// 抽出可顯示的 IP／主機名。UI 請用 `remoteIP(from:language:)`，以免漏掉語系與票證過濾。
     /// PVE 的 `host` 常是 spice 票證（`pvespiceproxy:…`），真正連到的是 `proxy` 的 IP／主機名。
     public static func displayAddress(from profile: ConnectionProfile?) -> String? {
