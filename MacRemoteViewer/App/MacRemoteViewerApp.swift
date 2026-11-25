@@ -131,9 +131,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
         } else if let index = arguments.firstIndex(of: "--loopback-spice-agent-probe") {
             guard arguments.count == index + 3,
-                  ["full", "limited"].contains(arguments[index + 2]) else { Darwin.exit(2) }
+                  ["full", "limited", "monitor-full", "monitor-limited"].contains(arguments[index + 2]) else { Darwin.exit(2) }
             runLoopbackSpiceAgentProbe(file: URL(fileURLWithPath: arguments[index + 1]),
-                                       full: arguments[index + 2] == "full")
+                                       full: arguments[index + 2].hasSuffix("full"),
+                                       monitor: arguments[index + 2].hasPrefix("monitor-"))
         } else if let index = arguments.firstIndex(of: "--loopback-spice-auth-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackSpiceAuthProbe(file: URL(fileURLWithPath: arguments[index + 1]))
@@ -874,10 +875,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reuse the same engine/controller to exercise disconnect and reconnect.
     /// Exercise actual guest-agent capability updates through the packaged
     /// CocoaSpice main channel, without touching the host clipboard.
-    private func runLoopbackSpiceAgentProbe(file: URL, full: Bool) {
+    private func runLoopbackSpiceAgentProbe(file: URL, full: Bool, monitor: Bool) {
         Task { @MainActor in
             let controller = SessionController(engine: SpiceEngineAdapter(),
-                connectionTimeout: .seconds(8), displayTimeout: .zero)
+                resolutionDebounce: .zero, resolutionRetryDelay: .seconds(1),
+                resolutionRetryLimit: 1, connectionTimeout: .seconds(8),
+                displayTimeout: monitor ? .seconds(10) : .zero)
             do {
                 let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
                 let profile = try VVParser().parse(data: data)
@@ -889,6 +892,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let deadline = ContinuousClock.now + .seconds(15)
                 var matchedAt: ContinuousClock.Instant?
                 var matched = false
+                var requested = false
+                var unapplied = false
+                let originalFrame = RemoteFrame(width: 640, height: 480)
                 while ContinuousClock.now < deadline {
                     if case .failed = controller.state { throw SessionError.network }
                     if controller.state == .disconnected { throw SessionError.disconnected }
@@ -907,7 +913,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         } else {
                             matchedAt = nil
                         }
+                        if monitor && matched && caps.isConnected && controller.displaySize == originalFrame && !requested {
+                            // Exercise the production viewport policy/adapter.
+                            // The fixture intentionally never changes its display.
+                            controller.updateViewportSize(CGSize(width: 1024, height: 768))
+                            requested = true
+                            print("MRV_AGENT_MONITOR_TARGET 1024x768")
+                        }
+                        if monitor && requested && controller.guestDidNotApplyResolution && !unapplied {
+                            guard full, controller.displaySize == originalFrame else { throw SessionError.cancelled }
+                            unapplied = true
+                            print("MRV_AGENT_MONITOR_UNAPPLIED_OK")
+                        }
                         if matched && !caps.isConnected {
+                            if monitor {
+                                guard requested, unapplied == full,
+                                      controller.displaySize == originalFrame,
+                                      !controller.guestDidNotApplyResolution else { throw SessionError.cancelled }
+                                print("MRV_AGENT_MONITOR_OFFLINE_OK")
+                            }
                             guard !caps.supportsMonitorsConfig, !caps.supportsClipboard,
                                   model.sessions.isEmpty else { throw SessionError.cancelled }
                             print("MRV_AGENT_REMOVED_OK main=connected")

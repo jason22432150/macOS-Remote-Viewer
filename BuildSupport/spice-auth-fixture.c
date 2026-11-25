@@ -312,7 +312,8 @@ static int setup_display(SpiceServer *server) {
  * VDI framing follows the public spice-protocol vd_agent.h declarations.
  */
 static SpiceCharDeviceInstance agent_device;
-static gboolean agent_full, agent_attached, agent_error;
+static gboolean agent_full, agent_attached, agent_error, agent_monitor;
+static unsigned agent_monitor_requests, agent_monitor_targets;
 static gboolean agent_received_caps, agent_sent_caps;
 static gint64 agent_delivered_at;
 static uint8_t agent_rx[65536], agent_tx[128];
@@ -347,6 +348,34 @@ static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len
         if (GUINT32_FROM_LE(chunk.port) == VDP_CLIENT_PORT && size >= sizeof(VDAgentMessage)) {
             VDAgentMessage msg;
             memcpy(&msg, agent_rx + sizeof(chunk), sizeof(msg));
+            uint32_t payload_size = GUINT32_FROM_LE(msg.size);
+            const uint8_t *payload = agent_rx + sizeof(chunk) + sizeof(msg);
+            if (agent_monitor && GUINT32_FROM_LE(msg.protocol) == VD_AGENT_PROTOCOL &&
+                GUINT32_FROM_LE(msg.type) == VD_AGENT_MONITORS_CONFIG) {
+                // The bounded single-display fixture handles the ordinary
+                // monitor array, not arbitrary fragmented agent messages.
+                if (payload_size != size - sizeof(msg) || payload_size < sizeof(VDAgentMonitorsConfig)) {
+                    agent_error = TRUE;
+                    return -1;
+                }
+                VDAgentMonitorsConfig config;
+                memcpy(&config, payload, sizeof(config));
+                uint32_t count = GUINT32_FROM_LE(config.num_of_monitors);
+                if (count > 16 || count > (payload_size - sizeof(config)) / sizeof(VDAgentMonConfig)) {
+                    agent_error = TRUE;
+                    return -1;
+                }
+                ++agent_monitor_requests;
+                for (uint32_t i = 0; i < count; ++i) {
+                    VDAgentMonConfig monitor;
+                    memcpy(&monitor, payload + sizeof(config) + i * sizeof(monitor), sizeof(monitor));
+                    uint32_t width = GUINT32_FROM_LE(monitor.width);
+                    uint32_t height = GUINT32_FROM_LE(monitor.height);
+                    printf("AGENT_MONITOR_REQUEST width=%u height=%u\n", width, height);
+                    if (count == 1 && width == 1024 && height == 768) ++agent_monitor_targets;
+                }
+                fflush(stdout);
+            }
             if (GUINT32_FROM_LE(msg.protocol) == VD_AGENT_PROTOCOL &&
                 GUINT32_FROM_LE(msg.type) == VD_AGENT_ANNOUNCE_CAPABILITIES &&
                 GUINT32_FROM_LE(msg.size) >= sizeof(uint32_t) &&
@@ -420,7 +449,7 @@ static gboolean agent_tick(gpointer data) {
         spice_server_char_device_wakeup(&agent_device);
     } else if (agent_sent_caps && agent_tx_pos < agent_tx_len) {
         spice_server_char_device_wakeup(&agent_device);
-    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= 3000000) {
+    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_monitor ? 6000000 : 3000000)) {
         // Real server-side hot removal, not a fabricated client callback.
         agent_attached = FALSE;
         if (spice_server_remove_interface(&agent_device.base)) {
@@ -445,9 +474,11 @@ int main(int argc, char **argv) {
     if (argc < 6 || argc > 8) return 2;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
     gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
-    int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates || workspace);
-    gboolean with_agent = argc == 7 && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-limited") == 0);
-    agent_full = with_agent && strcmp(argv[6], "agent-full") == 0;
+    agent_monitor = argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
+                                  strcmp(argv[6], "agent-monitor-limited") == 0);
+    int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates || workspace || agent_monitor);
+    gboolean with_agent = agent_monitor || (argc == 7 && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-limited") == 0));
+    agent_full = with_agent && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
     if (argc >= 7 && !with_display && !with_agent) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;
@@ -474,7 +505,7 @@ int main(int argc, char **argv) {
         printf("VM_STARTED\n");
         fflush(stdout);
     }
-    if (with_agent) spice_server_vm_start(server);
+    if (with_agent && !with_display) spice_server_vm_start(server);
     GMainLoop *loop = g_main_loop_new(NULL, FALSE);
     guint signal_source = g_unix_signal_add(SIGTERM, quit_loop, loop);
     guint update_source = with_display ? g_timeout_add(250, update_color, NULL) : 0;
@@ -497,7 +528,8 @@ int main(int argc, char **argv) {
     if (agent_source) g_source_remove(agent_source);
     if (with_agent) {
         if (agent_attached) spice_server_remove_interface(&agent_device.base);
-        spice_server_vm_stop(server);
+        if (!with_display) spice_server_vm_stop(server);
+        if (agent_monitor) printf("AGENT_MONITOR_RESULT requests=%u targets=%u\n", agent_monitor_requests, agent_monitor_targets);
         printf("AGENT_RESULT received=%d delivered=%d removed=%d error=%d\n",
                agent_received_caps, agent_delivered_at != 0, !agent_attached, agent_error);
         fflush(stdout);

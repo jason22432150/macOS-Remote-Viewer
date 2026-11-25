@@ -75,13 +75,22 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
             if agent is not None:
-                capability = int(agent == "full")
+                capability = int(agent.endswith("full"))
                 markers = [f"MRV_AGENT_CAPS_OK monitors={capability} clipboard={capability}",
                            "MRV_AGENT_REMOVED_OK main=connected", "MRV_SPICE_AGENT_OK"]
                 actual = [line for line in lines if line.startswith(("MRV_AGENT_CAPS_OK ", "MRV_AGENT_REMOVED_OK ", "MRV_SPICE_AGENT_OK"))]
                 if actual != markers:
                     raise AssertionError(f"{name}: unexpected agent lifecycle {actual}")
                 print("\n".join(actual))
+                if agent.startswith("monitor-"):
+                    expected_monitor = ["MRV_AGENT_MONITOR_TARGET 1024x768"]
+                    if capability:
+                        expected_monitor.append("MRV_AGENT_MONITOR_UNAPPLIED_OK")
+                    expected_monitor.append("MRV_AGENT_MONITOR_OFFLINE_OK")
+                    actual_monitor = [line for line in lines if line.startswith("MRV_AGENT_MONITOR_")]
+                    if actual_monitor != expected_monitor:
+                        raise AssertionError(f"{name}: incorrect monitor request lifecycle: {actual_monitor}")
+                    print("\n".join(actual_monitor))
             elif partial:
                 rounds = [line for line in lines if line.startswith("MRV_SPICE_PARTIAL_ROUND_OK ")]
                 if rounds != [f"MRV_SPICE_PARTIAL_ROUND_OK {i} 640x480 center=red,green exterior=blue,blue,blue,blue" for i in (1, 2)]:
@@ -134,11 +143,33 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             if len(patches) != 1 or patches[0] is None or int(patches[0].group(1)) < 4:
                 raise AssertionError("missing actual partial QXL draw commands")
         if agent is not None:
-            capability = int(agent == "full")
+            capability = int(agent.endswith("full"))
             required = ["AGENT_CLIENT_CAPS", f"AGENT_CAPS_SENT monitors={capability} clipboard={capability}",
                         "AGENT_CAPS_DELIVERED", "AGENT_REMOVED", "AGENT_RESULT received=1 delivered=1 removed=1 error=0"]
             if any(lines.count(marker) != 1 for marker in required):
                 raise AssertionError(f"{name}: incomplete synthetic guest-agent exchange")
+            if agent.startswith("monitor-"):
+                if [line for line in lines if line.startswith("DISPLAY_INITIALIZED ")] != ["DISPLAY_INITIALIZED tls=1"]:
+                    raise AssertionError(f"{name}: expected one TLS display channel")
+                summaries = [re.fullmatch(r"AGENT_MONITOR_RESULT requests=(\d+) targets=(\d+)", line)
+                             for line in lines if line.startswith("AGENT_MONITOR_RESULT ")]
+                if len(summaries) != 1 or summaries[0] is None:
+                    raise AssertionError(f"{name}: missing actual monitor wire counts")
+                requests, targets = map(int, summaries[0].groups())
+                target_lines = lines.count("AGENT_MONITOR_REQUEST width=1024 height=768")
+                if capability:
+                    if not 1 <= targets <= requests or target_lines < targets:
+                        raise AssertionError(f"{name}: no matching monitor configuration on wire")
+                elif targets or target_lines:
+                    raise AssertionError(f"{name}: sent target to limited agent")
+                counts = [re.fullmatch(r"DRAW_COUNTS submitted=(\d+) consumed=(\d+) released=(\d+)", line)
+                          for line in lines if line.startswith("DRAW_COUNTS ")]
+                if len(counts) != 1 or counts[0] is None:
+                    raise AssertionError(f"{name}: missing display lifecycle counts")
+                submitted, consumed, released = map(int, counts[0].groups())
+                if not 0 < consumed <= submitted or not 0 <= released <= consumed:
+                    raise AssertionError(f"{name}: invalid draw lifecycle")
+                print(f"METRIC {name} wire-requests={requests} matching-targets={targets}")
         if success and initialized != ["MAIN_INITIALIZED tls=1"] * (1 if agent is not None else 2 if display else 3):
             raise AssertionError(f"{name}: unexpected TLS main-channel initializations: {initialized}")
         if not success and initialized:
@@ -493,6 +524,8 @@ def main():
         test_case(args.app.resolve(), root, fixture, "partial", tls.TICKET, True, display=True, partial=True)
         test_case(args.app.resolve(), root, fixture, "agent-full", tls.TICKET, True, agent="full")
         test_case(args.app.resolve(), root, fixture, "agent-limited", tls.TICKET, True, agent="limited")
+        test_case(args.app.resolve(), root, fixture, "agent-monitor-full", tls.TICKET, True, agent="monitor-full")
+        test_case(args.app.resolve(), root, fixture, "agent-monitor-limited", tls.TICKET, True, agent="monitor-limited")
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []
