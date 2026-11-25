@@ -323,6 +323,10 @@ static int setup_display(SpiceServer *server) {
 static SpiceCharDeviceInstance agent_device;
 static gboolean agent_full, agent_attached, agent_error, agent_monitor, agent_resize;
 static unsigned agent_monitor_requests, agent_monitor_targets;
+static gboolean agent_clipboard, clip_host_grab, clip_host_requested, clip_host_ok;
+static gboolean clip_guest_grab, clip_guest_requested, clip_guest_sent;
+static const char clip_host_text[] = "MRV Mac 繁體中文 ☀️\nline-2";
+static const char clip_guest_text[] = "MRV Guest 測試剪貼簿 🚀\nline-2";
 static gboolean agent_received_caps, agent_sent_caps;
 static gint64 agent_delivered_at;
 static uint8_t agent_rx[65536], agent_tx[128];
@@ -359,6 +363,39 @@ static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len
             memcpy(&msg, agent_rx + sizeof(chunk), sizeof(msg));
             uint32_t payload_size = GUINT32_FROM_LE(msg.size);
             const uint8_t *payload = agent_rx + sizeof(chunk) + sizeof(msg);
+            if (agent_clipboard && GUINT32_FROM_LE(msg.protocol) == VD_AGENT_PROTOCOL &&
+                payload_size == size - sizeof(msg)) {
+                uint32_t type = GUINT32_FROM_LE(msg.type);
+                uint32_t format = 0;
+                if (payload_size >= sizeof(format)) {
+                    memcpy(&format, payload, sizeof(format));
+                    format = GUINT32_FROM_LE(format);
+                }
+                // We intentionally do not advertise CLIPBOARD_SELECTION or
+                // GRAB_SERIAL; the legacy clipboard payload starts at type.
+                if (type == VD_AGENT_CLIPBOARD_GRAB && !clip_host_grab &&
+                    payload_size == sizeof(uint32_t) && format == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
+                    clip_host_grab = TRUE;
+                    puts("AGENT_CLIP_HOST_GRAB");
+                } else if (type == VD_AGENT_CLIPBOARD && clip_host_requested && !clip_host_ok) {
+                    if (format != VD_AGENT_CLIPBOARD_UTF8_TEXT ||
+                        payload_size != sizeof(format) + sizeof(clip_host_text) - 1 ||
+                        memcmp(payload + sizeof(format), clip_host_text, sizeof(clip_host_text) - 1)) {
+                        agent_error = TRUE;
+                        puts("AGENT_CLIP_HOST_MISMATCH");
+                        fflush(stdout);
+                        return -1;
+                    }
+                    clip_host_ok = TRUE;
+                    puts("AGENT_CLIP_HOST_UTF8_OK");
+                } else if (type == VD_AGENT_CLIPBOARD_REQUEST && clip_guest_grab &&
+                           payload_size == sizeof(format) && format == VD_AGENT_CLIPBOARD_UTF8_TEXT &&
+                           !clip_guest_requested) {
+                    clip_guest_requested = TRUE;
+                    puts("AGENT_CLIP_GUEST_REQUEST");
+                }
+                fflush(stdout);
+            }
             if (agent_monitor && GUINT32_FROM_LE(msg.protocol) == VD_AGENT_PROTOCOL &&
                 GUINT32_FROM_LE(msg.type) == VD_AGENT_MONITORS_CONFIG) {
                 // The bounded single-display fixture handles the ordinary
@@ -409,9 +446,11 @@ static int agent_read(SpiceCharDeviceInstance *sin, uint8_t *buf, int len) {
     memcpy(buf, agent_tx + agent_tx_pos, count);
     agent_tx_pos += count;
     if (agent_tx_pos == agent_tx_len) {
-        agent_delivered_at = g_get_monotonic_time();
-        puts("AGENT_CAPS_DELIVERED");
-        fflush(stdout);
+        if (!agent_delivered_at) {
+            agent_delivered_at = g_get_monotonic_time();
+            puts("AGENT_CAPS_DELIVERED");
+            fflush(stdout);
+        }
     }
     return (int)count;
 }
@@ -427,6 +466,30 @@ static SpiceCharDeviceInterface agent_interface = {
     .write = agent_write,
     .read = agent_read,
 };
+
+static void agent_queue_clip(uint32_t message_type, const char *text, size_t text_len) {
+    uint32_t format = GUINT32_TO_LE(VD_AGENT_CLIPBOARD_UTF8_TEXT);
+    VDAgentMessage msg = {0};
+    msg.protocol = GUINT32_TO_LE(VD_AGENT_PROTOCOL);
+    msg.type = GUINT32_TO_LE(message_type);
+    msg.size = GUINT32_TO_LE((uint32_t)(sizeof(format) + text_len));
+    VDIChunkHeader chunk = {
+        .port = GUINT32_TO_LE(VDP_CLIENT_PORT),
+        .size = GUINT32_TO_LE((uint32_t)(sizeof(msg) + sizeof(format) + text_len)),
+    };
+    size_t total = sizeof(chunk) + sizeof(msg) + sizeof(format) + text_len;
+    if (agent_tx_pos != agent_tx_len || total > sizeof(agent_tx)) {
+        agent_error = TRUE;
+        return;
+    }
+    memcpy(agent_tx, &chunk, sizeof(chunk));
+    memcpy(agent_tx + sizeof(chunk), &msg, sizeof(msg));
+    memcpy(agent_tx + sizeof(chunk) + sizeof(msg), &format, sizeof(format));
+    if (text_len) memcpy(agent_tx + sizeof(chunk) + sizeof(msg) + sizeof(format), text, text_len);
+    agent_tx_len = total;
+    agent_tx_pos = 0;
+    spice_server_char_device_wakeup(&agent_device);
+}
 
 static gboolean agent_tick(gpointer data) {
     (void)data;
@@ -458,6 +521,21 @@ static gboolean agent_tick(gpointer data) {
         spice_server_char_device_wakeup(&agent_device);
     } else if (agent_sent_caps && agent_tx_pos < agent_tx_len) {
         spice_server_char_device_wakeup(&agent_device);
+    } else if (agent_clipboard && clip_host_grab && !clip_host_requested) {
+        clip_host_requested = TRUE;
+        puts("AGENT_CLIP_HOST_REQUEST");
+        fflush(stdout);
+        agent_queue_clip(VD_AGENT_CLIPBOARD_REQUEST, NULL, 0);
+    } else if (agent_clipboard && clip_host_ok && !clip_guest_grab) {
+        clip_guest_grab = TRUE;
+        puts("AGENT_CLIP_GUEST_GRAB");
+        fflush(stdout);
+        agent_queue_clip(VD_AGENT_CLIPBOARD_GRAB, NULL, 0);
+    } else if (agent_clipboard && clip_guest_requested && !clip_guest_sent) {
+        clip_guest_sent = TRUE;
+        puts("AGENT_CLIP_GUEST_UTF8_SENT");
+        fflush(stdout);
+        agent_queue_clip(VD_AGENT_CLIPBOARD, clip_guest_text, sizeof(clip_guest_text) - 1);
     } else if (agent_resize && agent_monitor_targets && !resize_applied) {
         // Main-loop producer is serialized with update_color. Wait until the
         // worker has consumed queued commands, then synchronously destroy
@@ -473,7 +551,7 @@ static gboolean agent_tick(gpointer data) {
         create_primary(surface_width, surface_height);
         puts("AGENT_PRIMARY_RESIZED 1024x768");
         fflush(stdout);
-    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
+    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_clipboard ? 12000000 : agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
         // Real server-side hot removal, not a fabricated client callback.
         agent_attached = FALSE;
         if (spice_server_remove_interface(&agent_device.base)) {
@@ -498,6 +576,7 @@ int main(int argc, char **argv) {
     if (argc < 6 || argc > 8) return 2;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
     gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
+    agent_clipboard = argc == 7 && strcmp(argv[6], "agent-clipboard-full") == 0;
     agent_resize = argc == 7 && strcmp(argv[6], "agent-monitor-resize-full") == 0;
     agent_monitor = agent_resize || (argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
                                   strcmp(argv[6], "agent-monitor-limited") == 0));
@@ -508,8 +587,8 @@ int main(int argc, char **argv) {
         }
     }
     int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates || workspace || agent_monitor);
-    gboolean with_agent = agent_monitor || (argc == 7 && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-limited") == 0));
-    agent_full = with_agent && (agent_resize || strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
+    gboolean with_agent = agent_clipboard || agent_monitor || (argc == 7 && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-limited") == 0));
+    agent_full = with_agent && (agent_clipboard || agent_resize || strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
     if (argc >= 7 && !with_display && !with_agent) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;
@@ -561,6 +640,8 @@ int main(int argc, char **argv) {
         if (agent_attached) spice_server_remove_interface(&agent_device.base);
         if (!with_display) spice_server_vm_stop(server);
         if (agent_monitor) printf("AGENT_MONITOR_RESULT requests=%u targets=%u\n", agent_monitor_requests, agent_monitor_targets);
+        if (agent_clipboard) printf("AGENT_CLIP_RESULT host=%d guest-request=%d guest-sent=%d\n",
+                                    clip_host_ok, clip_guest_requested, clip_guest_sent && agent_tx_pos == agent_tx_len);
         printf("AGENT_RESULT received=%d delivered=%d removed=%d error=%d\n",
                agent_received_caps, agent_delivered_at != 0, !agent_attached, agent_error);
         fflush(stdout);

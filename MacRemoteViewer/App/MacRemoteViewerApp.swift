@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-auth-probe", "--loopback-spice-display-probe",
          "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
          "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
-         "--loopback-spice-agent-probe"].contains($0)
+         "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -129,6 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-probe") {
+            guard arguments.count == index + 2 else { Darwin.exit(2) }
+            runLoopbackSpiceClipboardProbe(file: URL(fileURLWithPath: arguments[index + 1]))
         } else if let index = arguments.firstIndex(of: "--loopback-spice-agent-probe") {
             guard arguments.count == index + 3,
                   ["full", "limited", "monitor-full", "monitor-limited", "monitor-resize-full"].contains(arguments[index + 2]) else { Darwin.exit(2) }
@@ -876,6 +879,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reuse the same engine/controller to exercise disconnect and reconnect.
     /// Exercise actual guest-agent capability updates through the packaged
     /// CocoaSpice main channel, without touching the host clipboard.
+    /// Real clipboard protocol through a private named pasteboard. Never read
+    /// or write NSPasteboard.general, even on a developer's local machine.
+    private func runLoopbackSpiceClipboardProbe(file: URL) {
+        Task { @MainActor in
+            let board = NSPasteboard.withUniqueName()
+            let controller = SessionController(engine: SpiceEngineAdapter(pasteboardName: board.name),
+                                               connectionTimeout: .seconds(8), displayTimeout: .zero)
+            let hostText = "MRV Mac 繁體中文 ☀️\nline-2"
+            let guestText = "MRV Guest 測試剪貼簿 🚀\nline-2"
+            do {
+                let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                let profile = try VVParser().parse(data: data)
+                guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                      profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile,
+                      model.sessions.isEmpty else { throw SessionError.cancelled }
+                board.clearContents()
+                controller.setClipboardSharingEnabled(false)
+                controller.open(profile)
+                let deadline = ContinuousClock.now + .seconds(20)
+                var sent = false
+                var received = false
+                while ContinuousClock.now < deadline {
+                    if case .failed = controller.state { throw SessionError.network }
+                    if controller.state == .disconnected { throw SessionError.disconnected }
+                    if controller.state == .connected {
+                        if !sent && controller.agent.isConnected && controller.agent.supportsClipboard &&
+                            controller.agent.supportsMonitorsConfig {
+                            controller.setClipboardSharingEnabled(true)
+                            board.clearContents()
+                            guard board.setString(hostText, forType: .string) else { throw SessionError.cancelled }
+                            sent = true
+                            print("MRV_CLIP_HOST_READY")
+                        }
+                        if sent && !received, let value = board.string(forType: .string),
+                           Data(value.utf8) == Data(guestText.utf8) {
+                            received = true
+                            print("MRV_CLIP_GUEST_UTF8_OK")
+                        }
+                        if received && !controller.agent.isConnected {
+                            guard !controller.agent.supportsClipboard, model.sessions.isEmpty,
+                                  board.string(forType: .string) == guestText else { throw SessionError.cancelled }
+                            controller.setClipboardSharingEnabled(false)
+                            controller.cancel()
+                            guard controller.state == .disconnected else { throw SessionError.cancelled }
+                            board.releaseGlobally()
+                            print("MRV_SPICE_CLIPBOARD_OK")
+                            fflush(nil)
+                            Darwin.exit(0)
+                        }
+                    }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                print("MRV_CLIP_TIMEOUT sent=\(sent) received=\(received)")
+                throw SessionError.network
+            } catch {
+                controller.setClipboardSharingEnabled(false)
+                controller.cancel()
+                board.releaseGlobally()
+                print("MRV_SPICE_CLIPBOARD_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
     private func runLoopbackSpiceAgentProbe(file: URL, full: Bool, monitor: Bool, resize: Bool) {
         Task { @MainActor in
             let controller = SessionController(engine: SpiceEngineAdapter(),

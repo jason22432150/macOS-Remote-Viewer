@@ -12,7 +12,17 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private var connection: CSConnection?
     private var input: CSInput?
     private var display: CSDisplay?
-    private let spicePasteboard = CocoaSpicePasteboard()
+    private let spicePasteboard: CocoaSpicePasteboard
+
+    override init() {
+        spicePasteboard = CocoaSpicePasteboard()
+        super.init()
+    }
+
+    init(pasteboardName: NSPasteboard.Name) {
+        spicePasteboard = CocoaSpicePasteboard(pasteboardName: pasteboardName)
+        super.init()
+    }
     // The view owns its renderer; preserve its registration across reconnects.
     private weak var pendingRenderer: CSRenderer?
     private var attachedRenderer: CSRenderer?

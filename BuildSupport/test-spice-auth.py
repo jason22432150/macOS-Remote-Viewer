@@ -62,19 +62,27 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             mode = ("--loopback-spice-partial-probe" if partial else
                     "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe")
             client = [str(exe), mode, str(profile)]
-            if agent is not None:
+            if agent == "clipboard-full":
+                client = [str(exe), "--loopback-spice-clipboard-probe", str(profile)]
+            elif agent is not None:
                 client = [str(exe), "--loopback-spice-agent-probe", str(profile), agent]
             result = subprocess.run(client, cwd=root, env=env, capture_output=True, text=True, timeout=45)
             lines = result.stdout.splitlines()
             expected = ("MRV_SPICE_PARTIAL_OK" if partial else "MRV_SPICE_DISPLAY_OK" if display else
                         ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED"))
             if agent is not None:
-                expected = "MRV_SPICE_AGENT_OK"
+                expected = "MRV_SPICE_CLIPBOARD_OK" if agent == "clipboard-full" else "MRV_SPICE_AGENT_OK"
             if result.returncode != 0 or expected not in lines:
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
-            if agent is not None:
+            if agent == "clipboard-full":
+                markers = ["MRV_CLIP_HOST_READY", "MRV_CLIP_GUEST_UTF8_OK", "MRV_SPICE_CLIPBOARD_OK"]
+                actual = [line for line in lines if line.startswith(("MRV_CLIP_", "MRV_SPICE_CLIPBOARD_OK"))]
+                if actual != markers:
+                    raise AssertionError(f"{name}: incomplete clipboard lifecycle {actual}")
+                print("\n".join(actual))
+            elif agent is not None:
                 capability = int(agent.endswith("full"))
                 markers = [f"MRV_AGENT_CAPS_OK monitors={capability} clipboard={capability}",
                            "MRV_AGENT_REMOVED_OK main=connected", "MRV_SPICE_AGENT_OK"]
@@ -154,6 +162,13 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                         "AGENT_CAPS_DELIVERED", "AGENT_REMOVED", "AGENT_RESULT received=1 delivered=1 removed=1 error=0"]
             if any(lines.count(marker) != 1 for marker in required):
                 raise AssertionError(f"{name}: incomplete synthetic guest-agent exchange")
+            if agent == "clipboard-full":
+                clip_markers = ["AGENT_CLIP_HOST_GRAB", "AGENT_CLIP_HOST_REQUEST", "AGENT_CLIP_HOST_UTF8_OK",
+                                "AGENT_CLIP_GUEST_GRAB", "AGENT_CLIP_GUEST_REQUEST", "AGENT_CLIP_GUEST_UTF8_SENT",
+                                "AGENT_CLIP_RESULT host=1 guest-request=1 guest-sent=1"]
+                actual_clip = [line for line in lines if line.startswith("AGENT_CLIP_")]
+                if actual_clip != clip_markers:
+                    raise AssertionError(f"{name}: incomplete wire clipboard exchange {actual_clip}")
             if agent.startswith("monitor-"):
                 if [line for line in lines if line.startswith("DISPLAY_INITIALIZED ")] != ["DISPLAY_INITIALIZED tls=1"]:
                     raise AssertionError(f"{name}: expected one TLS display channel")
@@ -535,6 +550,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-monitor-full", tls.TICKET, True, agent="monitor-full")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-limited", tls.TICKET, True, agent="monitor-limited")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
+        test_case(args.app.resolve(), root, fixture, "agent-clipboard-full", tls.TICKET, True, agent="clipboard-full")
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []

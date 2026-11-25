@@ -21,6 +21,19 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
     }
 
     private let snapshot = OSAllocatedUnfairLock(initialState: Snapshot())
+    // nil is the production system pasteboard. A probe may inject an
+    // isolated named pasteboard, never redirect production clipboard traffic.
+    private let pasteboardName: NSPasteboard.Name?
+
+    @MainActor init(pasteboardName: NSPasteboard.Name? = nil) {
+        self.pasteboardName = pasteboardName
+        super.init()
+    }
+
+    @MainActor private var pasteboard: NSPasteboard {
+        if let pasteboardName { return NSPasteboard(name: pasteboardName) }
+        return NSPasteboard.general
+    }
     @MainActor private var pollTask: Task<Void, Never>?
     private static let maxItemBytes = 16 * 1024 * 1024
     private static let maxSnapshotBytes = 32 * 1024 * 1024
@@ -118,13 +131,13 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
                 return write
             }
             guard let write else { return }
-            write.body(NSPasteboard.general)
+            write.body(self.pasteboard)
             self.refresh(announce: false)
         }
     }
 
     @MainActor private func refresh(announce: Bool) {
-        let pasteboard = NSPasteboard.general
+        let pasteboard = self.pasteboard
         let count = pasteboard.changeCount
         guard let generation = snapshot.withLock({ state -> UInt64? in
             guard state.enabled, state.changeCount != count else { return nil }
