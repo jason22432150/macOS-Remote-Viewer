@@ -58,6 +58,7 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             env["NO_PROXY"] = "127.0.0.1"
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+            env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
             mode = ("--loopback-spice-partial-probe" if partial else
                     "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe")
@@ -456,6 +457,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
             env["NO_PROXY"] = "127.0.0.1"
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+            env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
             env["MRV_GLIB_TRACE"] = "1"
             library = app / "Contents" / "Frameworks" / "libspice-client-glib-2.0.8.dylib"
@@ -600,6 +602,7 @@ def test_clipboard_isolation(app, root, fixture, late=False, reactivate=False):
             env["NO_PROXY"] = "127.0.0.1"
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+            env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
             if late:
                 app_log = root / f"{prefix}-app.log"
@@ -690,6 +693,7 @@ def test_scanout_runtime(app, root, drawable=False):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
     env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
     env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+    env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
     mode = "--scanout-drawable-probe" if drawable else "--scanout-runtime-probe"
     result = subprocess.run([str(exe), mode], cwd=root, env=env,
                             capture_output=True, text=True, timeout=30)
@@ -718,6 +722,7 @@ def test_clipboard_security(app, root):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
     env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
     env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+    env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
     result = subprocess.run([str(exe), "--clipboard-security-probe"], cwd=root, env=env,
                             capture_output=True, text=True, timeout=30)
     print(result.stdout[-6000:])

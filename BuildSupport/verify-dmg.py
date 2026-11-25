@@ -60,6 +60,25 @@ def smoke_test(app, temp):
             del env[key]
     env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
     env["GST_REGISTRY"] = str(temp / "gst-registry.bin")
+    env.pop("MRV_ENABLE_INTEGRATION_PROBES", None)
+    # Test the actual packaged executable, not a mocked launch policy.
+    for arguments, opted_in in [
+        (["--startup-smoke-test"], False),
+        (["--loopback-spice-auth-probe", "not-read.vv"], False),
+        (["--startup-smoke-test", "extra"], True),
+        (["--startup-smoke-test", "--scanout-runtime-probe"], True),
+        (["--loopback-tls-probe"], True),
+    ]:
+        denied_env = dict(env)
+        if opted_in:
+            denied_env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
+        denied = subprocess.run([str(executable), *arguments], cwd=temp, env=denied_env,
+                                capture_output=True, text=True, timeout=15)
+        markers = [line for line in denied.stdout.splitlines() if line.startswith("MRV_")]
+        if denied.returncode != 2 or markers != ["MRV_PROBE_LAUNCH_DENIED"]:
+            raise ValueError(f"probe launch was not rejected: exit={denied.returncode}, markers={markers}")
+    print("MRV_PROBE_LAUNCH_GATE_OK")
+    env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
     completed = subprocess.run([str(executable), "--startup-smoke-test"],
                                cwd=temp, env=env, capture_output=True, text=True, timeout=40)
     if completed.returncode != 0 or "MRV_STARTUP_SMOKE_OK" not in completed.stdout.splitlines():

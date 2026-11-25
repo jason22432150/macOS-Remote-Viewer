@@ -74,22 +74,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // AppKit can deliver positional .vv arguments as normal open-file events,
     // even before applicationDidFinishLaunching. Probe controllers are the
     // exclusive owners of those files; never also import them into AppModel.
-    private let isIntegrationProbe = ProcessInfo.processInfo.arguments.contains {
-        ["--startup-smoke-test", "--loopback-tls-probe",
-         "--loopback-spice-auth-probe", "--loopback-spice-display-probe",
-         "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
-         "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
-         "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
-         "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe",
-         "--loopback-spice-clipboard-invalid-probe", "--loopback-spice-clipboard-late-probe",
-         "--loopback-spice-clipboard-reactivate-probe", "--loopback-spice-clipboard-bulk-probe",
-         "--scanout-runtime-probe", "--scanout-drawable-probe"].contains($0)
-    }
+    private let probeLaunch = IntegrationProbeLaunch.evaluate(
+        arguments: ProcessInfo.processInfo.arguments,
+        environment: ProcessInfo.processInfo.environment
+    )
+    private var isIntegrationProbe: Bool { probeLaunch == .allowed }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
     private weak var keptMainWindow: NSWindow?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        guard probeLaunch != .denied else {
+            print("MRV_PROBE_LAUNCH_DENIED")
+            fflush(nil)
+            Darwin.exit(2)
+        }
         preparePortableRuntime()
         NSWindow.allowsAutomaticWindowTabbing = false
         if !isIntegrationProbe {
@@ -100,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard !isIntegrationProbe else {
+        guard probeLaunch == .normal else {
             print("MRV_PROBE_IGNORED_OPEN_URLS count=\(urls.count)")
             return
         }
@@ -110,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-        guard !isIntegrationProbe else {
+        guard probeLaunch == .normal else {
             print("MRV_PROBE_IGNORED_OPEN_FILE")
             return true
         }
@@ -126,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !isIntegrationProbe {
             LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
             presentMainWindowWhenReady()
+            return
         } else if arguments.contains("--startup-smoke-test") {
             // Startup smoke still requires the actual main window.
             presentMainWindowWhenReady()
@@ -1563,7 +1563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows _: Bool) -> Bool {
-        guard !isIntegrationProbe else { return false }
+        guard probeLaunch == .normal else { return false }
         presentMainWindowWhenReady()
         return true
     }

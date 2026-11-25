@@ -119,6 +119,7 @@ def test_case(app, root, context, name, ca, subject, expect_link):
         env["NO_PROXY"] = "127.0.0.1"
         env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
         env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+        env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
         executable = app / "Contents" / "MacOS" / "Mac Remote Viewer"
         try:
             result = subprocess.run([str(executable), "--loopback-tls-probe", str(profile)],
