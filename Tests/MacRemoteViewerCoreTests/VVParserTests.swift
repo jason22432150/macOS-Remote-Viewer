@@ -92,6 +92,34 @@ final class VVParserTests: XCTestCase {
         }
     }
 
+    func testPreservesOpaqueSPICEProxyDestinationsWithoutNormalization() throws {
+        let suffix = "1234abcd:180:pve:61002::0123456789abcdef"
+        for host in ["pvespiceproxy:" + suffix, "spiceproxy://" + suffix, "SPICEPROXY://" + suffix] {
+            let text = minimalVV().replacingOccurrences(of: "host=pve.example.test", with: "host=\(host)")
+            let profile = try parser.parse(data: Data(text.utf8))
+            XCTAssertEqual(profile.host, host)
+            XCTAssertNoThrow(try VVParser.validateTransport(host: profile.host, tlsPort: profile.tlsPort,
+                proxyURL: profile.proxyURL, hostSubject: profile.hostSubject, ticket: profile.ticket.value))
+        }
+    }
+
+    func testRejectsUnsafeSPICEProxyDestinations() {
+        let badHosts = ["spiceproxy://", "spiceproxy://node/path", "spiceproxy://node?query",
+                        "spiceproxy://user@node", "spiceproxy://node\\r\\nextra",
+                        "pvespiceproxy:node\\sother", "%@%n%d.example.test"]
+        for host in badHosts {
+            let text = minimalVV().replacingOccurrences(of: "host=pve.example.test", with: "host=\(host)")
+            XCTAssertThrowsError(try parser.parse(data: Data(text.utf8))) {
+                XCTAssertEqual($0 as? SessionError, .invalidHost)
+            }
+        }
+        let noProxy = minimalVV(proxy: "").replacingOccurrences(of: "host=pve.example.test",
+            with: "host=spiceproxy://1234abcd:180:pve:61002::0123456789abcdef")
+        XCTAssertThrowsError(try parser.parse(data: Data(noProxy.utf8))) {
+            XCTAssertEqual($0 as? SessionError, .invalidHost)
+        }
+    }
+
     func testPreservesNormalHostnameIPv4IPv6AndTLSSubject() throws {
         for host in ["pve.local", "192.0.2.10", "2001:db8::1", "[2001:db8::1]", "pve.example.test."] {
             let text = minimalVV().replacingOccurrences(of: "host=pve.example.test", with: "host=\(host)")

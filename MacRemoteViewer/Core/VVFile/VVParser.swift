@@ -118,7 +118,7 @@ public struct VVParser: Sendable {
     // profiles constructed programmatically without the parser.
     public static func validateTransport(host: String, tlsPort: UInt16, proxyURL: URL?,
                                          hostSubject: String, ticket: String) throws {
-        guard isHostToken(host) else { throw SessionError.invalidHost }
+        guard isTransportHost(host, hasProxy: proxyURL != nil) else { throw SessionError.invalidHost }
         guard tlsPort != 0 else { throw SessionError.invalidPort("tls-port") }
         guard !hostSubject.isEmpty, !ticket.isEmpty,
               !containsControl(hostSubject), !containsControl(ticket) else {
@@ -132,6 +132,21 @@ public struct VVParser: Sendable {
     private static func containsControl(_ value: String) -> Bool {
         let forbidden = CharacterSet.controlCharacters.union(.newlines)
         return value.unicodeScalars.contains { forbidden.contains($0) }
+    }
+
+    private static func isTransportHost(_ value: String, hasProxy: Bool) -> Bool {
+        // PVE CONNECT destinations can be opaque signed tokens, not DNS
+        // names. Preserve both spellings recognized by SessionStatusText.
+        // Only the explicit legacy URI prefix may contain slashes, and
+        // only when a CONNECT proxy is configured. Never parse it as a URL
+        // or normalize the signed suffix before handing it to spice-gtk.
+        let uriPrefix = "spiceproxy://"
+        if value.lowercased().hasPrefix(uriPrefix) {
+            guard hasProxy else { return false }
+            let suffix = String(value.dropFirst(uriPrefix.count))
+            return isHostToken(suffix)
+        }
+        return isHostToken(value)
     }
 
     private static func isHostToken(_ value: String) -> Bool {

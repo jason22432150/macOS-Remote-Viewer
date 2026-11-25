@@ -70,7 +70,17 @@ final class SessionStatusTextTests: XCTestCase {
     }
 
     func testFormatSpecifiersInHostAreLiteral() throws {
-        let profile = try makeProfile(host: "%@%n%d.example.test", proxy: nil)
+        // Exercise the UI formatter independently of transport validation.
+        // The parser now rejects this deliberately invalid host.
+        let base = try makeProfile(host: "example.test", proxy: nil)
+        let profile = ConnectionProfile(
+            sessionID: base.sessionID, title: base.title, host: "%@%n%d.example.test",
+            tlsPort: base.tlsPort, proxyURL: base.proxyURL, caPEM: base.caPEM,
+            hostSubject: base.hostSubject, ticket: base.ticket, deleteSourceFile: base.deleteSourceFile,
+            toggleFullscreen: base.toggleFullscreen, releaseCursor: base.releaseCursor,
+            secureAttention: base.secureAttention, unknownFieldNames: base.unknownFieldNames,
+            sourceIdentity: base.sourceIdentity
+        )
         XCTAssertEqual(
             SessionStatusText.remoteIP(from: profile, language: .zhHant),
             "遠端 IP：%@%n%d.example.test"
