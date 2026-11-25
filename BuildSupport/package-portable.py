@@ -490,10 +490,11 @@ def bundle_into(app: Path) -> dict[str, dict[str, str]]:
         seeds.append(destination)
 
     scanner = find_gst_scanner()
-    if scanner is not None:
-        scanner_dest = app / "Contents" / "MacOS" / "gst-plugin-scanner"
-        copy_with_origin(scanner, scanner_dest)
-        seeds.append(scanner_dest)
+    if scanner is None:
+        raise BundleError("Missing required bundled GStreamer plugin scanner")
+    scanner_dest = app / "Contents" / "MacOS" / "gst-plugin-scanner"
+    copy_with_origin(scanner, scanner_dest)
+    seeds.append(scanner_dest)
 
     openssl_modules = find_openssl_modules()
     if openssl_modules is not None:

@@ -79,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         environment: ProcessInfo.processInfo.environment
     )
     private var isIntegrationProbe: Bool { probeLaunch == .allowed }
+    private var portableRegistryDirectory: URL?
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
     private weak var keptMainWindow: NSWindow?
@@ -89,7 +90,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fflush(nil)
             Darwin.exit(2)
         }
-        preparePortableRuntime()
+        do {
+            portableRegistryDirectory = try preparePortableRuntime(
+                verifyRegistry: isIntegrationProbe &&
+                    ProcessInfo.processInfo.arguments.contains("--startup-smoke-test"))
+        } catch {
+            // Do not initialize native libraries using untrusted fallback paths.
+            print("MRV_PORTABLE_RUNTIME_FAILED")
+            fflush(nil)
+            Darwin.exit(1)
+        }
         NSWindow.allowsAutomaticWindowTabbing = false
         if !isIntegrationProbe {
             incomingFiles.setHandler { [model] urls in
@@ -1550,16 +1560,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try await Task.sleep(for: .milliseconds(100))
                 }
+                // Join the worker so gst_init and the actual registry inspection
+                // finish before this short-lived probe reports success.
+                CSMain.shared.spiceStop()
+                if let directory = portableRegistryDirectory {
+                    let registry = directory.appendingPathComponent("registry.bin")
+                    let attributes = try FileManager.default.attributesOfItem(atPath: registry.path)
+                    guard let mode = attributes[.posixPermissions] as? NSNumber,
+                          mode.intValue & 0o077 == 0 else {
+                        throw SessionError.engineUnavailable
+                    }
+                    removePortableRegistry()
+                }
                 // A distinct, machine-readable sentinel, emitted only after all checks.
                 print("MRV_STARTUP_SMOKE_OK")
                 fflush(nil)
                 Darwin.exit(0)
             } catch {
+                CSMain.shared.spiceStop()
+                removePortableRegistry()
                 print("MRV_STARTUP_SMOKE_FAILED")
                 fflush(nil)
                 Darwin.exit(1)
             }
         }
+    }
+
+    private func removePortableRegistry() {
+        if let directory = portableRegistryDirectory {
+            try? FileManager.default.removeItem(at: directory)
+            portableRegistryDirectory = nil
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        removePortableRegistry()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows _: Bool) -> Bool {
@@ -1728,19 +1763,74 @@ enum AppWindowPresenter {
     }
 }
 
-/// 在 `gst_init` 之前設定可攜 runtime 路徑。
-/// 打包後的 App 使用 bundle 內 plugin／OpenSSL modules；本機 Xcode 執行才退回 Homebrew。
-private func preparePortableRuntime() {
+/// Configure GStreamer before the worker calls gst_init(NULL, NULL).
+/// Bundled applications must not inherit host plugin paths or registry caches.
+/// A local Xcode build retains the existing Homebrew development behavior.
+private func preparePortableRuntime(verifyRegistry: Bool) throws -> URL? {
     let contents = Bundle.main.bundleURL.appendingPathComponent("Contents", isDirectory: true)
     let fileManager = FileManager.default
     let gstPlugins = contents.appendingPathComponent("Resources/gstreamer-1.0", isDirectory: true)
     let scanner = contents.appendingPathComponent("MacOS/gst-plugin-scanner")
     let opensslModules = contents.appendingPathComponent("Resources/ossl-modules", isDirectory: true)
 
-    if fileManager.fileExists(atPath: gstPlugins.path) {
-        setenv("GST_PLUGIN_SYSTEM_PATH", gstPlugins.path, 1)
-        setenv("GST_PLUGIN_PATH", gstPlugins.path, 1)
-    } else if getenv("GST_PLUGIN_PATH") == nil {
+    // Only the packaged runtime may enable the registry inspection.
+    guard unsetenv("MRV_VERIFY_PACKAGED_GST") == 0 else { throw SessionError.engineUnavailable }
+    let bundled = fileManager.fileExists(atPath: gstPlugins.path) ||
+                  fileManager.fileExists(atPath: scanner.path)
+    if bundled {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: gstPlugins.path, isDirectory: &isDirectory),
+              isDirectory.boolValue, !gstPlugins.path.contains(":"),
+              fileManager.isExecutableFile(atPath: scanner.path) else {
+            throw SessionError.engineUnavailable
+        }
+        // mkdtemp creates a new 0700 directory atomically, with no preexisting cache.
+        var template = Array(fileManager.temporaryDirectory
+            .appendingPathComponent("mrv-gst-XXXXXX").path.utf8CString)
+        let created = template.withUnsafeMutableBufferPointer { buffer -> String? in
+            guard let base = buffer.baseAddress, let path = mkdtemp(base) else { return nil }
+            return String(cString: path)
+        }
+        guard let created else { throw SessionError.engineUnavailable }
+        let directory = URL(fileURLWithPath: created, isDirectory: true)
+        let registry = directory.appendingPathComponent("registry.bin").path
+        do {
+            for key in ["GST_REGISTRY_FORK", "GST_REGISTRY_UPDATE",
+                        "GST_REGISTRY_REUSE_PLUGIN_SCANNER", "GST_PLUGIN_LOADING_WHITELIST",
+                        "GST_DEBUG_FILE", "GST_DEBUG_DUMP_DOT_DIR", "GST_TRACERS", "GST_DEBUG"] {
+                guard unsetenv(key) == 0 else { throw SessionError.engineUnavailable }
+            }
+            let settings = [
+                "GST_PLUGIN_PATH": "", "GST_PLUGIN_PATH_1_0": "",
+                "GST_PLUGIN_SYSTEM_PATH": gstPlugins.path,
+                "GST_PLUGIN_SYSTEM_PATH_1_0": gstPlugins.path,
+                "GST_PLUGIN_SCANNER": scanner.path, "GST_PLUGIN_SCANNER_1_0": scanner.path,
+                "GST_REGISTRY": registry, "GST_REGISTRY_1_0": registry,
+                "GST_REGISTRY_MODE": "0600",
+            ]
+            for (key, value) in settings {
+                guard setenv(key, value, 1) == 0 else { throw SessionError.engineUnavailable }
+            }
+            if verifyRegistry {
+                guard setenv("MRV_VERIFY_PACKAGED_GST", "1", 1) == 0 else {
+                    throw SessionError.engineUnavailable
+                }
+            }
+            if fileManager.fileExists(atPath: opensslModules.path) {
+                guard setenv("OPENSSL_MODULES", opensslModules.path, 1) == 0 else {
+                    throw SessionError.engineUnavailable
+                }
+            } else {
+                guard unsetenv("OPENSSL_MODULES") == 0 else { throw SessionError.engineUnavailable }
+            }
+            return directory
+        } catch {
+            try? fileManager.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    if getenv("GST_PLUGIN_PATH") == nil {
         let homebrewPlugins = [
             "/opt/homebrew/lib/gstreamer-1.0",
             "/usr/local/lib/gstreamer-1.0",
@@ -1751,12 +1841,8 @@ private func preparePortableRuntime() {
             break
         }
     }
-
-    if fileManager.fileExists(atPath: scanner.path) {
-        setenv("GST_PLUGIN_SCANNER", scanner.path, 1)
-    }
-
     if fileManager.fileExists(atPath: opensslModules.path) {
         setenv("OPENSSL_MODULES", opensslModules.path, 1)
     }
+    return nil
 }
