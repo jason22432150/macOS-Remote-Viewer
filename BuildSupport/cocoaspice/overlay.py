@@ -1607,12 +1607,6 @@ def overlay_clipboard_input_guards(checkout: Path) -> None:
     }
     CSPasteboardType cspbType = cspbTypeForClipboardType(type);
     NSData *data = [self.pasteboardDelegate dataForType:cspbType];"""),
-        ("""    CSSession *self = (__bridge CSSSession *)user_data;
-    [self.pasteboardDelegate clearContents];""",
-         """    CSSession *self = (__bridge CSSSession *)user_data;
-    if (main != self.main || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||
-        self.sessionReadOnly || !self.shareClipboard) return;
-    [self.pasteboardDelegate clearContents];"""),
         ("""    SPICE_DEBUG("[CocoaSpice] seen UIPasteboardChangedNotification");""",
          """    if (notification.object != self.pasteboardDelegate) return;
     SPICE_DEBUG("[CocoaSpice] seen UIPasteboardChangedNotification");"""),
@@ -1620,6 +1614,24 @@ def overlay_clipboard_input_guards(checkout: Path) -> None:
          """    if (notification.object != self.pasteboardDelegate) return;
     SPICE_DEBUG("[CocoaSpice] seen UIPasteboardRemovedNotification");"""),
     ])
+    # Match only within the named release callback, not its entire body.
+    # Preserve any upstream release behavior/checks; fail on missing or
+    # ambiguous function boundaries instead of silently skipping the guard.
+    text = path.read_text()
+    begin = text.index("static void cs_clipboard_release(")
+    end = text.index("\nstatic void ", begin + 1)
+    release = text[begin:end]
+    anchor = "CSSession *self = (__bridge CSSession *)user_data;"
+    if release.count(anchor) != 1:
+        raise SystemExit("CSSession.m: ambiguous clipboard release prologue")
+    release = release.replace(
+        anchor,
+        anchor + "\n    if (main != self.main || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||"
+        "\n        self.sessionReadOnly || !self.shareClipboard) return;",
+        1,
+    )
+    path.write_text(text[:begin] + release + text[end:])
+
 
 
 def main() -> None:

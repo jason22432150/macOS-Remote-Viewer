@@ -23,6 +23,7 @@ from overlay import (
     overlay_package_swift,
     overlay_renderer_protected_category,
     overlay_session_sharing_category,
+    overlay_clipboard_input_guards,
 )
 
 CSMAIN_FIXTURE = "//\n// Copyright © 2022 osy. All rights reserved.\n//\n// Licensed under the Apache License, Version 2.0 (the \"License\");\n// you may not use this file except in compliance with the License.\n// You may obtain a copy of the License at\n//\n//     http://www.apache.org/licenses/LICENSE-2.0\n//\n// Unless required by applicable law or agreed to in writing, software\n// distributed under the License is distributed on an \"AS IS\" BASIS,\n// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n// See the License for the specific language governing permissions and\n// limitations under the License.\n//\n\n#import \"CSMain.h\"\n#import <glib.h>\n#import <spice-client.h>\n#import <pthread.h>\n#import \"gst_ios_init.h\"\n\n@interface CSMain ()\n\n@property (nonatomic, readwrite) BOOL running;\n@property (nonatomic) pthread_t spiceThread;\n\n@end\n\n@interface _CSMainBlock : NSObject\n\n@property (nonatomic, copy) dispatch_block_t userBlock;\n@property (nonatomic, nullable, strong) dispatch_group_t group;\n\n@end\n\n@implementation _CSMainBlock @end\n\n@implementation CSMain {\n    GMainContext *_main_context;\n    gint _loop_quit;\n}\n\nstatic void logHandler(const gchar *log_domain, GLogLevelFlags log_level,\n                       const gchar *message, gpointer user_data)\n{\n    GDateTime *now;\n    gchar *dateTimeStr;\n    const char *glog_domains = g_getenv(\"G_MESSAGES_DEBUG\");\n    LogHandler_t handler = (__bridge LogHandler_t)user_data;\n\n    if (!spice_util_get_debug() &&\n        ((log_level & (G_LOG_LEVEL_INFO | G_LOG_LEVEL_DEBUG)) != 0)) {\n        return;\n    }\n\n    char* levelStr = \"UNKNOWN\";\n    if (log_level & G_LOG_LEVEL_ERROR) {\n        levelStr = \"ERROR\";\n    } else if (log_level & G_LOG_LEVEL_CRITICAL) {\n        levelStr = \"CRITICAL\";\n    } else if (log_level & G_LOG_LEVEL_WARNING) {\n        levelStr = \"WARNING\";\n    } else if (log_level & G_LOG_LEVEL_MESSAGE) {\n        levelStr = \"MESSAGE\";\n    } else if (log_level & G_LOG_LEVEL_INFO) {\n        levelStr = \"INFO\";\n    } else if (log_level & G_LOG_LEVEL_DEBUG) {\n        levelStr = \"DEBUG\";\n    }\n    \n    now = g_date_time_new_now_local();\n    dateTimeStr = g_date_time_format(now, \"%Y-%m-%d %T\");\n    \n    if (handler) {\n        NSString *line = [NSString stringWithFormat:@\"%s,%03d %s %s-%s\\n\", dateTimeStr,\n                          g_date_time_get_microsecond(now) / 1000, levelStr,\n                          log_domain, message];\n        handler(line);\n    } else {\n        fprintf(stdout, \"%s,%03d %s %s-%s\\n\", dateTimeStr,\n                g_date_time_get_microsecond(now) / 1000, levelStr,\n                log_domain, message);\n    }\n    \n    g_date_time_unref(now);\n    g_free(dateTimeStr);\n}\n\nvoid *spice_main_loop(void *args) {\n    CSMain *self = (__bridge_transfer CSMain *)args;\n    \n    pthread_setname_np(\"SPICE Main Loop\");\n    gst_ios_init();\n    \n    g_main_context_ref(self->_main_context);\n    g_main_context_push_thread_default(self->_main_context);\n    // Iterate manually instead of g_main_loop_run() so every dispatch runs\n    // inside an autorelease pool: SPICE callbacks autorelease Objective-C\n    // objects (one MTLBlitCommandEncoder per gl_draw, cursors, images), and\n    // this thread lives for the whole app, so without a per-iteration drain\n    // they pin device memory forever.\n    while (!g_atomic_int_get(&self->_loop_quit)) {\n        @autoreleasepool {\n            g_main_context_iteration(self->_main_context, TRUE);\n        }\n    }\n    g_main_context_pop_thread_default(self->_main_context);\n    g_main_context_unref(self->_main_context);\n    \n    return NULL;\n}\n\n+ (CSMain *)sharedInstance {\n    static CSMain *sharedInstance = nil;\n    static dispatch_once_t onceToken;\n    dispatch_once(&onceToken, ^{\n        sharedInstance = [[self alloc] init];\n    });\n    return sharedInstance;\n}\n\n- (void *)glibMainContext {\n    return _main_context;\n}\n\n- (void)setLogHandler:(LogHandler_t)newLogHandler {\n    _logHandler = newLogHandler;\n    g_log_set_default_handler(logHandler, (__bridge gpointer)newLogHandler);\n}\n\n- (id)init {\n    self = [super init];\n    if (self) {\n        if ((_main_context = g_main_context_new()) == NULL) {\n            return nil;\n        }\n        g_log_set_default_handler(logHandler, NULL);\n    }\n    return self;\n}\n\n- (void)dealloc {\n    [self spiceStop];\n    g_main_context_unref(_main_context);\n    g_log_set_default_handler(g_log_default_handler, NULL);\n}\n\n- (void)spiceSetDebug:(BOOL)enabled {\n    spice_util_set_debug(enabled);\n}\n\n- (BOOL)spiceStart {\n    @synchronized (self) {\n        if (!self.running) {\n            pthread_t spiceThread;\n            g_atomic_int_set(&_loop_quit, FALSE);\n            spice_util_set_main_context(_main_context);\n            pthread_attr_t qosAttribute;\n            pthread_attr_init(&qosAttribute);\n            pthread_attr_set_qos_class_np(&qosAttribute, QOS_CLASS_USER_INTERACTIVE, 0);\n            if (pthread_create(&spiceThread, &qosAttribute, &spice_main_loop, (__bridge_retained void *)self) != 0) {\n                return NO;\n            }\n            self.running = YES;\n            self.spiceThread = spiceThread;\n        }\n    }\n    return YES;\n}\n\n- (void)spiceStop {\n    @synchronized (self) {\n        if (self.running) {\n            void *status;\n            spice_util_set_main_context(NULL);\n            g_atomic_int_set(&_loop_quit, TRUE);\n            g_main_context_wakeup(_main_context);\n            pthread_join(self.spiceThread, &status);\n            self.running = NO;\n            self.spiceThread = NULL;\n        }\n    }\n}\n\nstatic gboolean callBlockInMainContext(gpointer data) {\n    _CSMainBlock *block = (__bridge _CSMainBlock *)data;\n    block.userBlock();\n    return FALSE;\n}\n\nstatic void cleanupBlock(gpointer data) {\n    _CSMainBlock *block = (__bridge_transfer _CSMainBlock *)data;\n    block.userBlock = nil;\n    if (block.group) {\n        dispatch_group_leave(block.group);\n    }\n}\n\n- (void)asyncWithBlock:(_CSMainBlock *)block {\n    gpointer data = (__bridge_retained void *)block;\n    g_main_context_invoke_full(self.glibMainContext,\n                               G_PRIORITY_DEFAULT,\n                               callBlockInMainContext,\n                               data,\n                               cleanupBlock);\n}\n\n- (void)asyncWith:(dispatch_block_t)block {\n    _CSMainBlock *_block = [[_CSMainBlock alloc] init];\n    _block.userBlock = block;\n    [self asyncWithBlock:_block];\n}\n\n- (void)syncWith:(dispatch_block_t)block {\n    if ([self isCurrentContextMain]) {\n        block();\n    } else {\n        _CSMainBlock *_block = [[_CSMainBlock alloc] init];\n        dispatch_group_t mainContextGroup = dispatch_group_create();\n        dispatch_group_enter(mainContextGroup);\n        _block.userBlock = block;\n        _block.group = mainContextGroup;\n        [self asyncWithBlock:_block];\n        dispatch_group_wait(mainContextGroup, DISPATCH_TIME_FOREVER);\n    }\n}\n\n- (BOOL)isCurrentContextMain {\n    return g_main_context_is_owner(self.glibMainContext);\n}\n\n@end\n"
@@ -195,6 +196,165 @@ SESSION_SHARING_FIXTURE = """\
 
 
 class OverlayTests(unittest.TestCase):
+
+    def test_clipboard_guards_preserve_release_body_variants(self) -> None:
+        fixture = r"""static void cs_clipboard_got_from_guest(SpiceMainChannel *main, guint selection,
+                                        guint type, const guchar *data, guint size,
+                                        gpointer user_data)
+{
+    CSSession *self = (__bridge CSSession *)user_data;
+    char *textData;
+
+    SPICE_DEBUG("clipboard got data");
+    
+    if (type == VD_AGENT_CLIPBOARD_UTF8_TEXT && size > 0) {
+        gchar *conv = NULL;
+        /* on windows, gtk+ would already convert to LF endings, but
+           not on unix */
+        if (spice_main_channel_agent_test_capability(self.main, VD_AGENT_CAP_GUEST_LINEEND_CRLF)) {
+            conv = spice_dos2unix((gchar*)data, size);
+            size = (guint)strlen(conv);
+        }
+        // original data may not be null terminated
+        textData = calloc(size + 1, sizeof(char));
+        memcpy(textData, conv ? conv : (const char *)data, size);
+        NSString *string = [NSString stringWithUTF8String:textData];
+        free(textData);
+        [self.pasteboardDelegate setString:string];
+        g_free(conv);
+    } else if (type == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
+        [self.pasteboardDelegate setString:@""];
+    } else {
+        CSPasteboardType cspbType = cspbTypeForClipboardType(type);
+        NSData *pasteData = [NSData dataWithBytes:data length:size];
+        [self.pasteboardDelegate setData:pasteData forType:cspbType];
+    }
+}
+
+static gboolean cs_clipboard_grab(SpiceMainChannel *main, guint selection,
+                                  guint32* types, guint32 ntypes,
+                                  gpointer user_data)
+{
+    CSSession *self = (__bridge CSSession *)user_data;
+    
+    if (selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD) {
+        SPICE_DEBUG("skipping grab unimplemented selection: %d", selection);
+        return FALSE;
+    }
+
+    if (self.sessionReadOnly || !self.shareClipboard) {
+        SPICE_DEBUG("ignoring clipboard_grab");
+        return TRUE;
+    }
+
+    g_object_ref(main);
+    [CSMain.sharedInstance asyncWith:^{
+        for (int n = 0; n < ntypes; ++n) {
+            spice_main_channel_clipboard_selection_request(main, selection,
+                                                           types[n]);
+        }
+        g_object_unref(main);
+    }];
+
+    return TRUE;
+}
+
+static gboolean cs_clipboard_request(SpiceMainChannel *main, guint selection,
+                                     guint type, gpointer user_data)
+{
+    CSSession *self = (__bridge CSSession *)user_data;
+    
+    if (selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD) {
+        SPICE_DEBUG("skipping request unimplemented selection: %d", selection);
+        return FALSE;
+    }
+
+    if (self.sessionReadOnly || !self.shareClipboard) {
+        SPICE_DEBUG("ignoring clipboard_request");
+        return FALSE;
+    }
+
+    CSPasteboardType cspbType = cspbTypeForClipboardType(type);
+    NSData *data = [self.pasteboardDelegate dataForType:cspbType];
+    if (data) {
+        g_object_ref(main);
+        [CSMain.sharedInstance asyncWith:^{
+            spice_main_channel_clipboard_selection_notify(main, selection, type, data.bytes, data.length);
+            g_object_unref(main);
+        }];
+    }
+
+    return TRUE;
+}
+
+static void cs_clipboard_release(SpiceMainChannel *main, guint selection,
+                                 gpointer user_data)
+{
+    CSSession *self = (__bridge CSSession *)user_data;
+    [self.pasteboardDelegate clearContents];
+}
+
+static void cs_channel_new(void) {}
+- (void)pasteboardDidChange:(NSNotification *)notification {
+    SPICE_DEBUG("[CocoaSpice] seen UIPasteboardChangedNotification");
+    if (!self.main || !self.shareClipboard || self.sessionReadOnly || !self.pasteboardDelegate) {
+        return;
+    }
+    guint32 type = VD_AGENT_CLIPBOARD_NONE;
+    id<CSPasteboardDelegate> pb = self.pasteboardDelegate;
+    if ([pb canReadItemForType:kCSPasteboardTypePng]) {
+        type = VD_AGENT_CLIPBOARD_IMAGE_PNG;
+    } else if ([pb canReadItemForType:kCSPasteboardTypeBmp]) {
+        type = VD_AGENT_CLIPBOARD_IMAGE_BMP;
+    } else if ([pb canReadItemForType:kCSPasteboardTypeTiff]) {
+        type = VD_AGENT_CLIPBOARD_IMAGE_TIFF;
+    } else if ([pb canReadItemForType:kCSPasteboardTypeJpg]) {
+        type = VD_AGENT_CLIPBOARD_IMAGE_JPG;
+    } else if ([pb canReadItemForType:kCSPasteboardTypeString]) {
+        type = VD_AGENT_CLIPBOARD_UTF8_TEXT;
+    } else {
+        SPICE_DEBUG("[CocoaSpice] pasteboard with unrecognized type");
+    }
+    if (spice_main_channel_agent_test_capability(self.main, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)) {
+        [CSMain.sharedInstance asyncWith:^{
+            guint32 _type = type;
+            spice_main_channel_clipboard_selection_grab(self.main, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, &_type, 1);
+        }];
+    }
+}
+
+- (void)pasteboardDidRemove:(NSNotification *)notification {
+    SPICE_DEBUG("[CocoaSpice] seen UIPasteboardRemovedNotification");
+    if (!self.main || !self.shareClipboard || self.sessionReadOnly) {
+        return;
+    }
+    if (spice_main_channel_agent_test_capability(self.main, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)) {
+        [CSMain.sharedInstance asyncWith:^{
+            guint32 type = VD_AGENT_CLIPBOARD_UTF8_TEXT;
+            spice_main_channel_clipboard_selection_grab(self.main, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, &type, 1);
+        }];
+    }
+}
+
+"""
+        for variant in ("", "    // existing release check\n"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                path = root / "Sources" / "CocoaSpice" / "CSSession.m"
+                path.parent.mkdir(parents=True)
+                source = fixture.replace("    [self.pasteboardDelegate clearContents];",
+                                         variant + "    [self.pasteboardDelegate clearContents];", 1)
+                path.write_text(source)
+                overlay_clipboard_input_guards(root)
+                result = path.read_text()
+                incoming = result.split("static void cs_clipboard_got_from_guest", 1)[1].split("static gboolean cs_clipboard_grab", 1)[0]
+                self.assertLess(incoming.index("size > 16u * 1024u * 1024u"), incoming.index("initWithBytes:"))
+                self.assertIn("g_utf8_validate", incoming)
+                release = result.split("static void cs_clipboard_release", 1)[1].split("static void cs_channel_new", 1)[0]
+                self.assertLess(release.index("!self.shareClipboard"), release.index("clearContents"))
+                self.assertIn(variant + "    [self.pasteboardDelegate clearContents];", release)
+                self.assertEqual(result.count("notification.object != self.pasteboardDelegate"), 2)
+
     def test_csmain_uses_default_context_and_drops_utm_api(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
