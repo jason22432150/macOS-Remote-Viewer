@@ -77,7 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-auth-probe", "--loopback-spice-display-probe",
          "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
          "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
-         "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe"].contains($0)
+         "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
+         "--clipboard-security-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -129,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if arguments.contains("--clipboard-security-probe") {
+            runClipboardSecurityProbe()
         } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-probe") {
             guard arguments.count == index + 2 else { Darwin.exit(2) }
             runLoopbackSpiceClipboardProbe(file: URL(fileURLWithPath: arguments[index + 1]))
@@ -881,6 +884,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// CocoaSpice main channel, without touching the host clipboard.
     /// Real clipboard protocol through a private named pasteboard. Never read
     /// or write NSPasteboard.general, even on a developer's local machine.
+    /// Local production delegate boundary tests. Both adapters point at the
+    /// same private named pasteboard, as two tabs do at the system board.
+    private func runClipboardSecurityProbe() {
+        Task { @MainActor in
+            let board = NSPasteboard.withUniqueName()
+            let first = CocoaSpicePasteboard(pasteboardName: board.name)
+            let second = CocoaSpicePasteboard(pasteboardName: board.name)
+            let limit = 16 * 1024 * 1024
+            let original = "MRV private board 繁中"
+            do {
+                board.clearContents()
+                guard board.setString(original, forType: .string) else { throw SessionError.cancelled }
+                first.startPolling()
+                guard first.string() == original, second.string() == nil,
+                      !second.canReadItem(for: .string) else { throw SessionError.cancelled }
+                first.setData(Data([0xff, 0xfe]), for: .string)
+                first.setData(Data(repeating: 65, count: limit + 1), for: .string)
+                second.setString("inactive write")
+                second.clearContents()
+                try await Task.sleep(for: .milliseconds(100))
+                guard board.string(forType: .string) == original else { throw SessionError.cancelled }
+                print("MRV_CLIP_SECURITY_INVALID_OVERSIZE_DISABLED_OK")
+
+                // Enqueue a guest write but change tab before the MainActor
+                // drain can run. Re-enabling the old delegate must not revive it.
+                first.setString("old queued write")
+                first.stopPolling()
+                second.startPolling()
+                second.setString("selected tab")
+                try await Task.sleep(for: .milliseconds(100))
+                guard board.string(forType: .string) == "selected tab",
+                      first.data(for: .string) == nil, second.string() == "selected tab" else {
+                    throw SessionError.cancelled
+                }
+                second.stopPolling()
+                first.startPolling()
+                first.setString("stale generation")
+                first.stopPolling()
+                first.startPolling()
+                try await Task.sleep(for: .milliseconds(100))
+                guard board.string(forType: .string) == "selected tab" else { throw SessionError.cancelled }
+                print("MRV_CLIP_SECURITY_GENERATION_OK")
+
+                first.stopPolling()
+                board.clearContents()
+                let boundary = Data(repeating: 65, count: limit)
+                guard board.setData(boundary, forType: .png),
+                      board.setData(boundary, forType: .tiff),
+                      board.setData(boundary, forType: NSPasteboard.PasteboardType("public.jpeg")) else {
+                    throw SessionError.cancelled
+                }
+                first.startPolling()
+                // Raw bytes here test storage bounds, not image decoding.
+                guard first.data(for: .png)?.count == limit,
+                      first.data(for: .tiff)?.count == limit,
+                      first.data(for: .jpg) == nil else { throw SessionError.cancelled }
+                first.stopPolling()
+                board.clearContents()
+                guard board.setData(Data(repeating: 65, count: limit + 1), forType: .png) else {
+                    throw SessionError.cancelled
+                }
+                first.startPolling()
+                guard first.data(for: .png) == nil else { throw SessionError.cancelled }
+                print("MRV_CLIP_SECURITY_LIMITS_OK item=16777216 snapshot=33554432")
+                first.stopPolling()
+                second.stopPolling()
+                board.releaseGlobally()
+                print("MRV_CLIP_SECURITY_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                first.stopPolling()
+                second.stopPolling()
+                board.releaseGlobally()
+                print("MRV_CLIP_SECURITY_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
     private func runLoopbackSpiceClipboardProbe(file: URL) {
         Task { @MainActor in
             let board = NSPasteboard.withUniqueName()

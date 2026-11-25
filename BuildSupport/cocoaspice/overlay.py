@@ -1529,6 +1529,99 @@ def overlay_drawable_demand(checkout: Path) -> None:
     ])
 
 
+def overlay_clipboard_input_guards(checkout: Path) -> None:
+    """Reject malformed or oversized remote data before bridging into Swift."""
+    path = checkout / "Sources" / "CocoaSpice" / "CSSession.m"
+    _replace_once(path, [
+        ("""    CSSession *self = (__bridge CSSession *)user_data;
+    char *textData;
+
+    SPICE_DEBUG("clipboard got data");
+    
+    if (type == VD_AGENT_CLIPBOARD_UTF8_TEXT && size > 0) {
+        gchar *conv = NULL;
+        /* on windows, gtk+ would already convert to LF endings, but
+           not on unix */
+        if (spice_main_channel_agent_test_capability(self.main, VD_AGENT_CAP_GUEST_LINEEND_CRLF)) {
+            conv = spice_dos2unix((gchar*)data, size);
+            size = (guint)strlen(conv);
+        }
+        // original data may not be null terminated
+        textData = calloc(size + 1, sizeof(char));
+        memcpy(textData, conv ? conv : (const char *)data, size);
+        NSString *string = [NSString stringWithUTF8String:textData];
+        free(textData);
+        [self.pasteboardDelegate setString:string];
+        g_free(conv);
+    } else if (type == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
+        [self.pasteboardDelegate setString:@""];
+    } else {
+        CSPasteboardType cspbType = cspbTypeForClipboardType(type);
+        NSData *pasteData = [NSData dataWithBytes:data length:size];
+        [self.pasteboardDelegate setData:pasteData forType:cspbType];
+    }""",
+         """    CSSession *self = (__bridge CSSession *)user_data;
+    // Match the Swift per-item bound before allocating or bridging data.
+    if (main != self.main || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||
+        !self.shareClipboard || self.sessionReadOnly || !self.pasteboardDelegate ||
+        size > 16u * 1024u * 1024u || (size && !data)) return;
+
+    if (type == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
+        if (!size) {
+            [self.pasteboardDelegate setString:@""];
+            return;
+        }
+        // Permit a conventional single terminal NUL but reject embedded NUL
+        // and malformed UTF-8 rather than truncating or bridging nil.
+        if (data[size - 1] == 0) --size;
+        if (size && !g_utf8_validate((const gchar *)data, size, NULL)) return;
+        NSString *string = size ?
+            [[NSString alloc] initWithBytes:data length:size encoding:NSUTF8StringEncoding] : @"";
+        if (!string) return;
+        if (spice_main_channel_agent_test_capability(main, VD_AGENT_CAP_GUEST_LINEEND_CRLF)) {
+            string = [string stringByReplacingOccurrencesOfString:@"\\r\\n" withString:@"\\n"];
+        }
+        [self.pasteboardDelegate setString:string];
+    } else {
+        switch (type) {
+            case VD_AGENT_CLIPBOARD_IMAGE_PNG:
+            case VD_AGENT_CLIPBOARD_IMAGE_BMP:
+            case VD_AGENT_CLIPBOARD_IMAGE_TIFF:
+            case VD_AGENT_CLIPBOARD_IMAGE_JPG:
+                break;
+            default: return;
+        }
+        CSPasteboardType cspbType = cspbTypeForClipboardType(type);
+        NSData *pasteData = [NSData dataWithBytes:data length:size];
+        [self.pasteboardDelegate setData:pasteData forType:cspbType];
+    }"""),
+        ("""    CSPasteboardType cspbType = cspbTypeForClipboardType(type);
+    NSData *data = [self.pasteboardDelegate dataForType:cspbType];""",
+         """    switch (type) {
+        case VD_AGENT_CLIPBOARD_UTF8_TEXT:
+        case VD_AGENT_CLIPBOARD_IMAGE_PNG:
+        case VD_AGENT_CLIPBOARD_IMAGE_BMP:
+        case VD_AGENT_CLIPBOARD_IMAGE_TIFF:
+        case VD_AGENT_CLIPBOARD_IMAGE_JPG: break;
+        default: return FALSE;
+    }
+    CSPasteboardType cspbType = cspbTypeForClipboardType(type);
+    NSData *data = [self.pasteboardDelegate dataForType:cspbType];"""),
+        ("""    CSSession *self = (__bridge CSSSession *)user_data;
+    [self.pasteboardDelegate clearContents];""",
+         """    CSSession *self = (__bridge CSSSession *)user_data;
+    if (main != self.main || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||
+        self.sessionReadOnly || !self.shareClipboard) return;
+    [self.pasteboardDelegate clearContents];"""),
+        ("""    SPICE_DEBUG("[CocoaSpice] seen UIPasteboardChangedNotification");""",
+         """    if (notification.object != self.pasteboardDelegate) return;
+    SPICE_DEBUG("[CocoaSpice] seen UIPasteboardChangedNotification");"""),
+        ("""    SPICE_DEBUG("[CocoaSpice] seen UIPasteboardRemovedNotification");""",
+         """    if (notification.object != self.pasteboardDelegate) return;
+    SPICE_DEBUG("[CocoaSpice] seen UIPasteboardRemovedNotification");"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -1551,6 +1644,7 @@ def main() -> None:
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)
     overlay_session_sharing_category(checkout)
+    overlay_clipboard_input_guards(checkout)
     overlay_channel_lifetime_guards(checkout)
     overlay_connection_lifecycle(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")

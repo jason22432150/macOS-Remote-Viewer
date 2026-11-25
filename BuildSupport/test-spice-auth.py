@@ -532,6 +532,25 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 else "Real four-session display isolation checks passed."))
 
 
+def test_clipboard_security(app, root):
+    exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
+    env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+    env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+    result = subprocess.run([str(exe), "--clipboard-security-probe"], cwd=root, env=env,
+                            capture_output=True, text=True, timeout=30)
+    print(result.stdout[-6000:])
+    if result.stderr:
+        print(result.stderr[-6000:])
+    expected = ["MRV_CLIP_SECURITY_INVALID_OVERSIZE_DISABLED_OK",
+                "MRV_CLIP_SECURITY_GENERATION_OK",
+                "MRV_CLIP_SECURITY_LIMITS_OK item=16777216 snapshot=33554432",
+                "MRV_CLIP_SECURITY_OK"]
+    actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_CLIP_SECURITY_")]
+    if result.returncode != 0 or actual != expected:
+        raise AssertionError(f"clipboard security: incomplete boundary checks {actual}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", type=Path, required=True)
@@ -551,6 +570,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-monitor-limited", tls.TICKET, True, agent="monitor-limited")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-full", tls.TICKET, True, agent="clipboard-full")
+        test_clipboard_security(args.app.resolve(), root)
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []
