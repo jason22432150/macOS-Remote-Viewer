@@ -1460,6 +1460,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
                     throw SessionError.cancelled
                 }
+                // Exercise real native proxy storage without connecting to any
+                // proxy. Only synthetic values are used, and never printed.
+                try engine.startWorker()
+                let offline = CSConnection(host: "127.0.0.1", port: String(profile.tlsPort))
+                try offline.pve_applyHost(
+                    "pvespiceproxy:synthetic-disposable-destination",
+                    tlsPort: String(profile.tlsPort),
+                    proxy: "http://synthetic-user:synthetic-password@127.0.0.1:3128",
+                    ca: profile.caPEM, certSubject: profile.hostSubject,
+                    password: profile.ticket.value)
+                guard offline.hasPVEProxyCredentials(),
+                      offline.disconnectPVEAndClearCredentials(),
+                      !offline.hasPVEProxyCredentials(),
+                      offline.disconnectPVEAndClearCredentials() else {
+                    throw SessionError.engineUnavailable
+                }
+                print("MRV_NATIVE_PROXY_CLEANUP_OK")
                 controller.setClipboardSharingEnabled(false)
                 for round in 0..<3 {
                     controller.open(profile)
@@ -1469,6 +1486,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     if case .failed(.authenticationRejected) = controller.state, round == 0 {
                         controller.cancel()
+                        guard engine.lastNativeCredentialCleanupSucceeded == true else {
+                            throw SessionError.engineUnavailable
+                        }
+                        print("MRV_NATIVE_AUTH_CLEANUP_OK")
                         print("MRV_SPICE_AUTH_REJECTED")
                         fflush(nil)
                         Darwin.exit(0)
@@ -1479,6 +1500,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard controller.state == .connected else { throw SessionError.network }
                     controller.cancel()
                     guard controller.state == .disconnected else { throw SessionError.cancelled }
+                    guard engine.lastNativeCredentialCleanupSucceeded == true else {
+                        throw SessionError.engineUnavailable
+                    }
+                    print("MRV_NATIVE_AUTH_CLEANUP_OK")
                     // Drain callbacks from the old connection before opening again.
                     try await Task.sleep(for: .milliseconds(150))
                     guard controller.state == .disconnected else { throw SessionError.cancelled }

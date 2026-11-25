@@ -641,7 +641,13 @@ static void cs_channel_new(void) {}
             self.assertIn("SPICE_SESSION_VERIFY_SUBJECT", text)
             self.assertIn("self.spiceMain", text)
             self.assertNotIn("valueForKey", text)
-            self.assertEqual(text.count("[CSMain.sharedInstance syncWith:"), 4)
+            self.assertEqual(text.count("[CSMain.sharedInstance syncWith:"), 6)
+            self.assertIn("disconnectPVEAndClearCredentials", header.read_text())
+            teardown = text.split("- (BOOL)disconnectPVEAndClearCredentials {", 1)[1].split("- (BOOL)hasPVEProxyCredentials", 1)[0]
+            self.assertLess(teardown.index("spice_session_disconnect(session)"),
+                            teardown.index('g_object_set(session, "password", NULL'))
+            self.assertIn("spice_uri_set_user(proxy, NULL)", teardown)
+            self.assertIn("spice_uri_set_password(proxy, NULL)", teardown)
             self.assertIn("configured = YES;", text)
             self.assertIn("self.spiceSession = spice_session_new();", text)
 

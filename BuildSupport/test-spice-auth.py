@@ -129,6 +129,12 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                     raise AssertionError("did not complete both actual display rounds")
                 for line in rounds:
                     print(line)
+            if not display and agent is None:
+                if lines.count("MRV_NATIVE_PROXY_CLEANUP_OK") != 1:
+                    raise AssertionError("native offline proxy cleanup not verified")
+                if lines.count("MRV_NATIVE_AUTH_CLEANUP_OK") != (3 if success else 1):
+                    raise AssertionError("native terminal auth cleanup not verified")
+                print("MRV_NATIVE_CREDENTIAL_CLEANUP_OK", name)
             if success and not display and agent is None and [line for line in lines if line.startswith("MRV_SPICE_AUTH_ROUND_OK ")] != [
                     f"MRV_SPICE_AUTH_ROUND_OK {i}" for i in range(1, 4)]:
                 raise AssertionError("did not complete all three reconnect rounds")

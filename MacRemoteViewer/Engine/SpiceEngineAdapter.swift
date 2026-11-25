@@ -10,6 +10,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     weak var delegate: SpiceEngineDelegate?
 
     private var connection: CSConnection?
+    // No native object or credential is retained for this integration assertion.
+    private(set) var lastNativeCredentialCleanupSucceeded: Bool?
     private var input: CSInput?
     private var display: CSDisplay?
     private let spicePasteboard: CocoaSpicePasteboard
@@ -56,6 +58,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         guard let pem = String(data: profile.caPEM, encoding: .utf8) else { throw SessionError.invalidCA }
         let validatedCA = try VVParser.validatedCA(pem)
         disconnect()
+        lastNativeCredentialCleanupSucceeded = nil
         let connection = CSConnection(host: profile.host, port: String(profile.tlsPort))
         connection.audioEnabled = false
         connection.delegate = self
@@ -71,6 +74,8 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
                 password: profile.ticket.value
             )
         } catch {
+            connection.delegate = nil
+            lastNativeCredentialCleanupSucceeded = connection.disconnectPVEAndClearCredentials()
             throw SessionError.engineUnavailable
         }
 
@@ -78,6 +83,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         applyClipboardSharing(to: connection)
         attachPendingRenderer()
         guard connection.connect() else {
+            disconnect()
             throw SessionError.network
         }
     }
@@ -88,8 +94,14 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         connection?.session.pve_setClipboardDelegate(nil, enabled: false)
         clearFrameObserver()
         if let attachedRenderer { display?.removeRenderer(attachedRenderer) }
-        connection?.delegate = nil
-        connection?.disconnect()
+        if let connection {
+            connection.delegate = nil
+            let cleared = connection.disconnectPVEAndClearCredentials()
+            lastNativeCredentialCleanupSucceeded = cleared
+            if !cleared {
+                NSLog("Native SPICE terminal credential cleanup verification failed")
+            }
+        }
         connection = nil
         input = nil
         relativeMouseRequested = false

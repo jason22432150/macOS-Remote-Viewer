@@ -599,6 +599,10 @@ def overlay_connection_pve_api(checkout: Path) -> None:
                       ca:(NSData *)ca
              certSubject:(NSString *)subject
                 password:(NSString *)password;
+/// Terminal PVE teardown; never reuse this connection after calling it.
+- (BOOL)disconnectPVEAndClearCredentials;
+/// Integration-only query of native proxy credential presence (never values).
+- (BOOL)hasPVEProxyCredentials;
 /// Query on the SPICE worker when the agent capability callback fires.
 - (BOOL)hasPVEClipboardCapability;
 
@@ -638,6 +642,47 @@ def overlay_connection_pve_api(checkout: Path) -> None:
         configured = YES;
     }];
     return configured;
+}
+
+- (BOOL)disconnectPVEAndClearCredentials {
+    __block BOOL cleared = NO;
+    [CSMain.sharedInstance syncWith:^{
+        SpiceSession *session = self.spiceSession;
+        if (!session) return;
+        // Keep credentials available for every live channel. Only clear them
+        // after terminal disconnect, not when the main channel authenticates.
+        spice_session_disconnect(session);
+        SpiceURI *proxy = spice_session_get_proxy_uri(session);
+        if (proxy) {
+            // Clear the existing URI in place, including any other references.
+            spice_uri_set_user(proxy, NULL);
+            spice_uri_set_password(proxy, NULL);
+        }
+        // Host can contain an opaque PVE signed destination, not just DNS.
+        g_object_set(session, "password", NULL, "host", NULL, NULL);
+        gchar *password = NULL;
+        gchar *host = NULL;
+        g_object_get(session, "password", &password, "host", &host, NULL);
+        cleared = (!password || !*password) && (!host || !*host) &&
+                  (!proxy || (!spice_uri_get_user(proxy) && !spice_uri_get_password(proxy)));
+        g_free(password);
+        g_free(host);
+    }];
+    return cleared;
+}
+
+- (BOOL)hasPVEProxyCredentials {
+    __block BOOL present = NO;
+    [CSMain.sharedInstance syncWith:^{
+        if (!self.spiceSession) return;
+        SpiceURI *proxy = spice_session_get_proxy_uri(self.spiceSession);
+        if (proxy) {
+            const gchar *user = spice_uri_get_user(proxy);
+            const gchar *password = spice_uri_get_password(proxy);
+            present = user && *user && password && *password;
+        }
+    }];
+    return present;
 }
 
 - (BOOL)hasPVEClipboardCapability {
