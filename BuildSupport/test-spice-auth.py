@@ -696,7 +696,9 @@ def test_scanout_runtime(app, root):
     if result.stderr:
         print(result.stderr[-6000:])
     expected = ["MRV_SCANOUT_FULL_COPY_OK", "MRV_SCANOUT_PRIVATE_COPY_OK",
-                "MRV_SCANOUT_PARTIAL_COPY_OK", "MRV_SCANOUT_STALE_FENCE_OK",
+                "MRV_SCANOUT_PARTIAL_COPY_OK", "MRV_SCANOUT_QUEUE_SWITCH_OK",
+                "MRV_SCANOUT_NO_RENDERER_OK", "MRV_SCANOUT_QUEUE_RECOVERY_OK",
+                "MRV_SCANOUT_STALE_FENCE_OK",
                 "MRV_SCANOUT_BOUNDS_OK", "MRV_SCANOUT_CLEANUP_RESET",
                 "MRV_SCANOUT_CLEANUP_SURFACE", "MRV_SCANOUT_CLEANUP_SESSION",
                 "MRV_SCANOUT_COMPLETION_MAIN", "MRV_SCANOUT_RUNTIME_OK"]

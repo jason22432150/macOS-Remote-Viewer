@@ -1752,7 +1752,8 @@ def overlay_scanout_runtime_probe(checkout: Path) -> None:
          "/// Isolated integration probe; never modifies a live remote display.\n"
          "/// Completion is delivered on the AppKit main queue after worker cleanup.\n"
          "+ (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer "
-         "completion:(void (^)(BOOL))completion NS_SWIFT_NAME(pve_testScanout(_:completion:));"),
+         "replacement:(id<CSRenderer>)replacement "
+         "completion:(void (^)(BOOL))completion NS_SWIFT_NAME(pve_testScanout(_:replacement:completion:));"),
     ])
     path = source / "CSDisplay.m"
     _replace_once(path, [
@@ -1793,8 +1794,14 @@ static BOOL mrv_scanout_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue,
            (*(const uint32_t *)buffer.contents & 0x00ffffffu) == expected;
 }
 
-+ (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer completion:(void (^)(BOOL))completion {
++ (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer
+                       replacement:(id<CSRenderer>)replacement completion:(void (^)(BOOL))completion {
     [CSMain.sharedInstance asyncWith:^{
+        if (renderer.device != replacement.device || !renderer.commandQueue ||
+            !replacement.commandQueue || renderer.commandQueue == replacement.commandQueue) {
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
+            return;
+        }
         SpiceSession *session = spice_session_new();
         SpiceChannel *channel = spice_channel_new(session, SPICE_CHANNEL_DISPLAY, 0);
         if (!channel) {
@@ -1873,25 +1880,77 @@ static BOOL mrv_scanout_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue,
                     return;
                 }
                 puts("MRV_SCANOUT_PARTIAL_COPY_OK"); fflush(stdout);
-                // Submit a real GPU copy, invalidate its generation before
-                // its GLib completion can publish, then check the stale fence.
-                [display copyScanoutRect:CGRectMake(0,0,64,64) withCompletion:^{
-                    if (display.texture || display.presentTexture || display.glTexture) {
+                // Retain the exact old private texture, as an earlier
+                // renderer's in-flight draw would. Switch queue and require
+                // a different allocation and a full first copy.
+                id<MTLTexture> previous = display.texture;
+                [renderer disableRender];
+                display.renderers = @[replacement];
+                id<MTLCommandQueue> nextQueue = replacement.commandQueue;
+                if (!mrv_fill_surface(surface, 0x000000ff, NO)) {
+                    finish(NO);
+                    return;
+                }
+                [display copyScanoutRect:CGRectMake(24,24,16,16) withCompletion:^{
+                    id<MTLTexture> current = display.texture;
+                    if (!current || current == previous || display.shadowQueue != nextQueue ||
+                        !mrv_scanout_pixel(current, nextQueue, 32,32,0x000000ff) ||
+                        !mrv_scanout_pixel(current, nextQueue, 2,2,0x000000ff) ||
+                        !mrv_scanout_pixel(previous, queue, 32,32,0x0000ff00) ||
+                        !mrv_scanout_pixel(previous, queue, 2,2,0x00ff0000)) {
                         finish(NO);
                         return;
                     }
-                    puts("MRV_SCANOUT_STALE_FENCE_OK"); fflush(stdout);
-                    // Invalid metadata must be rejected, consuming the ref.
-                    CFRetain(surface);
-                    [display rebuildScanoutTextureWithSurface:surface width:65 height:64];
-                    if (display.glTexture || display.presentTexture) {
+                    puts("MRV_SCANOUT_QUEUE_SWITCH_OK"); fflush(stdout);
+                    // No renderer: no raw IOSurface may be published and
+                    // acknowledgement must not depend on a drawable.
+                    [replacement disableRender];
+                    display.renderers = @[];
+                    __block BOOL skipped = NO;
+                    [display copyScanoutRect:CGRectMake(0,0,64,64) withCompletion:^{
+                        skipped = YES;
+                    }];
+                    if (!skipped || display.texture || display.shadowQueue ||
+                        !display.shadowNeedsFullCopy) {
                         finish(NO);
                         return;
                     }
-                    puts("MRV_SCANOUT_BOUNDS_OK"); fflush(stdout);
-                    finish(YES);
+                    puts("MRV_SCANOUT_NO_RENDERER_OK"); fflush(stdout);
+                    display.renderers = @[renderer];
+                    if (!mrv_fill_surface(surface, 0x00ffff00, NO)) {
+                        finish(NO);
+                        return;
+                    }
+                    [display copyScanoutRect:CGRectMake(24,24,16,16) withCompletion:^{
+                        if (!display.texture || display.texture == previous ||
+                            display.texture == current || display.shadowQueue != queue ||
+                            !mrv_scanout_pixel(display.texture, queue, 32,32,0x00ffff00) ||
+                            !mrv_scanout_pixel(display.texture, queue, 2,2,0x00ffff00) ||
+                            !mrv_scanout_pixel(current, nextQueue, 2,2,0x000000ff)) {
+                            finish(NO);
+                            return;
+                        }
+                        puts("MRV_SCANOUT_QUEUE_RECOVERY_OK"); fflush(stdout);
+                        // Submit a real GPU copy, invalidate its generation
+                        // before its worker completion can publish.
+                        [display copyScanoutRect:CGRectMake(0,0,64,64) withCompletion:^{
+                            if (display.texture || display.presentTexture || display.glTexture) {
+                                finish(NO);
+                                return;
+                            }
+                            puts("MRV_SCANOUT_STALE_FENCE_OK"); fflush(stdout);
+                            CFRetain(surface);
+                            [display rebuildScanoutTextureWithSurface:surface width:65 height:64];
+                            if (display.glTexture || display.presentTexture) {
+                                finish(NO);
+                                return;
+                            }
+                            puts("MRV_SCANOUT_BOUNDS_OK"); fflush(stdout);
+                            finish(YES);
+                        }];
+                        [display resetScanout];
+                    }];
                 }];
-                [display resetScanout];
             }];
         }];
     }];
