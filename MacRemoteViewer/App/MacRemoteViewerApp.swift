@@ -78,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
          "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
          "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
-         "--clipboard-security-probe"].contains($0)
+         "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -130,6 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-isolation-probe") {
+            guard arguments.count == index + 3 else { Darwin.exit(2) }
+            runClipboardIsolationProbe(files: arguments[(index + 1)...].map { URL(fileURLWithPath: $0) })
         } else if arguments.contains("--clipboard-security-probe") {
             runClipboardSecurityProbe()
         } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-probe") {
@@ -886,6 +889,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// or write NSPasteboard.general, even on a developer's local machine.
     /// Local production delegate boundary tests. Both adapters point at the
     /// same private named pasteboard, as two tabs do at the system board.
+    /// Two genuine TLS Main Channels, production selection policy and one
+    /// isolated board. No access to the user's general pasteboard.
+    private func runClipboardIsolationProbe(files: [URL]) {
+        Task { @MainActor in
+            let board = NSPasteboard.withUniqueName()
+            let workspace = SessionWorkspace { _ in
+                SessionController(engine: SpiceEngineAdapter(pasteboardName: board.name),
+                                  connectionTimeout: .seconds(8), displayTimeout: .zero)
+            }
+            func closeAll() {
+                for id in workspace.sessions.map(\.sessionID) { workspace.close(id) }
+            }
+            do {
+                let profiles = try files.map { file in
+                    let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                    return try VVParser().parse(data: data)
+                }
+                guard profiles.count == 2,
+                      Set(profiles.map(\.tlsPort)).count == 2,
+                      profiles.allSatisfy({ $0.host == "127.0.0.1" && $0.proxyURL == nil &&
+                          $0.ticket.value == "mrv-ci-synthetic-ticket" && !$0.deleteSourceFile }),
+                      model.sessions.isEmpty else { throw SessionError.cancelled }
+                board.clearContents()
+                workspace.open(profiles)
+                let sessions = workspace.sessions
+                guard sessions.count == 2, workspace.selectedSessionID == sessions[1].sessionID else {
+                    throw SessionError.cancelled
+                }
+                let deadline = ContinuousClock.now + .seconds(10)
+                while !sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected && $0.agent.supportsClipboard }) {
+                    guard ContinuousClock.now < deadline else { throw SessionError.network }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                let unexpected = "MRV inactive guest must not overwrite"
+                @MainActor func exchange(index: Int, host: String, guest: String) async throws {
+                    guard workspace.selectedSessionID == sessions[index].sessionID else { throw SessionError.cancelled }
+                    board.clearContents()
+                    guard board.setString(host, forType: .string) else { throw SessionError.cancelled }
+                    let end = ContinuousClock.now + .seconds(5)
+                    while ContinuousClock.now < end {
+                        guard sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected }),
+                              board.string(forType: .string) != unexpected else { throw SessionError.cancelled }
+                        if board.string(forType: .string) == guest { return }
+                        try await Task.sleep(for: .milliseconds(25))
+                    }
+                    throw SessionError.network
+                }
+                try await exchange(index: 1, host: "MRV host B 繁中", guest: "MRV guest B ☀️")
+                print("MRV_CLIP_ISOLATION_B_OK")
+                // Keep A inactive through its independently scheduled
+                // 1s/1.2s/1.4s server attempts, checking the selected value.
+                let hold = ContinuousClock.now + .seconds(3)
+                while ContinuousClock.now < hold {
+                    guard board.string(forType: .string) == "MRV guest B ☀️",
+                          workspace.selectedSessionID == sessions[1].sessionID,
+                          sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected }) else {
+                        throw SessionError.cancelled
+                    }
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                print("MRV_CLIP_ISOLATION_BACKGROUND_OK")
+                workspace.select(sessions[0].sessionID)
+                try await exchange(index: 0, host: "MRV host A 繁中", guest: "MRV guest A 🚀")
+                print("MRV_CLIP_ISOLATION_A_OK")
+                let settle = ContinuousClock.now + .seconds(1)
+                while ContinuousClock.now < settle {
+                    guard board.string(forType: .string) == "MRV guest A 🚀",
+                          sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected }) else {
+                        throw SessionError.cancelled
+                    }
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                closeAll()
+                guard workspace.sessions.isEmpty, workspace.selectedSessionID == nil,
+                      sessions.allSatisfy({ $0.state == .disconnected }), model.sessions.isEmpty else {
+                    throw SessionError.cancelled
+                }
+                board.releaseGlobally()
+                print("MRV_CLIP_ISOLATION_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                closeAll()
+                board.releaseGlobally()
+                print("MRV_CLIP_ISOLATION_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
     private func runClipboardSecurityProbe() {
         Task { @MainActor in
             let board = NSPasteboard.withUniqueName()

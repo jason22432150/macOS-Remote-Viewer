@@ -325,8 +325,13 @@ static gboolean agent_full, agent_attached, agent_error, agent_monitor, agent_re
 static unsigned agent_monitor_requests, agent_monitor_targets;
 static gboolean agent_clipboard, clip_host_grab, clip_host_requested, clip_host_ok;
 static gboolean clip_guest_grab, clip_guest_requested, clip_guest_sent;
-static const char clip_host_text[] = "MRV Mac 繁體中文 ☀️\nline-2";
-static const char clip_guest_text[] = "MRV Guest 測試剪貼簿 🚀\nline-2";
+static const char *clip_host_text = "MRV Mac 繁體中文 ☀️\nline-2";
+static const char *clip_guest_text = "MRV Guest 測試剪貼簿 🚀\nline-2";
+static gboolean agent_isolation;
+static unsigned isolation_role, isolation_probe_stage;
+static unsigned clip_grabs, clip_requests, clip_data;
+static gint64 isolation_probe_at;
+static const char isolation_unexpected[] = "MRV inactive guest must not overwrite";
 static gboolean agent_received_caps, agent_sent_caps;
 static gint64 agent_delivered_at;
 static uint8_t agent_rx[65536], agent_tx[128];
@@ -371,6 +376,11 @@ static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len
                     memcpy(&format, payload, sizeof(format));
                     format = GUINT32_FROM_LE(format);
                 }
+                if (agent_isolation) {
+                    if (type == VD_AGENT_CLIPBOARD_GRAB) ++clip_grabs;
+                    if (type == VD_AGENT_CLIPBOARD_REQUEST) ++clip_requests;
+                    if (type == VD_AGENT_CLIPBOARD) ++clip_data;
+                }
                 // We intentionally do not advertise CLIPBOARD_SELECTION or
                 // GRAB_SERIAL; the legacy clipboard payload starts at type.
                 if (type == VD_AGENT_CLIPBOARD_GRAB && !clip_host_grab &&
@@ -379,8 +389,8 @@ static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len
                     puts("AGENT_CLIP_HOST_GRAB");
                 } else if (type == VD_AGENT_CLIPBOARD && clip_host_requested && !clip_host_ok) {
                     if (format != VD_AGENT_CLIPBOARD_UTF8_TEXT ||
-                        payload_size != sizeof(format) + sizeof(clip_host_text) - 1 ||
-                        memcmp(payload + sizeof(format), clip_host_text, sizeof(clip_host_text) - 1)) {
+                        payload_size != sizeof(format) + strlen(clip_host_text) ||
+                        memcmp(payload + sizeof(format), clip_host_text, strlen(clip_host_text))) {
                         agent_error = TRUE;
                         puts("AGENT_CLIP_HOST_MISMATCH");
                         fflush(stdout);
@@ -521,6 +531,23 @@ static gboolean agent_tick(gpointer data) {
         spice_server_char_device_wakeup(&agent_device);
     } else if (agent_sent_caps && agent_tx_pos < agent_tx_len) {
         spice_server_char_device_wakeup(&agent_device);
+    } else if (agent_isolation && isolation_role == 0 && isolation_probe_stage < 3 &&
+               agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= 1000000 &&
+               g_get_monotonic_time() - isolation_probe_at >= 200000) {
+        // Role 0 starts as the background tab. Attempt a grab, request and
+        // unsolicited data before the app switches to this session.
+        // The fixture logs delivery and any client clipboard replies.
+        isolation_probe_at = g_get_monotonic_time();
+        ++isolation_probe_stage;
+        if (isolation_probe_stage == 1) {
+            agent_queue_clip(VD_AGENT_CLIPBOARD_GRAB, NULL, 0);
+        } else if (isolation_probe_stage == 2) {
+            agent_queue_clip(VD_AGENT_CLIPBOARD_REQUEST, NULL, 0);
+        } else {
+            agent_queue_clip(VD_AGENT_CLIPBOARD, isolation_unexpected, sizeof(isolation_unexpected) - 1);
+        }
+        printf("AGENT_ISOLATION_PROBE stage=%u\n", isolation_probe_stage);
+        fflush(stdout);
     } else if (agent_clipboard && clip_host_grab && !clip_host_requested) {
         clip_host_requested = TRUE;
         puts("AGENT_CLIP_HOST_REQUEST");
@@ -535,7 +562,7 @@ static gboolean agent_tick(gpointer data) {
         clip_guest_sent = TRUE;
         puts("AGENT_CLIP_GUEST_UTF8_SENT");
         fflush(stdout);
-        agent_queue_clip(VD_AGENT_CLIPBOARD, clip_guest_text, sizeof(clip_guest_text) - 1);
+        agent_queue_clip(VD_AGENT_CLIPBOARD, clip_guest_text, strlen(clip_guest_text));
     } else if (agent_resize && agent_monitor_targets && !resize_applied) {
         // Main-loop producer is serialized with update_color. Wait until the
         // worker has consumed queued commands, then synchronously destroy
@@ -551,7 +578,7 @@ static gboolean agent_tick(gpointer data) {
         create_primary(surface_width, surface_height);
         puts("AGENT_PRIMARY_RESIZED 1024x768");
         fflush(stdout);
-    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_clipboard ? 12000000 : agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
+    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_isolation ? 16000000 : agent_clipboard ? 12000000 : agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
         // Real server-side hot removal, not a fabricated client callback.
         agent_attached = FALSE;
         if (spice_server_remove_interface(&agent_device.base)) {
@@ -576,7 +603,19 @@ int main(int argc, char **argv) {
     if (argc < 6 || argc > 8) return 2;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
     gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
-    agent_clipboard = argc == 7 && strcmp(argv[6], "agent-clipboard-full") == 0;
+    agent_isolation = argc == 8 && strcmp(argv[6], "agent-clipboard-isolation") == 0;
+    if (agent_isolation) {
+        if (strcmp(argv[7], "0") == 0) {
+            isolation_role = 0;
+            clip_host_text = "MRV host A 繁中";
+            clip_guest_text = "MRV guest A 🚀";
+        } else if (strcmp(argv[7], "1") == 0) {
+            isolation_role = 1;
+            clip_host_text = "MRV host B 繁中";
+            clip_guest_text = "MRV guest B ☀️";
+        } else return 2;
+    }
+    agent_clipboard = agent_isolation || (argc == 7 && strcmp(argv[6], "agent-clipboard-full") == 0);
     agent_resize = argc == 7 && strcmp(argv[6], "agent-monitor-resize-full") == 0;
     agent_monitor = agent_resize || (argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
                                   strcmp(argv[6], "agent-monitor-limited") == 0));
@@ -642,6 +681,8 @@ int main(int argc, char **argv) {
         if (agent_monitor) printf("AGENT_MONITOR_RESULT requests=%u targets=%u\n", agent_monitor_requests, agent_monitor_targets);
         if (agent_clipboard) printf("AGENT_CLIP_RESULT host=%d guest-request=%d guest-sent=%d\n",
                                     clip_host_ok, clip_guest_requested, clip_guest_sent && agent_tx_pos == agent_tx_len);
+        if (agent_isolation) printf("AGENT_ISOLATION_RESULT role=%u probes=%u grabs=%u requests=%u data=%u\n",
+                                     isolation_role, isolation_probe_stage, clip_grabs, clip_requests, clip_data);
         printf("AGENT_RESULT received=%d delivered=%d removed=%d error=%d\n",
                agent_received_caps, agent_delivered_at != 0, !agent_attached, agent_error);
         fflush(stdout);

@@ -532,6 +532,81 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 else "Real four-session display isolation checks passed."))
 
 
+def test_clipboard_isolation(app, root, fixture):
+    servers = []
+    profiles = []
+    with ExitStack() as stack:
+        try:
+            for role in range(2):
+                with socket.socket() as reserved:
+                    reserved.bind(("127.0.0.1", 0))
+                    port = reserved.getsockname()[1]
+                profile = root / f"clipboard-isolation-{role}.vv"
+                profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
+                profiles.append(profile)
+                log = root / f"clipboard-isolation-{role}.log"
+                output = stack.enter_context(log.open("wb"))
+                server = subprocess.Popen([str(fixture), str(port), str(root / "trusted.pem"),
+                    str(root / "server.pem"), str(root / "server.key"), tls.TICKET,
+                    "agent-clipboard-isolation", str(role)], stdout=output, stderr=subprocess.STDOUT)
+                servers.append((role, server, log))
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if server.poll() is not None:
+                        raise RuntimeError(f"isolation fixture {role} exited early")
+                    if "READY" in log.read_text(errors="replace").splitlines():
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError(f"isolation fixture {role} not ready")
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
+            for key in list(env):
+                if key.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "spice_proxy"):
+                    env.pop(key)
+            env["NO_PROXY"] = "127.0.0.1"
+            env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+            env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+            exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+            result = subprocess.run([str(exe), "--loopback-spice-clipboard-isolation-probe",
+                                     *map(str, profiles)], cwd=root, env=env, capture_output=True,
+                                    text=True, timeout=35)
+            print(result.stdout[-6000:])
+            if result.stderr:
+                print(result.stderr[-6000:])
+            expected = ["MRV_CLIP_ISOLATION_B_OK", "MRV_CLIP_ISOLATION_BACKGROUND_OK",
+                        "MRV_CLIP_ISOLATION_A_OK", "MRV_CLIP_ISOLATION_OK"]
+            actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_CLIP_ISOLATION_")]
+            if result.returncode != 0 or actual != expected:
+                raise AssertionError(f"clipboard isolation app lifecycle: {actual}")
+        finally:
+            for role, server, log in servers:
+                if server.poll() is None:
+                    server.terminate()
+            for role, server, log in servers:
+                try:
+                    server.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=5)
+                print(f"clipboard isolation fixture {role}: exit={server.returncode}")
+                print(log.read_text(errors="replace")[-6000:])
+        for role, server, log in servers:
+            lines = log.read_text(errors="replace").splitlines()
+            if server.returncode != 0 or [line for line in lines if line.startswith("MAIN_INITIALIZED ")] != ["MAIN_INITIALIZED tls=1"]:
+                raise AssertionError(f"isolation fixture {role}: invalid TLS lifecycle")
+            required = ["AGENT_CLIP_HOST_UTF8_OK", "AGENT_CLIP_GUEST_REQUEST",
+                        "AGENT_CLIP_RESULT host=1 guest-request=1 guest-sent=1",
+                        f"AGENT_ISOLATION_RESULT role={role} probes={3 if role == 0 else 0} grabs=1 requests=1 data=1"]
+            if any(lines.count(marker) != 1 for marker in required):
+                raise AssertionError(f"isolation fixture {role}: unexpected clipboard exchange/counts")
+            probes = [line for line in lines if line.startswith("AGENT_ISOLATION_PROBE ")]
+            if probes != ([f"AGENT_ISOLATION_PROBE stage={i}" for i in range(1, 4)] if role == 0 else []):
+                raise AssertionError(f"isolation fixture {role}: missing background attempts")
+            if role == 0 and lines.index("AGENT_ISOLATION_PROBE stage=3") >= lines.index("AGENT_CLIP_HOST_GRAB"):
+                raise AssertionError("background attempts did not precede foreground exchange")
+    print("Real two-session clipboard isolation checks passed.")
+
+
 def test_clipboard_security(app, root):
     exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
@@ -571,6 +646,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-full", tls.TICKET, True, agent="clipboard-full")
         test_clipboard_security(args.app.resolve(), root)
+        test_clipboard_isolation(args.app.resolve(), root, fixture)
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []
