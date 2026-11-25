@@ -898,7 +898,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 SessionController(engine: SpiceEngineAdapter(pasteboardName: board.name),
                                   connectionTimeout: .seconds(8), displayTimeout: .zero)
             }
-            func closeAll() {
+            @MainActor func closeAll() {
                 for id in workspace.sessions.map(\.sessionID) { workspace.close(id) }
             }
             do {
