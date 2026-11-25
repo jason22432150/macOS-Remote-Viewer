@@ -276,7 +276,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 // Use exactly the model API used by the production tab buttons.
-                for (step, selected) in [0, 1, 2, 3, 0, 2, 1, 3].enumerated() {
+                // Repeat the same real-view checks across three complete switch cycles.
+                let switchOrder = Array(repeating: [0, 1, 2, 3, 0, 2, 1, 3], count: 3).flatMap { $0 }
+                for (step, selected) in switchOrder.enumerated() {
                     workspaceModel.selectSession(original[selected].sessionID)
                     try await validateSelection(selected)
                     print("MRV_WORKSPACE_SWITCH_OK step=\(step) selected=\(selected) live=4")

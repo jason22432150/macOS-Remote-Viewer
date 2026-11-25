@@ -270,7 +270,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                         "--loopback-spice-workspace-probe" if workspace else "--loopback-spice-multi-probe")
                 command = [str(exe), mode, *map(str, profiles)]
             result = subprocess.run(command, cwd=root, env=env,
-                                    capture_output=True, text=True, timeout=110)
+                                    capture_output=True, text=True, timeout=300 if workspace else 110)
             print(result.stdout[-12000:])
             if result.stderr:
                 print(result.stderr[-16000:])
@@ -295,7 +295,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
             elif workspace:
                 switches = [line for line in lines if line.startswith("MRV_WORKSPACE_SWITCH_OK ")]
                 expected = [f"MRV_WORKSPACE_SWITCH_OK step={step} selected={selected} live=4"
-                            for step, selected in enumerate((0, 1, 2, 3, 0, 2, 1, 3))]
+                            for step, selected in enumerate((0, 1, 2, 3, 0, 2, 1, 3) * 3)]
                 if switches != expected:
                     raise AssertionError("workspace: incomplete SwiftUI selection checks")
                 for marker in ("MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3",
