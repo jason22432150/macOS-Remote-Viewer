@@ -83,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe",
          "--loopback-spice-clipboard-invalid-probe", "--loopback-spice-clipboard-late-probe",
          "--loopback-spice-clipboard-reactivate-probe", "--loopback-spice-clipboard-bulk-probe",
-         "--scanout-runtime-probe"].contains($0)
+         "--scanout-runtime-probe", "--scanout-drawable-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -132,8 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if arguments.contains("--startup-smoke-test") {
             runStartupSmokeTest()
-        } else if arguments.contains("--scanout-runtime-probe") {
-            runScanoutRuntimeProbe()
+        } else if arguments.contains("--scanout-runtime-probe") || arguments.contains("--scanout-drawable-probe") {
+            runScanoutRuntimeProbe(presentDrawable: arguments.contains("--scanout-drawable-probe"))
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
@@ -804,7 +804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Exercise actual display callbacks and Metal completion using the production canvas.
-    private func runScanoutRuntimeProbe() {
+    private func runScanoutRuntimeProbe(presentDrawable: Bool = false) {
         Task { @MainActor in
             do {
                 guard model.sessions.isEmpty, let device = MTLCreateSystemDefaultDevice() else {
@@ -818,10 +818,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let replacementView = MTKView(frame: view.frame, device: device)
                 replacementView.isPaused = true
                 let replacement = CSMetalRenderer(metalKitView: replacementView)
+                var window: NSWindow?
+                if presentDrawable {
+                    let frame = CGRect(x: 0, y: 0, width: 256, height: 256)
+                    let probeWindow = NSWindow(contentRect: frame, styleMask: [.titled, .closable],
+                                               backing: .buffered, defer: false)
+                    probeWindow.isReleasedWhenClosed = false
+                    view.frame = CGRect(origin: .zero, size: frame.size)
+                    view.framebufferOnly = false
+                    view.colorPixelFormat = .bgra8Unorm
+                    view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+                    view.autoResizeDrawable = false
+                    probeWindow.contentView = view
+                    probeWindow.makeKeyAndOrderFront(nil)
+                    view.drawableSize = CGSize(width: 64, height: 64)
+                    view.delegate = renderer
+                    renderer.viewportScale = 1
+                    view.preferredFramesPerSecond = 60
+                    view.enableSetNeedsDisplay = false
+                    view.isPaused = false
+                    window = probeWindow
+                }
                 // CocoaSpice delivers completion on the main queue after
                 // worker cleanup. The parent process enforces a deadline.
                 let ok: Bool = await withCheckedContinuation { continuation in
-                    CSDisplay.pve_testScanout(renderer, replacement: replacement) { ok in
+                    CSDisplay.pve_testScanout(renderer, replacement: replacement,
+                        observe: presentDrawable ? { stage, completed in
+                            // Only one sample is accepted for each stage.
+                            // Captured callbacks from previously submitted draws
+                            // cannot complete this stage a second time.
+                            var consumed = false
+                            renderer.smokeRegionHandler = { center, a, b, c, d in
+                                guard !consumed else { return }
+                                consumed = true
+                                renderer.smokeRegionHandler = nil
+                                let wanted: UInt32 = stage == 1 ? 0xffff00 : 0x0000ff
+                                let exterior = [a,b,c,d].map { $0 & 0x00ffffff }
+                                let actual = center & 0x00ffffff
+                                let ok = actual == wanted && exterior.allSatisfy { $0 == 0xffff00 }
+                                if !ok {
+                                    print("MRV_SCANOUT_DRAWABLE_MISMATCH stage=\(stage) center=\(actual) exterior=\(exterior)")
+                                }
+                                completed(ok)
+                            }
+                        } : nil) { ok in
                         continuation.resume(returning: ok)
                     }
                 }
@@ -829,6 +869,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 withExtendedLifetime(renderer) {}
                 withExtendedLifetime(replacementView) {}
                 withExtendedLifetime(replacement) {}
+                renderer.smokeRegionHandler = nil
+                view.isPaused = true
+                view.delegate = nil
+                window?.orderOut(nil)
                 guard ok else { throw SessionError.cancelled }
                 print("MRV_SCANOUT_RUNTIME_OK")
                 fflush(nil)

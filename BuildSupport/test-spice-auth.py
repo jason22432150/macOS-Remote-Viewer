@@ -685,12 +685,13 @@ def test_clipboard_isolation(app, root, fixture, late=False, reactivate=False):
     print("Real two-session clipboard isolation checks passed.")
 
 
-def test_scanout_runtime(app, root):
+def test_scanout_runtime(app, root, drawable=False):
     exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
     env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
     env["GST_REGISTRY"] = str(root / "gst-registry.bin")
-    result = subprocess.run([str(exe), "--scanout-runtime-probe"], cwd=root, env=env,
+    mode = "--scanout-drawable-probe" if drawable else "--scanout-runtime-probe"
+    result = subprocess.run([str(exe), mode], cwd=root, env=env,
                             capture_output=True, text=True, timeout=30)
     print(result.stdout[-6000:])
     if result.stderr:
@@ -702,6 +703,11 @@ def test_scanout_runtime(app, root):
                 "MRV_SCANOUT_BOUNDS_OK", "MRV_SCANOUT_CLEANUP_RESET",
                 "MRV_SCANOUT_CLEANUP_SURFACE", "MRV_SCANOUT_CLEANUP_SESSION",
                 "MRV_SCANOUT_COMPLETION_MAIN", "MRV_SCANOUT_RUNTIME_OK"]
+    if drawable:
+        index = expected.index("MRV_SCANOUT_STALE_FENCE_OK")
+        expected[index:index] = ["MRV_SCANOUT_DRAWABLE_FULL_OK",
+                                 "MRV_SCANOUT_DRAWABLE_PARTIAL_PRIVATE_OK",
+                                 "MRV_SCANOUT_DRAWABLE_REFRESH_OK"]
     actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_SCANOUT_")]
     if result.returncode != 0 or actual != expected:
         raise AssertionError(f"scanout runtime: exit={result.returncode}, incomplete GPU copy/cleanup checks {actual}")
@@ -752,6 +758,7 @@ def main():
         test_clipboard_isolation(args.app.resolve(), root, fixture, late=True)
         test_clipboard_isolation(args.app.resolve(), root, fixture, late=True, reactivate=True)
         test_scanout_runtime(args.app.resolve(), root)
+        test_scanout_runtime(args.app.resolve(), root, drawable=True)
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []

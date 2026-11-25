@@ -1753,7 +1753,8 @@ def overlay_scanout_runtime_probe(checkout: Path) -> None:
          "/// Completion is delivered on the AppKit main queue after worker cleanup.\n"
          "+ (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer "
          "replacement:(id<CSRenderer>)replacement "
-         "completion:(void (^)(BOOL))completion NS_SWIFT_NAME(pve_testScanout(_:replacement:completion:));"),
+         "observe:(nullable void (^)(NSUInteger, void (^)(BOOL)))observe "
+         "completion:(void (^)(BOOL))completion NS_SWIFT_NAME(pve_testScanout(_:replacement:observe:completion:));"),
     ])
     path = source / "CSDisplay.m"
     _replace_once(path, [
@@ -1795,7 +1796,9 @@ static BOOL mrv_scanout_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue,
 }
 
 + (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer
-                       replacement:(id<CSRenderer>)replacement completion:(void (^)(BOOL))completion {
+                       replacement:(id<CSRenderer>)replacement
+                           observe:(void (^)(NSUInteger, void (^)(BOOL)))observe
+                        completion:(void (^)(BOOL))completion {
     [CSMain.sharedInstance asyncWith:^{
         if (renderer.device != replacement.device || !renderer.commandQueue ||
             !replacement.commandQueue || renderer.commandQueue == replacement.commandQueue) {
@@ -1931,24 +1934,78 @@ static BOOL mrv_scanout_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue,
                             return;
                         }
                         puts("MRV_SCANOUT_QUEUE_RECOVERY_OK"); fflush(stdout);
-                        // Submit a real GPU copy, invalidate its generation
-                        // before its worker completion can publish.
-                        [display copyScanoutRect:CGRectMake(0,0,64,64) withCompletion:^{
-                            if (display.texture || display.presentTexture || display.glTexture) {
+                        void (^checkFence)(void) = ^{
+                            // Submit a real GPU copy, invalidate its generation
+                            // before its worker completion can publish.
+                            [display copyScanoutRect:CGRectMake(0,0,64,64) withCompletion:^{
+                                if (display.texture || display.presentTexture || display.glTexture) {
+                                    finish(NO);
+                                    return;
+                                }
+                                puts("MRV_SCANOUT_STALE_FENCE_OK"); fflush(stdout);
+                                CFRetain(surface);
+                                [display rebuildScanoutTextureWithSurface:surface width:65 height:64];
+                                if (display.glTexture || display.presentTexture) {
+                                    finish(NO);
+                                    return;
+                                }
+                                puts("MRV_SCANOUT_BOUNDS_OK"); fflush(stdout);
+                                finish(YES);
+                            }];
+                            [display resetScanout];
+                        };
+                        if (!observe) {
+                            checkFence();
+                            return;
+                        }
+                        // Install a one-shot drawable observer on main before
+                        // publishing each private texture. The observer calls
+                        // back only after the real renderer's GPU readback.
+                        display.visibleArea = CGRectMake(0,0,64,64);
+                        display.displaySize = CGSizeMake(64,64);
+                        [display rebuildDisplayVertices];
+                        void (^present)(NSUInteger, void (^)(BOOL)) = ^(NSUInteger stage, void (^next)(BOOL)) {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                observe(stage, ^(BOOL ok) {
+                                    [CSMain.sharedInstance asyncWith:^{ next(ok); }];
+                                });
+                                [CSMain.sharedInstance asyncWith:^{ [display invalidate]; }];
+                            });
+                        };
+                        present(1, ^(BOOL ok) {
+                            if (!ok || !mrv_fill_surface(surface, 0x000000ff, NO)) {
                                 finish(NO);
                                 return;
                             }
-                            puts("MRV_SCANOUT_STALE_FENCE_OK"); fflush(stdout);
-                            CFRetain(surface);
-                            [display rebuildScanoutTextureWithSurface:surface width:65 height:64];
-                            if (display.glTexture || display.presentTexture) {
-                                finish(NO);
-                                return;
-                            }
-                            puts("MRV_SCANOUT_BOUNDS_OK"); fflush(stdout);
-                            finish(YES);
-                        }];
-                        [display resetScanout];
+                            puts("MRV_SCANOUT_DRAWABLE_FULL_OK"); fflush(stdout);
+                            [display copyScanoutRect:CGRectMake(24,24,16,16) withCompletion:^{
+                                // After the copy fence, overwrite all source
+                                // bytes before the actual drawable samples it.
+                                if (!mrv_scanout_pixel(display.texture, queue, 32,32,0x000000ff) ||
+                                    !mrv_scanout_pixel(display.texture, queue, 2,2,0x00ffff00) ||
+                                    !mrv_fill_surface(surface, 0x00ff0000, NO)) {
+                                    finish(NO);
+                                    return;
+                                }
+                                present(2, ^(BOOL ok) {
+                                    if (!ok) {
+                                        finish(NO);
+                                        return;
+                                    }
+                                    puts("MRV_SCANOUT_DRAWABLE_PARTIAL_PRIVATE_OK"); fflush(stdout);
+                                    // Re-present the same retained private
+                                    // texture without any further guest draw.
+                                    present(3, ^(BOOL ok) {
+                                        if (!ok) {
+                                            finish(NO);
+                                            return;
+                                        }
+                                        puts("MRV_SCANOUT_DRAWABLE_REFRESH_OK"); fflush(stdout);
+                                        checkFence();
+                                    });
+                                });
+                            }];
+                        });
                     }];
                 }];
             }];
