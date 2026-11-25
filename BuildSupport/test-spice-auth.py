@@ -541,23 +541,30 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 else "Real four-session display isolation checks passed."))
 
 
-def test_clipboard_isolation(app, root, fixture):
+def test_clipboard_isolation(app, root, fixture, late=False):
     servers = []
     profiles = []
+    prefix = "clipboard-late" if late else "clipboard-isolation"
+    request_gate = root / f"{prefix}-request"
+    send_gate = root / f"{prefix}-send"
+    delivered_gate = root / f"{prefix}-delivered"
     with ExitStack() as stack:
         try:
             for role in range(2):
                 with socket.socket() as reserved:
                     reserved.bind(("127.0.0.1", 0))
                     port = reserved.getsockname()[1]
-                profile = root / f"clipboard-isolation-{role}.vv"
+                profile = root / f"{prefix}-{role}.vv"
                 profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
                 profiles.append(profile)
-                log = root / f"clipboard-isolation-{role}.log"
+                log = root / f"{prefix}-{role}.log"
                 output = stack.enter_context(log.open("wb"))
-                server = subprocess.Popen([str(fixture), str(port), str(root / "trusted.pem"),
-                    str(root / "server.pem"), str(root / "server.key"), tls.TICKET,
-                    "agent-clipboard-isolation", str(role)], stdout=output, stderr=subprocess.STDOUT)
+                cmd = [str(fixture), str(port), str(root / "trusted.pem"),
+                       str(root / "server.pem"), str(root / "server.key"), tls.TICKET,
+                       "agent-clipboard-late" if late else "agent-clipboard-isolation", str(role)]
+                if late:
+                    cmd.append(str(send_gate))
+                server = subprocess.Popen(cmd, stdout=output, stderr=subprocess.STDOUT)
                 servers.append((role, server, log))
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
@@ -576,15 +583,48 @@ def test_clipboard_isolation(app, root, fixture):
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
-            result = subprocess.run([str(exe), "--loopback-spice-clipboard-isolation-probe",
-                                     *map(str, profiles)], cwd=root, env=env, capture_output=True,
-                                    text=True, timeout=35)
+            if late:
+                app_log = root / f"{prefix}-app.log"
+                app_err = root / f"{prefix}-app.err"
+                with app_log.open("wb") as out, app_err.open("wb") as err:
+                    proc = subprocess.Popen([str(exe), "--loopback-spice-clipboard-late-probe",
+                                             *map(str, profiles), str(request_gate), str(delivered_gate)],
+                                            cwd=root, env=env, stdout=out, stderr=err)
+                    try:
+                        deadline = time.monotonic() + 45
+                        while proc.poll() is None and time.monotonic() < deadline:
+                            peer_lines = servers[1][2].read_text(errors="replace").splitlines()
+                            app_lines = app_log.read_text(errors="replace").splitlines()
+                            if "AGENT_LATE_REQUEST_RECEIVED" in peer_lines:
+                                request_gate.touch()
+                            if "MRV_CLIP_LATE_A_READY" in app_lines and request_gate.exists():
+                                send_gate.touch()
+                            if "AGENT_LATE_DATA_DRAINED" in peer_lines and send_gate.exists():
+                                delivered_gate.touch()
+                            time.sleep(0.025)
+                        if proc.poll() is None:
+                            raise RuntimeError("late clipboard probe timed out")
+                    finally:
+                        if proc.poll() is None:
+                            proc.kill()
+                            proc.wait(timeout=5)
+                    result = subprocess.CompletedProcess(proc.args, proc.returncode,
+                        app_log.read_text(errors="replace"), app_err.read_text(errors="replace"))
+            else:
+                result = subprocess.run([str(exe), "--loopback-spice-clipboard-isolation-probe",
+                                         *map(str, profiles)], cwd=root, env=env, capture_output=True,
+                                        text=True, timeout=35)
             print(result.stdout[-6000:])
             if result.stderr:
                 print(result.stderr[-6000:])
             expected = ["MRV_CLIP_ISOLATION_B_OK", "MRV_CLIP_ISOLATION_BACKGROUND_OK",
                         "MRV_CLIP_ISOLATION_A_OK", "MRV_CLIP_ISOLATION_OK"]
-            actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_CLIP_ISOLATION_")]
+            if late:
+                expected = ["MRV_CLIP_ISOLATION_B_OK", "MRV_CLIP_ISOLATION_BACKGROUND_OK",
+                            "MRV_CLIP_LATE_REQUEST_CONFIRMED", "MRV_CLIP_ISOLATION_A_OK",
+                            "MRV_CLIP_LATE_A_READY", "MRV_CLIP_LATE_PRESERVED_OK", "MRV_CLIP_ISOLATION_OK"]
+            actual = [line for line in result.stdout.splitlines()
+                      if line.startswith(("MRV_CLIP_ISOLATION_", "MRV_CLIP_LATE_"))]
             if result.returncode != 0 or actual != expected:
                 raise AssertionError(f"clipboard isolation app lifecycle: {actual}")
         finally:
@@ -605,9 +645,17 @@ def test_clipboard_isolation(app, root, fixture):
                 raise AssertionError(f"isolation fixture {role}: invalid TLS lifecycle")
             required = ["AGENT_CLIP_HOST_UTF8_OK", "AGENT_CLIP_GUEST_REQUEST",
                         "AGENT_CLIP_RESULT host=1 guest-request=1 guest-sent=1",
-                        f"AGENT_ISOLATION_RESULT role={role} probes={3 if role == 0 else 0} grabs=1 requests=1 data=1"]
+                        f"AGENT_ISOLATION_RESULT role={role} probes={3 if role == 0 else 0} grabs=1 requests={2 if late and role == 1 else 1} data=1"]
             if any(lines.count(marker) != 1 for marker in required):
                 raise AssertionError(f"isolation fixture {role}: unexpected clipboard exchange/counts")
+            if late and role == 1:
+                late_markers = [line for line in lines if line.startswith("AGENT_LATE_")]
+                if late_markers != ["AGENT_LATE_GRAB_SENT", "AGENT_LATE_REQUEST_RECEIVED",
+                                    "AGENT_LATE_DATA_SENT", "AGENT_LATE_DATA_DRAINED",
+                                    "AGENT_LATE_RESULT requested=1 sent=1 drained=1"]:
+                    raise AssertionError(f"late clipboard fixture: invalid lifecycle {late_markers}")
+                if not all(gate.exists() for gate in (request_gate, send_gate, delivered_gate)):
+                    raise AssertionError("late clipboard fixture: missing synchronization barriers")
             probes = [line for line in lines if line.startswith("AGENT_ISOLATION_PROBE ")]
             if probes != ([f"AGENT_ISOLATION_PROBE stage={i}" for i in range(1, 4)] if role == 0 else []):
                 raise AssertionError(f"isolation fixture {role}: missing background attempts")
@@ -657,6 +705,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-invalid-full", tls.TICKET, True, agent="clipboard-invalid-full")
         test_clipboard_security(args.app.resolve(), root)
         test_clipboard_isolation(args.app.resolve(), root, fixture)
+        test_clipboard_isolation(args.app.resolve(), root, fixture, late=True)
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []

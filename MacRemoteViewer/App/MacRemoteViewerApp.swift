@@ -79,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
          "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
          "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe",
-         "--loopback-spice-clipboard-invalid-probe"].contains($0)
+         "--loopback-spice-clipboard-invalid-probe", "--loopback-spice-clipboard-late-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -131,6 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-late-probe") {
+            guard arguments.count == index + 5 else { Darwin.exit(2) }
+            runClipboardIsolationProbe(files: arguments[(index + 1)...(index + 2)].map { URL(fileURLWithPath: $0) },
+                                       lateRequest: URL(fileURLWithPath: arguments[index + 3]),
+                                       lateDelivered: URL(fileURLWithPath: arguments[index + 4]))
         } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-isolation-probe") {
             guard arguments.count == index + 3 else { Darwin.exit(2) }
             runClipboardIsolationProbe(files: arguments[(index + 1)...].map { URL(fileURLWithPath: $0) })
@@ -895,7 +900,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// same private named pasteboard, as two tabs do at the system board.
     /// Two genuine TLS Main Channels, production selection policy and one
     /// isolated board. No access to the user's general pasteboard.
-    private func runClipboardIsolationProbe(files: [URL]) {
+    private func runClipboardIsolationProbe(files: [URL], lateRequest: URL? = nil, lateDelivered: URL? = nil) {
         Task { @MainActor in
             let board = NSPasteboard.withUniqueName()
             let workspace = SessionWorkspace { _ in
@@ -927,6 +932,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await Task.sleep(for: .milliseconds(50))
                 }
                 let unexpected = "MRV inactive guest must not overwrite"
+                let lateText = "MRV delayed inactive guest overwrite"
                 @MainActor func exchange(index: Int, host: String, guest: String) async throws {
                     guard workspace.selectedSessionID == sessions[index].sessionID else { throw SessionError.cancelled }
                     board.clearContents()
@@ -934,7 +940,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let end = ContinuousClock.now + .seconds(5)
                     while ContinuousClock.now < end {
                         guard sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected }),
-                              board.string(forType: .string) != unexpected else { throw SessionError.cancelled }
+                              board.string(forType: .string) != unexpected,
+                              board.string(forType: .string) != lateText else { throw SessionError.cancelled }
                         if board.string(forType: .string) == guest { return }
                         try await Task.sleep(for: .milliseconds(25))
                     }
@@ -954,9 +961,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await Task.sleep(for: .milliseconds(25))
                 }
                 print("MRV_CLIP_ISOLATION_BACKGROUND_OK")
+                if let lateRequest {
+                    let deadline = ContinuousClock.now + .seconds(8)
+                    while !FileManager.default.fileExists(atPath: lateRequest.path) {
+                        guard ContinuousClock.now < deadline,
+                              board.string(forType: .string) == "MRV guest B ☀️",
+                              sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected }) else {
+                            throw SessionError.cancelled
+                        }
+                        try await Task.sleep(for: .milliseconds(25))
+                    }
+                    print("MRV_CLIP_LATE_REQUEST_CONFIRMED")
+                }
                 workspace.select(sessions[0].sessionID)
                 try await exchange(index: 0, host: "MRV host A 繁中", guest: "MRV guest A 🚀")
                 print("MRV_CLIP_ISOLATION_A_OK")
+                if let lateDelivered {
+                    let count = board.changeCount
+                    // Python permits B's delayed response only after observing
+                    // this marker, when A's exchange has already completed.
+                    print("MRV_CLIP_LATE_A_READY")
+                    fflush(nil)
+                    let deadline = ContinuousClock.now + .seconds(8)
+                    while !FileManager.default.fileExists(atPath: lateDelivered.path) {
+                        guard ContinuousClock.now < deadline, board.changeCount == count,
+                              board.string(forType: .string) == "MRV guest A 🚀",
+                              sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected }) else {
+                            throw SessionError.cancelled
+                        }
+                        try await Task.sleep(for: .milliseconds(25))
+                    }
+                    let grace = ContinuousClock.now + .seconds(1)
+                    while ContinuousClock.now < grace {
+                        guard board.changeCount == count, board.string(forType: .string) == "MRV guest A 🚀",
+                              sessions.allSatisfy({ $0.state == .connected && $0.agent.isConnected }) else {
+                            throw SessionError.cancelled
+                        }
+                        try await Task.sleep(for: .milliseconds(25))
+                    }
+                    print("MRV_CLIP_LATE_PRESERVED_OK")
+                }
                 let settle = ContinuousClock.now + .seconds(1)
                 while ContinuousClock.now < settle {
                     guard board.string(forType: .string) == "MRV guest A 🚀",

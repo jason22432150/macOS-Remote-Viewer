@@ -327,7 +327,10 @@ static gboolean agent_clipboard, clip_host_grab, clip_host_requested, clip_host_
 static gboolean clip_guest_grab, clip_guest_requested, clip_guest_sent;
 static const char *clip_host_text = "MRV Mac 繁體中文 ☀️\nline-2";
 static const char *clip_guest_text = "MRV Guest 測試剪貼簿 🚀\nline-2";
-static gboolean agent_isolation, agent_clipboard_invalid;
+static gboolean agent_isolation, agent_clipboard_invalid, agent_late;
+static gboolean late_grab, late_request, late_sent, late_drained;
+static const char *late_gate;
+static const char late_text[] = "MRV delayed inactive guest overwrite";
 static unsigned invalid_stage, invalid_requests, invalid_sent;
 static gboolean invalid_grab_pending;
 static gint64 invalid_at;
@@ -392,6 +395,12 @@ static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len
                     format == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
                     ++invalid_requests;
                     invalid_grab_pending = FALSE;
+                }
+                if (agent_late && isolation_role == 1 && late_grab && !late_request &&
+                    type == VD_AGENT_CLIPBOARD_REQUEST && payload_size == sizeof(format) &&
+                    format == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
+                    late_request = TRUE;
+                    puts("AGENT_LATE_REQUEST_RECEIVED");
                 }
                 // We intentionally do not advertise CLIPBOARD_SELECTION or
                 // GRAB_SERIAL; the legacy clipboard payload starts at type.
@@ -576,6 +585,22 @@ static gboolean agent_tick(gpointer data) {
         fflush(stdout);
         agent_queue_clip(VD_AGENT_CLIPBOARD, clip_guest_text, strlen(clip_guest_text));
         if (agent_clipboard_invalid) invalid_at = g_get_monotonic_time();
+    } else if (agent_late && isolation_role == 1 && clip_guest_sent && !late_grab) {
+        late_grab = TRUE;
+        puts("AGENT_LATE_GRAB_SENT");
+        fflush(stdout);
+        agent_queue_clip(VD_AGENT_CLIPBOARD_GRAB, NULL, 0);
+    } else if (agent_late && isolation_role == 1 && late_request && !late_sent &&
+               g_file_test(late_gate, G_FILE_TEST_IS_REGULAR)) {
+        late_sent = TRUE;
+        puts("AGENT_LATE_DATA_SENT");
+        fflush(stdout);
+        agent_queue_clip(VD_AGENT_CLIPBOARD, late_text, sizeof(late_text) - 1);
+    } else if (agent_late && isolation_role == 1 && late_sent && !late_drained) {
+        // Previous branch ensures the complete VDI chunk has been read.
+        late_drained = TRUE;
+        puts("AGENT_LATE_DATA_DRAINED");
+        fflush(stdout);
     } else if (agent_clipboard_invalid && clip_guest_sent && invalid_stage < 3) {
         // Each malformed payload is sent only after a fresh actual request.
         // Leave a visible interval between writes to test board preservation.
@@ -613,7 +638,7 @@ static gboolean agent_tick(gpointer data) {
         create_primary(surface_width, surface_height);
         puts("AGENT_PRIMARY_RESIZED 1024x768");
         fflush(stdout);
-    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_isolation ? 16000000 : agent_clipboard ? 12000000 : agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
+    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_late ? 45000000 : agent_isolation ? 16000000 : agent_clipboard ? 12000000 : agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
         // Real server-side hot removal, not a fabricated client callback.
         agent_attached = FALSE;
         if (spice_server_remove_interface(&agent_device.base)) {
@@ -635,10 +660,13 @@ static int setup_agent(SpiceServer *server) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 6 || argc > 8) return 2;
+    if (argc < 6 || argc > 9) return 2;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
     gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
-    agent_isolation = argc == 8 && strcmp(argv[6], "agent-clipboard-isolation") == 0;
+    agent_late = argc == 9 && strcmp(argv[6], "agent-clipboard-late") == 0;
+    late_gate = agent_late ? argv[8] : NULL;
+    if (argc == 9 && !agent_late) return 2;
+    agent_isolation = agent_late || (argc == 8 && strcmp(argv[6], "agent-clipboard-isolation") == 0);
     if (agent_isolation) {
         if (strcmp(argv[7], "0") == 0) {
             isolation_role = 0;
@@ -718,6 +746,8 @@ int main(int argc, char **argv) {
         if (agent_clipboard) printf("AGENT_CLIP_RESULT host=%d guest-request=%d guest-sent=%d\n",
                                     clip_host_ok, clip_guest_requested, clip_guest_sent && agent_tx_pos == agent_tx_len);
         if (agent_clipboard_invalid) printf("AGENT_CLIP_INVALID_RESULT requests=%u sent=%u\n", invalid_requests, invalid_sent);
+        if (agent_late && isolation_role == 1)
+            printf("AGENT_LATE_RESULT requested=%d sent=%d drained=%d\n", late_request, late_sent, late_drained);
         if (agent_isolation) printf("AGENT_ISOLATION_RESULT role=%u probes=%u grabs=%u requests=%u data=%u\n",
                                      isolation_role, isolation_probe_stage, clip_grabs, clip_requests, clip_data);
         printf("AGENT_RESULT received=%d delivered=%d removed=%d error=%d\n",
