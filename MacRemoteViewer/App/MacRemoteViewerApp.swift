@@ -79,7 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
          "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
          "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe",
-         "--loopback-spice-clipboard-invalid-probe", "--loopback-spice-clipboard-late-probe"].contains($0)
+         "--loopback-spice-clipboard-invalid-probe", "--loopback-spice-clipboard-late-probe",
+         "--loopback-spice-clipboard-reactivate-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -131,6 +132,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let index = arguments.firstIndex(of: "--loopback-tls-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-reactivate-probe") {
+            guard arguments.count == index + 5 else { Darwin.exit(2) }
+            runClipboardIsolationProbe(files: arguments[(index + 1)...(index + 2)].map { URL(fileURLWithPath: $0) },
+                                       lateRequest: URL(fileURLWithPath: arguments[index + 3]),
+                                       lateDelivered: URL(fileURLWithPath: arguments[index + 4]), reactivate: true)
         } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-late-probe") {
             guard arguments.count == index + 5 else { Darwin.exit(2) }
             runClipboardIsolationProbe(files: arguments[(index + 1)...(index + 2)].map { URL(fileURLWithPath: $0) },
@@ -900,7 +906,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// same private named pasteboard, as two tabs do at the system board.
     /// Two genuine TLS Main Channels, production selection policy and one
     /// isolated board. No access to the user's general pasteboard.
-    private func runClipboardIsolationProbe(files: [URL], lateRequest: URL? = nil, lateDelivered: URL? = nil) {
+    private func runClipboardIsolationProbe(files: [URL], lateRequest: URL? = nil, lateDelivered: URL? = nil,
+                                            reactivate: Bool = false) {
         Task { @MainActor in
             let board = NSPasteboard.withUniqueName()
             let workspace = SessionWorkspace { _ in
@@ -977,9 +984,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await exchange(index: 0, host: "MRV host A 繁中", guest: "MRV guest A 🚀")
                 print("MRV_CLIP_ISOLATION_A_OK")
                 if let lateDelivered {
+                    if reactivate {
+                        workspace.select(sessions[1].sessionID)
+                        guard workspace.selectedSessionID == sessions[1].sessionID else { throw SessionError.cancelled }
+                        print("MRV_CLIP_LATE_REACTIVATED")
+                    }
                     let count = board.changeCount
                     // Python permits B's delayed response only after observing
-                    // this marker, when A's exchange has already completed.
+                    // this marker, after A's exchange (and optional B reactivation).
                     print("MRV_CLIP_LATE_A_READY")
                     fflush(nil)
                     let deadline = ContinuousClock.now + .seconds(8)

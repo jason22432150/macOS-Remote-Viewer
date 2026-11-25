@@ -541,10 +541,10 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 else "Real four-session display isolation checks passed."))
 
 
-def test_clipboard_isolation(app, root, fixture, late=False):
+def test_clipboard_isolation(app, root, fixture, late=False, reactivate=False):
     servers = []
     profiles = []
-    prefix = "clipboard-late" if late else "clipboard-isolation"
+    prefix = "clipboard-reactivate" if reactivate else "clipboard-late" if late else "clipboard-isolation"
     request_gate = root / f"{prefix}-request"
     send_gate = root / f"{prefix}-send"
     delivered_gate = root / f"{prefix}-delivered"
@@ -587,7 +587,8 @@ def test_clipboard_isolation(app, root, fixture, late=False):
                 app_log = root / f"{prefix}-app.log"
                 app_err = root / f"{prefix}-app.err"
                 with app_log.open("wb") as out, app_err.open("wb") as err:
-                    proc = subprocess.Popen([str(exe), "--loopback-spice-clipboard-late-probe",
+                    mode = "--loopback-spice-clipboard-reactivate-probe" if reactivate else "--loopback-spice-clipboard-late-probe"
+                    proc = subprocess.Popen([str(exe), mode,
                                              *map(str, profiles), str(request_gate), str(delivered_gate)],
                                             cwd=root, env=env, stdout=out, stderr=err)
                     try:
@@ -623,6 +624,8 @@ def test_clipboard_isolation(app, root, fixture, late=False):
                 expected = ["MRV_CLIP_ISOLATION_B_OK", "MRV_CLIP_ISOLATION_BACKGROUND_OK",
                             "MRV_CLIP_LATE_REQUEST_CONFIRMED", "MRV_CLIP_ISOLATION_A_OK",
                             "MRV_CLIP_LATE_A_READY", "MRV_CLIP_LATE_PRESERVED_OK", "MRV_CLIP_ISOLATION_OK"]
+                if reactivate:
+                    expected.insert(expected.index("MRV_CLIP_LATE_A_READY"), "MRV_CLIP_LATE_REACTIVATED")
             actual = [line for line in result.stdout.splitlines()
                       if line.startswith(("MRV_CLIP_ISOLATION_", "MRV_CLIP_LATE_"))]
             if result.returncode != 0 or actual != expected:
@@ -706,6 +709,7 @@ def main():
         test_clipboard_security(args.app.resolve(), root)
         test_clipboard_isolation(args.app.resolve(), root, fixture)
         test_clipboard_isolation(args.app.resolve(), root, fixture, late=True)
+        test_clipboard_isolation(args.app.resolve(), root, fixture, late=True, reactivate=True)
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []

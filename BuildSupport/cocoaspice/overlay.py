@@ -1634,6 +1634,111 @@ def overlay_clipboard_input_guards(checkout: Path) -> None:
 
 
 
+def overlay_clipboard_request_epochs(checkout: Path) -> None:
+    """Track outstanding legacy clipboard requests on the GLib context.
+
+    A response has a type but no request ID. Do not issue a second request
+    for that type until the first has been consumed, even across activation.
+    """
+    source = checkout / "Sources" / "CocoaSpice"
+    _replace_once(source / "include" / "CSSession.h", [
+        ("@property (nonatomic, weak, nullable) id<CSPasteboardDelegate> pasteboardDelegate;",
+         "@property (nonatomic, weak, nullable) id<CSPasteboardDelegate> pasteboardDelegate;\n\n"
+         "/// Serialize clipboard activation and outstanding request epochs on the worker.\n"
+         "- (void)pve_setClipboardDelegate:(nullable id<CSPasteboardDelegate>)delegate enabled:(BOOL)enabled "
+         "NS_SWIFT_NAME(pve_setClipboardDelegate(_:enabled:));"),
+    ])
+    path = source / "CSSession.m"
+    _replace_once(path, [
+        ("@property (nonatomic, nullable) SpiceMainChannel *main;",
+         "@property (nonatomic, nullable) SpiceMainChannel *main;\n"
+         "@property (atomic) NSUInteger clipboardEpoch;\n"
+         "@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *clipboardRequests;"),
+        ("@implementation CSSession\n",
+         """@implementation CSSession
+
+- (void)pve_setClipboardDelegate:(id<CSPasteboardDelegate>)delegate enabled:(BOOL)enabled {
+    [CSMain.sharedInstance syncWith:^{
+        if (self.shareClipboard != enabled || self.pasteboardDelegate != delegate) {
+            self.clipboardEpoch += 1;
+        }
+        self.shareClipboard = enabled;
+        self.pasteboardDelegate = delegate;
+        // Keep outstanding requests until their replies arrive, even if
+        // the old activation is no longer eligible to write.
+    }];
+}
+"""),
+        ("""    // Match the Swift per-item bound before allocating or bridging data.
+    if (main != self.main || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||""",
+         """    // Consume exactly one request, including stale/malformed replies.
+    // Unsolicited data is never allowed to reach the pasteboard.
+    if (main != self.main || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD) return;
+    NSNumber *requestedEpoch = self.clipboardRequests[@(type)];
+    [self.clipboardRequests removeObjectForKey:@(type)];
+    if (!requestedEpoch || requestedEpoch.unsignedIntegerValue != self.clipboardEpoch) return;
+    // Match the Swift per-item bound before allocating or bridging data.
+    if (main != self.main || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||"""),
+        ("""    g_object_ref(main);
+    [CSMain.sharedInstance asyncWith:^{
+        for (int n = 0; n < ntypes; ++n) {
+            spice_main_channel_clipboard_selection_request(main, selection,
+                                                           types[n]);
+        }
+        g_object_unref(main);
+    }];""",
+         """    if (main != self.main || !self.pasteboardDelegate || !ntypes || !types || ntypes > 32)
+        return FALSE;
+    // Signal-owned types are only valid during the callback.
+    NSData *offered = [NSData dataWithBytes:types length:ntypes * sizeof(guint32)];
+    NSUInteger epoch = self.clipboardEpoch;
+    g_object_ref(main);
+    [CSMain.sharedInstance asyncWith:^{
+        if (self.main == main && self.shareClipboard && !self.sessionReadOnly &&
+            self.pasteboardDelegate && self.clipboardEpoch == epoch) {
+            if (!self.clipboardRequests) self.clipboardRequests = [NSMutableDictionary dictionary];
+            const guint32 *copiedTypes = offered.bytes;
+            for (guint n = 0; n < ntypes; ++n) {
+                guint32 type = copiedTypes[n];
+                switch (type) {
+                    case VD_AGENT_CLIPBOARD_UTF8_TEXT:
+                    case VD_AGENT_CLIPBOARD_IMAGE_PNG:
+                    case VD_AGENT_CLIPBOARD_IMAGE_BMP:
+                    case VD_AGENT_CLIPBOARD_IMAGE_TIFF:
+                    case VD_AGENT_CLIPBOARD_IMAGE_JPG: break;
+                    default: continue;
+                }
+                if (self.clipboardRequests[@(type)]) continue;
+                self.clipboardRequests[@(type)] = @(epoch);
+                spice_main_channel_clipboard_selection_request(main, selection, type);
+            }
+        }
+        g_object_unref(main);
+    }];"""),
+        ("""        [CSMain.sharedInstance asyncWith:^{
+            spice_main_channel_clipboard_selection_notify(main, selection, type, data.bytes, data.length);
+            g_object_unref(main);
+        }];""",
+         """        NSUInteger epoch = self.clipboardEpoch;
+        [CSMain.sharedInstance asyncWith:^{
+            if (self.main == main && self.shareClipboard && !self.sessionReadOnly &&
+                self.pasteboardDelegate && self.clipboardEpoch == epoch)
+                spice_main_channel_clipboard_selection_notify(main, selection, type, data.bytes, data.length);
+            g_object_unref(main);
+        }];"""),
+        ("""        self.main = g_object_ref(SPICE_MAIN_CHANNEL(channel));""",
+         """        [self.clipboardRequests removeAllObjects];
+        self.clipboardEpoch += 1;
+        self.main = g_object_ref(SPICE_MAIN_CHANNEL(channel));"""),
+        ("""        g_object_unref(self.main);
+        self.main = NULL;""",
+         """        [self.clipboardRequests removeAllObjects];
+        self.clipboardEpoch += 1;
+        g_object_unref(self.main);
+        self.main = NULL;"""),
+    ])
+
+
 def main() -> None:
     checkout = Path(sys.argv[1]) if len(sys.argv) > 1 else CHECKOUT
     if not (checkout / "Package.swift").exists():
@@ -1657,6 +1762,7 @@ def main() -> None:
     overlay_input_release_and_secure_attention(checkout)
     overlay_session_sharing_category(checkout)
     overlay_clipboard_input_guards(checkout)
+    overlay_clipboard_request_epochs(checkout)
     overlay_channel_lifetime_guards(checkout)
     overlay_connection_lifecycle(checkout)
     print(f"已套用 Homebrew overlay：{checkout}")

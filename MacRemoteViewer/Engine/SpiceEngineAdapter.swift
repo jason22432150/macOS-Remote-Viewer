@@ -82,8 +82,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     func disconnect() {
         releaseKeys()
         spicePasteboard.stopPolling()
-        connection?.session.shareClipboard = false
-        connection?.session.pasteboardDelegate = nil
+        connection?.session.pve_setClipboardDelegate(nil, enabled: false)
         clearFrameObserver()
         if let attachedRenderer { display?.removeRenderer(attachedRenderer) }
         connection?.delegate = nil
@@ -224,12 +223,10 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     private func applyClipboardSharing(to connection: CSConnection) {
         if clipboardSharingEnabled {
             spicePasteboard.startPolling()
-            connection.session.pasteboardDelegate = spicePasteboard
-            connection.session.shareClipboard = true
+            connection.session.pve_setClipboardDelegate(spicePasteboard, enabled: true)
         } else {
             spicePasteboard.stopPolling()
-            connection.session.shareClipboard = false
-            connection.session.pasteboardDelegate = nil
+            connection.session.pve_setClipboardDelegate(nil, enabled: false)
         }
     }
 
