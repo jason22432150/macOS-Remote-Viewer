@@ -465,7 +465,8 @@ static gboolean agent_tick(gpointer data) {
         for (int i = 0; i < DRAW_SLOTS; ++i)
             if (g_atomic_int_get(&draw_states[i]) == 1) return G_SOURCE_CONTINUE;
         spice_qxl_destroy_primary_surface(&qxl, 0);
-        memset(pixels, 0, sizeof(framebuffer.pixels));
+        // pixels is a macro for framebuffer.pixels; use the same alias in sizeof.
+        memset(pixels, 0, sizeof(pixels));
         surface_width = RESIZE_W;
         surface_height = RESIZE_H;
         resize_applied = TRUE;
