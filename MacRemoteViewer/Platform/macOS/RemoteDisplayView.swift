@@ -126,6 +126,19 @@ final class RemoteCanvasView: MTKView {
         metalRenderer?.smokeRegionHandler = handler
     }
 
+    /// Probe the actual cached mapping used by InputRouter, including
+    /// the center and letterbox rejection. No input is sent to the guest.
+    func smokeMappingMatches(_ frame: RemoteFrame) -> Bool {
+        guard let mapping, bounds.width > 0, bounds.height > 0,
+              mapping.displaySize == CGSize(width: frame.width, height: frame.height),
+              mapping.drawableSize == drawableSize,
+              let center = mapping.guestPoint(fromViewPoint: CGPoint(x: bounds.midX, y: bounds.midY), bounds: bounds),
+              abs(center.x - CGFloat(frame.width) / 2) < 0.5,
+              abs(center.y - CGFloat(frame.height) / 2) < 0.5 else { return false }
+        // This probe uses a deliberately wide window with a 4:3 guest.
+        return mapping.guestPoint(fromViewPoint: CGPoint(x: 0, y: bounds.midY), bounds: bounds) == nil
+    }
+
     func attachRendererIfNeeded() {
         guard let metalRenderer else { return }
         controller?.attachRenderer(metalRenderer)

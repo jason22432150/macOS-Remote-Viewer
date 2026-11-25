@@ -126,14 +126,18 @@ static gboolean quit_loop(gpointer data) {
 }
 
 /* Fixed test-only CPU framebuffer. Never expose guest or host desktop memory. */
-enum { WIDTH = 640, HEIGHT = 480, DRAW_SLOTS = 16, PATCH_W = 160, PATCH_H = 120 };
+enum { WIDTH = 640, HEIGHT = 480, RESIZE_W = 1024, RESIZE_H = 768, DRAW_SLOTS = 16, PATCH_W = 160, PATCH_H = 120 };
+static unsigned surface_width = WIDTH, surface_height = HEIGHT;
+static gboolean resize_applied;
 static struct {
-    uint32_t pixels[WIDTH * HEIGHT];
+    uint32_t pixels[RESIZE_W * RESIZE_H];
     QXLDrawable draws[DRAW_SLOTS];
     QXLImage images[DRAW_SLOTS];
     uint32_t red[WIDTH * HEIGHT];
     uint32_t green[WIDTH * HEIGHT];
     uint32_t blue[WIDTH * HEIGHT];
+    uint32_t resized_a[RESIZE_W * RESIZE_H];
+    uint32_t resized_b[RESIZE_W * RESIZE_H];
 } framebuffer;
 #define pixels framebuffer.pixels
 static QXLInstance qxl;
@@ -182,8 +186,8 @@ static gboolean update_color(gpointer data) {
     draw->surface_id = 0;
     unsigned sequence = next_color++;
     gboolean patch = partial_updates && sequence > 0;
-    unsigned width = patch ? PATCH_W : WIDTH;
-    unsigned height = patch ? PATCH_H : HEIGHT;
+    unsigned width = patch ? PATCH_W : surface_width;
+    unsigned height = patch ? PATCH_H : surface_height;
     draw->bbox.left = patch ? (WIDTH - PATCH_W) / 2 : 0;
     draw->bbox.top = patch ? (HEIGHT - PATCH_H) / 2 : 0;
     draw->bbox.right = draw->bbox.left + width;
@@ -204,8 +208,10 @@ static gboolean update_color(gpointer data) {
     image->bitmap.x = width;
     image->bitmap.y = height;
     image->bitmap.stride = width * 4;
-    image->bitmap.data = (uintptr_t)(partial_updates && !patch ? framebuffer.blue :
-                                     (sequence % 2 ? framebuffer.green : framebuffer.red));
+    image->bitmap.data = (uintptr_t)(resize_applied ?
+                                     (sequence % 2 ? framebuffer.resized_a : framebuffer.resized_b) :
+                                     (partial_updates && !patch ? framebuffer.blue :
+                                     (sequence % 2 ? framebuffer.green : framebuffer.red)));
     draw->u.copy.src_bitmap = (uintptr_t)image;
     draw->u.copy.src_area.right = width;
     draw->u.copy.src_area.bottom = height;
@@ -277,6 +283,17 @@ static QXLInterface display_interface = {
     .set_client_capabilities = qxl_capabilities,
 };
 
+static void create_primary(unsigned width, unsigned height) {
+    QXLDevSurfaceCreate surface = {0};
+    surface.width = width;
+    surface.height = height;
+    surface.stride = -(int32_t)(width * 4);
+    surface.format = SPICE_SURFACE_FMT_32_xRGB;
+    surface.mouse_mode = 1;
+    surface.mem = (uintptr_t)pixels;
+    surface.group_id = 0;
+    spice_qxl_create_primary_surface(&qxl, 0, &surface);
+}
 static int setup_display(SpiceServer *server) {
     memset(&qxl, 0, sizeof(qxl));
     for (size_t i = 0; i < WIDTH * HEIGHT; ++i) {
@@ -293,15 +310,7 @@ static int setup_display(SpiceServer *server) {
     slot.virt_end = (uintptr_t)&framebuffer + sizeof(framebuffer);
     slot.addr_delta = 0;
     spice_qxl_add_memslot(&qxl, &slot);
-    QXLDevSurfaceCreate surface = {0};
-    surface.width = WIDTH;
-    surface.height = HEIGHT;
-    surface.stride = -WIDTH * 4;
-    surface.format = SPICE_SURFACE_FMT_32_xRGB;
-    surface.mouse_mode = 1;
-    surface.mem = (uintptr_t)pixels;
-    surface.group_id = 0;
-    spice_qxl_create_primary_surface(&qxl, 0, &surface);
+    create_primary(WIDTH, HEIGHT);
     printf("PRIMARY_CREATED %dx%d\n", WIDTH, HEIGHT);
     fflush(stdout);
     return 0;
@@ -312,7 +321,7 @@ static int setup_display(SpiceServer *server) {
  * VDI framing follows the public spice-protocol vd_agent.h declarations.
  */
 static SpiceCharDeviceInstance agent_device;
-static gboolean agent_full, agent_attached, agent_error, agent_monitor;
+static gboolean agent_full, agent_attached, agent_error, agent_monitor, agent_resize;
 static unsigned agent_monitor_requests, agent_monitor_targets;
 static gboolean agent_received_caps, agent_sent_caps;
 static gint64 agent_delivered_at;
@@ -449,7 +458,21 @@ static gboolean agent_tick(gpointer data) {
         spice_server_char_device_wakeup(&agent_device);
     } else if (agent_sent_caps && agent_tx_pos < agent_tx_len) {
         spice_server_char_device_wakeup(&agent_device);
-    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_monitor ? 6000000 : 3000000)) {
+    } else if (agent_resize && agent_monitor_targets && !resize_applied) {
+        // Main-loop producer is serialized with update_color. Wait until the
+        // worker has consumed queued commands, then synchronously destroy
+        // the old primary; immutable bitmap storage remains valid.
+        for (int i = 0; i < DRAW_SLOTS; ++i)
+            if (g_atomic_int_get(&draw_states[i]) == 1) return G_SOURCE_CONTINUE;
+        spice_qxl_destroy_primary_surface(&qxl, 0);
+        memset(pixels, 0, sizeof(framebuffer.pixels));
+        surface_width = RESIZE_W;
+        surface_height = RESIZE_H;
+        resize_applied = TRUE;
+        create_primary(surface_width, surface_height);
+        puts("AGENT_PRIMARY_RESIZED 1024x768");
+        fflush(stdout);
+    } else if (agent_delivered_at && g_get_monotonic_time() - agent_delivered_at >= (agent_resize ? 10000000 : agent_monitor ? 6000000 : 3000000)) {
         // Real server-side hot removal, not a fabricated client callback.
         agent_attached = FALSE;
         if (spice_server_remove_interface(&agent_device.base)) {
@@ -474,11 +497,18 @@ int main(int argc, char **argv) {
     if (argc < 6 || argc > 8) return 2;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
     gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
-    agent_monitor = argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
-                                  strcmp(argv[6], "agent-monitor-limited") == 0);
+    agent_resize = argc == 7 && strcmp(argv[6], "agent-monitor-resize-full") == 0;
+    agent_monitor = agent_resize || (argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
+                                  strcmp(argv[6], "agent-monitor-limited") == 0));
+    if (agent_resize) {
+        for (size_t i = 0; i < RESIZE_W * RESIZE_H; ++i) {
+            framebuffer.resized_a[i] = 0x0000ffff;
+            framebuffer.resized_b[i] = 0x00ff00ff;
+        }
+    }
     int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates || workspace || agent_monitor);
     gboolean with_agent = agent_monitor || (argc == 7 && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-limited") == 0));
-    agent_full = with_agent && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
+    agent_full = with_agent && (agent_resize || strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
     if (argc >= 7 && !with_display && !with_agent) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;

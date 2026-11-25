@@ -131,10 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackTLSProbe(file: URL(fileURLWithPath: arguments[index + 1]))
         } else if let index = arguments.firstIndex(of: "--loopback-spice-agent-probe") {
             guard arguments.count == index + 3,
-                  ["full", "limited", "monitor-full", "monitor-limited"].contains(arguments[index + 2]) else { Darwin.exit(2) }
+                  ["full", "limited", "monitor-full", "monitor-limited", "monitor-resize-full"].contains(arguments[index + 2]) else { Darwin.exit(2) }
             runLoopbackSpiceAgentProbe(file: URL(fileURLWithPath: arguments[index + 1]),
                                        full: arguments[index + 2].hasSuffix("full"),
-                                       monitor: arguments[index + 2].hasPrefix("monitor-"))
+                                       monitor: arguments[index + 2].hasPrefix("monitor-"),
+                                       resize: arguments[index + 2] == "monitor-resize-full")
         } else if let index = arguments.firstIndex(of: "--loopback-spice-auth-probe") {
             guard index + 1 < arguments.count else { Darwin.exit(2) }
             runLoopbackSpiceAuthProbe(file: URL(fileURLWithPath: arguments[index + 1]))
@@ -875,12 +876,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reuse the same engine/controller to exercise disconnect and reconnect.
     /// Exercise actual guest-agent capability updates through the packaged
     /// CocoaSpice main channel, without touching the host clipboard.
-    private func runLoopbackSpiceAgentProbe(file: URL, full: Bool, monitor: Bool) {
+    private func runLoopbackSpiceAgentProbe(file: URL, full: Bool, monitor: Bool, resize: Bool) {
         Task { @MainActor in
             let controller = SessionController(engine: SpiceEngineAdapter(),
-                resolutionDebounce: .zero, resolutionRetryDelay: .seconds(1),
-                resolutionRetryLimit: 1, connectionTimeout: .seconds(8),
+                resolutionDebounce: .zero, resolutionRetryDelay: resize ? .seconds(3) : .seconds(1),
+                resolutionRetryLimit: 1, resolutionPreference: resize ? .keepGuest : .matchWindow,
+                connectionTimeout: .seconds(8),
                 displayTimeout: monitor ? .seconds(10) : .zero)
+            var resizeWindow: NSWindow?
+            var resizeCanvas: RemoteCanvasView?
+            var colors = Set<UInt32>()
             do {
                 let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
                 let profile = try VVParser().parse(data: data)
@@ -888,6 +893,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile,
                       model.sessions.isEmpty else { throw SessionError.cancelled }
                 controller.setClipboardSharingEnabled(false)
+                if resize {
+                    guard let device = MTLCreateSystemDefaultDevice() else { throw SessionError.engineUnavailable }
+                    let frame = CGRect(x: 0, y: 0, width: 800, height: 450)
+                    let window = NSWindow(contentRect: frame, styleMask: [.titled, .closable],
+                                          backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    let canvas = RemoteCanvasView(frame: frame, device: device)
+                    canvas.controller = controller
+                    canvas.setupMetal()
+                    canvas.setSmokePixelHandler { pixel, _ in colors.insert(pixel & 0x00ffffff) }
+                    window.contentView = canvas
+                    resizeWindow = window
+                    resizeCanvas = canvas
+                    window.makeKeyAndOrderFront(nil)
+                }
                 controller.open(profile)
                 let deadline = ContinuousClock.now + .seconds(15)
                 var matchedAt: ContinuousClock.Instant?
@@ -895,7 +915,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var requested = false
                 var unapplied = false
                 let originalFrame = RemoteFrame(width: 640, height: 480)
+                let targetFrame = RemoteFrame(width: 1024, height: 768)
+                var resized = false
                 while ContinuousClock.now < deadline {
+                    resizeCanvas?.attachRendererIfNeeded()
+                    resizeCanvas?.updateViewport()
                     if case .failed = controller.state { throw SessionError.network }
                     if controller.state == .disconnected { throw SessionError.disconnected }
                     if controller.state == .connected {
@@ -913,22 +937,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         } else {
                             matchedAt = nil
                         }
-                        if monitor && matched && caps.isConnected && controller.displaySize == originalFrame && !requested {
+                        let initialPixelsReady = !resize || (colors.contains(0xff0000) && colors.contains(0x00ff00) &&
+                            resizeCanvas?.smokeMappingMatches(originalFrame) == true && controller.hasRenderedFrame)
+                        if monitor && matched && caps.isConnected && controller.displaySize == originalFrame && !requested && initialPixelsReady {
                             // Exercise the production viewport policy/adapter.
                             // The fixture intentionally never changes its display.
-                            controller.updateViewportSize(CGSize(width: 1024, height: 768))
+                            if resize {
+                                print("MRV_AGENT_RESIZE_INITIAL_OK 640x480")
+                                colors.removeAll()
+                                // Preset avoids a window-size callback overriding the target.
+                                controller.applyResolutionPreference(.preset(targetFrame))
+                            } else {
+                                controller.updateViewportSize(CGSize(width: 1024, height: 768))
+                            }
                             requested = true
                             print("MRV_AGENT_MONITOR_TARGET 1024x768")
                         }
+                        if resize && requested && !resized && controller.displaySize == targetFrame &&
+                            colors.contains(0x00ffff) && colors.contains(0xff00ff) &&
+                            resizeCanvas?.smokeMappingMatches(targetFrame) == true && controller.hasRenderedFrame &&
+                            !controller.guestDidNotApplyResolution {
+                            resized = true
+                            print("MRV_AGENT_RESIZE_APPLIED_OK 1024x768 pixels=cyan,magenta mapping=ok")
+                        }
                         if monitor && requested && controller.guestDidNotApplyResolution && !unapplied {
-                            guard full, controller.displaySize == originalFrame else { throw SessionError.cancelled }
+                            guard !resize, full, controller.displaySize == originalFrame else { throw SessionError.cancelled }
                             unapplied = true
                             print("MRV_AGENT_MONITOR_UNAPPLIED_OK")
                         }
                         if matched && !caps.isConnected {
                             if monitor {
-                                guard requested, unapplied == full,
-                                      controller.displaySize == originalFrame,
+                                guard requested, unapplied == (full && !resize),
+                                      controller.displaySize == (resize ? targetFrame : originalFrame),
+                                      (!resize || resized),
                                       !controller.guestDidNotApplyResolution else { throw SessionError.cancelled }
                                 print("MRV_AGENT_MONITOR_OFFLINE_OK")
                             }
@@ -939,6 +980,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             guard controller.state == .disconnected, !controller.agent.isConnected,
                                   !controller.agent.supportsMonitorsConfig,
                                   !controller.agent.supportsClipboard else { throw SessionError.cancelled }
+                            resizeCanvas?.setSmokePixelHandler(nil)
+                            resizeCanvas?.prepareForRemoval()
+                            resizeWindow?.orderOut(nil)
                             print("MRV_SPICE_AGENT_OK")
                             fflush(nil)
                             Darwin.exit(0)
@@ -950,6 +994,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 throw SessionError.network
             } catch {
                 controller.cancel()
+                resizeCanvas?.setSmokePixelHandler(nil)
+                resizeCanvas?.prepareForRemoval()
+                resizeWindow?.orderOut(nil)
                 print("MRV_SPICE_AGENT_FAILED")
                 fflush(nil)
                 Darwin.exit(1)

@@ -84,13 +84,19 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 print("\n".join(actual))
                 if agent.startswith("monitor-"):
                     expected_monitor = ["MRV_AGENT_MONITOR_TARGET 1024x768"]
-                    if capability:
+                    if capability and agent != "monitor-resize-full":
                         expected_monitor.append("MRV_AGENT_MONITOR_UNAPPLIED_OK")
                     expected_monitor.append("MRV_AGENT_MONITOR_OFFLINE_OK")
                     actual_monitor = [line for line in lines if line.startswith("MRV_AGENT_MONITOR_")]
                     if actual_monitor != expected_monitor:
                         raise AssertionError(f"{name}: incorrect monitor request lifecycle: {actual_monitor}")
                     print("\n".join(actual_monitor))
+                    if agent == "monitor-resize-full":
+                        resize_markers = [line for line in lines if line.startswith("MRV_AGENT_RESIZE_")]
+                        if resize_markers != ["MRV_AGENT_RESIZE_INITIAL_OK 640x480",
+                                              "MRV_AGENT_RESIZE_APPLIED_OK 1024x768 pixels=cyan,magenta mapping=ok"]:
+                            raise AssertionError(f"{name}: incomplete actual surface resize: {resize_markers}")
+                        print("\n".join(resize_markers))
             elif partial:
                 rounds = [line for line in lines if line.startswith("MRV_SPICE_PARTIAL_ROUND_OK ")]
                 if rounds != [f"MRV_SPICE_PARTIAL_ROUND_OK {i} 640x480 center=red,green exterior=blue,blue,blue,blue" for i in (1, 2)]:
@@ -169,6 +175,8 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 submitted, consumed, released = map(int, counts[0].groups())
                 if not 0 < consumed <= submitted or not 0 <= released <= consumed:
                     raise AssertionError(f"{name}: invalid draw lifecycle")
+                if agent == "monitor-resize-full" and lines.count("AGENT_PRIMARY_RESIZED 1024x768") != 1:
+                    raise AssertionError(f"{name}: missing server primary surface resize")
                 print(f"METRIC {name} wire-requests={requests} matching-targets={targets}")
         if success and initialized != ["MAIN_INITIALIZED tls=1"] * (1 if agent is not None else 2 if display else 3):
             raise AssertionError(f"{name}: unexpected TLS main-channel initializations: {initialized}")
@@ -526,6 +534,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-limited", tls.TICKET, True, agent="limited")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-full", tls.TICKET, True, agent="monitor-full")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-limited", tls.TICKET, True, agent="monitor-limited")
+        test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
         # Run both paths independently even if one fails. Do not weaken or
         # replace the existing production-app integration test.
         failures = []
