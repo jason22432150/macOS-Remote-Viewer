@@ -120,3 +120,7 @@ CI #45444452551 attempt 4：八次 workspace selection、background/active close
 ## Drawable demand 最佳化
 
 CI #45521534489：真實 SwiftUI workspace 24/24 selection、前/背景 close、最終 0 sessions/0 views/4 disconnected/normal 0；215/215 QXL draws 釋放，其他整合測試全過。本輪調整 production CocoaSpice renderer：先檢查 retained source visibility/dirty flag，再要求 MetalKit currentRenderPassDescriptor/currentDrawable；idle、無 drawable、無 command buffer 仍 drain pending invalidate completions，後兩者不消耗 dirty state。視窗 drawable resize、sampler 變更及回到 active tab 主動標記 retained frame dirty，以避免靜態 guest 畫面切回時不重畫。保留 60/15 FPS tick 及既有獨立 GPU blit completion、scanout ownership，不 pause background、不更換 renderer；structural gate 驗證順序與 completion。尚未量測節省的 CPU/GPU 數量，待 CI 重新驗證既有 pixel、partial、24 次 workspace switch 和 cleanup。
+
+## 60 秒 workspace soak 與 current RSS
+
+CI #45523232164 已通過 drawable demand 最佳化及既有測試；workspace 24/24 switch、224/224 fixture draws，full multi 236/236。本輪保留原 24 次切換及關閉驗證，再加入至少 60 秒同一四組連線的 soak；6 個每十秒 checkpoint 依序切換、前景雙色重驗，區間每 100ms 檢查四組 connected、解析度、selection 及 foreign pixel。以 MACH_TASK_BASIC_INFO resident_size 取 current RSS，getrusage 取 peak RSS/累計 CPU，記錄 phase 0–6 與全部關閉後 phase 7。Python 驗證 8 組順序、時間、CPU/peak 單調性、4→0 live count，輸出 current RSS 差、sampled peak、after-close RSS、CPU%。保留原 workspace canvas identity/cleanup gate 及所有其他 tests；workspace subprocess timeout 延至 420s，以容納保守 phase deadline。這是短期 60 秒 synthetic source soak，不是數小時壓測或洩漏證明；final RSS 包含 probe 持有的 controller references、AppKit/GPU cache，不等於未釋放 allocation。無人為 RSS/CPU 性能閾值；待 CI 驗證。

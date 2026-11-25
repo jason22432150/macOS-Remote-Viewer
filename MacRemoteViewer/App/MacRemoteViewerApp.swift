@@ -283,6 +283,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await validateSelection(selected)
                     print("MRV_WORKSPACE_SWITCH_OK step=\(step) selected=\(selected) live=4")
                 }
+                // Sustained production workspace stress, with monotonic time
+                // and current (not high-water) resident memory observations.
+                @MainActor func snapshot(_ phase: Int, since start: ContinuousClock.Instant) throws {
+                    var info = mach_task_basic_info()
+                    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
+                    let result = withUnsafeMutablePointer(to: &info) { pointer in
+                        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                            task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), rebound, &count)
+                        }
+                    }
+                    var usage = rusage()
+                    guard result == KERN_SUCCESS, info.resident_size > 0,
+                          Darwin.getrusage(RUSAGE_SELF, &usage) == 0 else {
+                        throw SessionError.unknown(code: "workspace-resource-snapshot")
+                    }
+                    let elapsed = start.duration(to: ContinuousClock.now)
+                    let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+                    let cpu = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6 +
+                              Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
+                    print("MRV_WORKSPACE_SOAK phase=\(phase) elapsed-ms=\(Int(seconds * 1000)) rss-bytes=\(info.resident_size) peak-rss-bytes=\(usage.ru_maxrss) cpu-ms=\(Int(cpu * 1000)) live=\(live.count)")
+                    fflush(nil)
+                }
+                let soakStart = ContinuousClock.now
+                try snapshot(0, since: soakStart)
+                for phase in 1...6 {
+                    let selected = (phase - 1) % 4
+                    workspaceModel.selectSession(original[selected].sessionID)
+                    try await validateSelection(selected)
+                    // Keep the same four sessions alive through the entire
+                    // interval and check state without driving renderer calls.
+                    let checkpoint = soakStart + .seconds(phase * 10)
+                    while ContinuousClock.now < checkpoint {
+                        guard foreign.isEmpty, model.sessions.isEmpty,
+                              workspaceModel.selectedSessionID == original[selected].sessionID,
+                              workspaceModel.sessions.count == 4,
+                              original.allSatisfy({ $0.state == .connected && $0.displaySize == RemoteFrame(width: 640, height: 480) }) else {
+                            throw SessionError.disconnected
+                        }
+                        try await Task.sleep(for: .milliseconds(100))
+                    }
+                    try await validateSelection(selected)
+                    try snapshot(phase, since: soakStart)
+                }
+                // Restore the selection assumed by the existing close tests.
+                workspaceModel.selectSession(original[3].sessionID)
+                try await validateSelection(3)
+                print("MRV_WORKSPACE_SOAK_OK seconds=60 checkpoints=7")
                 // Closing a background session must retain selection and views.
                 workspaceModel.closeSession(original[1].sessionID)
                 live.remove(1)
@@ -316,6 +363,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       foreign.isEmpty else {
                     throw SessionError.cancelled
                 }
+                live.removeAll()
+                try snapshot(7, since: soakStart)
                 print("MRV_PROBE_WORKSPACE_EMPTY")
                 print("MRV_WORKSPACE_OK")
                 fflush(nil)

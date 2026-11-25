@@ -207,6 +207,40 @@ def validate_multi_metrics(lines):
         raise AssertionError("missing or inconsistent GPU timestamp sample counts")
 
 
+def validate_workspace_soak(lines):
+    samples = []
+    pattern = re.compile(
+        r"MRV_WORKSPACE_SOAK phase=(\d+) elapsed-ms=(\d+) rss-bytes=(\d+) "
+        r"peak-rss-bytes=(\d+) cpu-ms=(\d+) live=(\d+)")
+    for line in lines:
+        if not line.startswith("MRV_WORKSPACE_SOAK "):
+            continue
+        match = pattern.fullmatch(line)
+        if not match:
+            raise AssertionError("malformed workspace soak measurement")
+        phase, elapsed, rss, peak, cpu, live = map(int, match.groups())
+        if phase != len(samples) or phase > 7 or rss <= 0 or peak <= 0:
+            raise AssertionError(f"invalid workspace soak sample: {line}")
+        if live != (0 if phase == 7 else 4):
+            raise AssertionError(f"workspace soak session count: {line}")
+        if phase and (elapsed <= samples[-1][0] or cpu < samples[-1][3] or peak < samples[-1][2]):
+            raise AssertionError("non-monotonic elapsed/CPU/peak RSS")
+        if 1 <= phase <= 6 and elapsed < phase * 10000:
+            raise AssertionError("workspace soak interval too short")
+        samples.append((elapsed, rss, peak, cpu))
+    if len(samples) != 8:
+        raise AssertionError("missing workspace soak/cleanup measurements")
+    start, end, closed = samples[0], samples[6], samples[7]
+    if end[0] - start[0] < 59900:
+        raise AssertionError("workspace soak did not sustain four sessions for 60 seconds")
+    print(f"METRIC workspace-soak duration-ms={end[0]-start[0]} "
+          f"rss-start-MiB={start[1]/1048576:.2f} rss-end-MiB={end[1]/1048576:.2f} "
+          f"rss-max-sampled-MiB={max(s[1] for s in samples[:7])/1048576:.2f} "
+          f"rss-delta-MiB={(end[1]-start[1])/1048576:.2f} "
+          f"rss-after-close-MiB={closed[1]/1048576:.2f} "
+          f"cpu-percent={100*(end[3]-start[3])/(end[0]-start[0]):.2f}")
+
+
 def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
@@ -270,7 +304,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                         "--loopback-spice-workspace-probe" if workspace else "--loopback-spice-multi-probe")
                 command = [str(exe), mode, *map(str, profiles)]
             result = subprocess.run(command, cwd=root, env=env,
-                                    capture_output=True, text=True, timeout=300 if workspace else 110)
+                                    capture_output=True, text=True, timeout=420 if workspace else 110)
             print(result.stdout[-12000:])
             if result.stderr:
                 print(result.stderr[-16000:])
@@ -298,7 +332,9 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                             for step, selected in enumerate((0, 1, 2, 3, 0, 2, 1, 3) * 3)]
                 if switches != expected:
                     raise AssertionError("workspace: incomplete SwiftUI selection checks")
-                for marker in ("MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3",
+                validate_workspace_soak(lines)
+                for marker in ("MRV_WORKSPACE_SOAK_OK seconds=60 checkpoints=7",
+                               "MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3",
                                "MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2",
                                "MRV_WORKSPACE_CLEANUP_BEGIN",
                                "MRV_WORKSPACE_CLEANUP_STATE sessions=0 views=0 disconnected=4 normal=0",
