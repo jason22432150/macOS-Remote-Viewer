@@ -815,13 +815,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let view = MTKView(frame: CGRect(x: 0, y: 0, width: 64, height: 64), device: device)
                 view.isPaused = true
                 let renderer = CSMetalRenderer(metalKitView: view)
-                // Only the worker completion ends the probe. The parent
-                // Python process enforces a deadline if a fence never fires.
-                let ok = await withCheckedContinuation { continuation in
+                // CocoaSpice delivers completion on the main queue after
+                // worker cleanup. The parent process enforces a deadline.
+                let ok: Bool = await withCheckedContinuation { continuation in
                     CSDisplay.pve_testScanout(renderer) { ok in
                         continuation.resume(returning: ok)
                     }
                 }
+                withExtendedLifetime(view) {}
+                withExtendedLifetime(renderer) {}
                 guard ok else { throw SessionError.cancelled }
                 print("MRV_SCANOUT_RUNTIME_OK")
                 fflush(nil)

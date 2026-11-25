@@ -1750,6 +1750,7 @@ def overlay_scanout_runtime_probe(checkout: Path) -> None:
         ("- (void)screenshotWithCompletion:(screenshotCallback_t)completion;",
          "- (void)screenshotWithCompletion:(screenshotCallback_t)completion;\n\n"
          "/// Isolated integration probe; never modifies a live remote display.\n"
+         "/// Completion is delivered on the AppKit main queue after worker cleanup.\n"
          "+ (void)pve_testScanoutWithRenderer:(id<CSRenderer>)renderer "
          "completion:(void (^)(BOOL))completion NS_SWIFT_NAME(pve_testScanout(_:completion:));"),
     ])
@@ -1798,10 +1799,10 @@ static BOOL mrv_scanout_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue,
         SpiceChannel *channel = spice_channel_new(session, SPICE_CHANNEL_DISPLAY, 0);
         if (!channel) {
             g_object_unref(session);
-            completion(NO);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
             return;
         }
-        CSDisplay *display = [[CSDisplay alloc] initWithChannel:SPICE_DISPLAY_CHANNEL(channel)];
+        __block CSDisplay *display = [[CSDisplay alloc] initWithChannel:SPICE_DISPLAY_CHANNEL(channel)];
         // No connection is initiated and no live display receives test pixels.
         display.renderers = @[renderer];
         display->_device = renderer.device;
@@ -1816,12 +1817,25 @@ static BOOL mrv_scanout_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue,
         IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
         // Keep an independent owner to emulate the producer reusing its bytes.
         void (^finish)(BOOL) = ^(BOOL ok) {
-            [display resetScanout];
-            display.renderers = @[];
-            if (surface) CFRelease(surface);
-            // The session owns its channel; CSDisplay owns a separate ref.
-            g_object_unref(session);
-            completion(ok);
+            // The last GPU completion still owns its source/destination
+            // and captures the display. Defer teardown until that worker
+            // callback has unwound; keep the session valid during reset.
+            [CSMain.sharedInstance asyncWith:^{
+                [display resetScanout];
+                display.renderers = @[];
+                puts("MRV_SCANOUT_CLEANUP_RESET"); fflush(stdout);
+                display = nil;
+                if (surface) CFRelease(surface);
+                puts("MRV_SCANOUT_CLEANUP_SURFACE"); fflush(stdout);
+                g_object_unref(session);
+                puts("MRV_SCANOUT_CLEANUP_SESSION"); fflush(stdout);
+                // Swift's continuation closure is created on MainActor.
+                // Never invoke it directly from the GLib worker.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    puts("MRV_SCANOUT_COMPLETION_MAIN"); fflush(stdout);
+                    completion(ok);
+                });
+            }];
         };
         if (!surface || !mrv_fill_surface(surface, 0x00ff0000, NO)) {
             finish(NO);
