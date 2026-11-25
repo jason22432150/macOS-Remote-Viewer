@@ -78,7 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          "--loopback-spice-wrapper-probe", "--loopback-spice-multi-probe",
          "--loopback-spice-partial-probe", "--loopback-spice-workspace-probe",
          "--loopback-spice-agent-probe", "--loopback-spice-clipboard-probe",
-         "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe"].contains($0)
+         "--clipboard-security-probe", "--loopback-spice-clipboard-isolation-probe",
+         "--loopback-spice-clipboard-invalid-probe"].contains($0)
     }
     private var isWaitingToPresentMainWindow = false
     /// 已在畫面上、帶 Metal 的那扇主窗。關多餘窗時必須對這個物件，不可改選最前面那扇。
@@ -135,6 +136,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runClipboardIsolationProbe(files: arguments[(index + 1)...].map { URL(fileURLWithPath: $0) })
         } else if arguments.contains("--clipboard-security-probe") {
             runClipboardSecurityProbe()
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-invalid-probe") {
+            guard arguments.count == index + 2 else { Darwin.exit(2) }
+            runLoopbackSpiceClipboardProbe(file: URL(fileURLWithPath: arguments[index + 1]), invalid: true)
         } else if let index = arguments.firstIndex(of: "--loopback-spice-clipboard-probe") {
             guard arguments.count == index + 2 else { Darwin.exit(2) }
             runLoopbackSpiceClipboardProbe(file: URL(fileURLWithPath: arguments[index + 1]))
@@ -1059,7 +1063,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func runLoopbackSpiceClipboardProbe(file: URL) {
+    private func runLoopbackSpiceClipboardProbe(file: URL, invalid: Bool = false) {
         Task { @MainActor in
             let board = NSPasteboard.withUniqueName()
             let controller = SessionController(engine: SpiceEngineAdapter(pasteboardName: board.name),
@@ -1078,6 +1082,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let deadline = ContinuousClock.now + .seconds(20)
                 var sent = false
                 var received = false
+                var recovered = false
+                var preservedChangeCount: Int?
+                let recoveredText = "MRV recovered 繁中 🚀"
                 while ContinuousClock.now < deadline {
                     if case .failed = controller.state { throw SessionError.network }
                     if controller.state == .disconnected { throw SessionError.disconnected }
@@ -1093,11 +1100,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if sent && !received, let value = board.string(forType: .string),
                            Data(value.utf8) == Data(guestText.utf8) {
                             received = true
+                            preservedChangeCount = board.changeCount
                             print("MRV_CLIP_GUEST_UTF8_OK")
+                        }
+                        if invalid && received && !recovered {
+                            let value = board.string(forType: .string)
+                            if value == recoveredText {
+                                recovered = true
+                                print("MRV_CLIP_INVALID_RECOVERY_OK")
+                            } else {
+                                // Reject even a same-value rewrite or a transient
+                                // change reverted before this observation.
+                                guard value == guestText, board.changeCount == preservedChangeCount else {
+                                    throw SessionError.cancelled
+                                }
+                            }
                         }
                         if received && !controller.agent.isConnected {
                             guard !controller.agent.supportsClipboard, model.sessions.isEmpty,
-                                  board.string(forType: .string) == guestText else { throw SessionError.cancelled }
+                                  (!invalid || recovered),
+                                  board.string(forType: .string) == (invalid ? recoveredText : guestText) else { throw SessionError.cancelled }
                             controller.setClipboardSharingEnabled(false)
                             controller.cancel()
                             guard controller.state == .disconnected else { throw SessionError.cancelled }

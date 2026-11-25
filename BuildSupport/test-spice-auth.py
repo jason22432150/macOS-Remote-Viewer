@@ -62,8 +62,9 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             mode = ("--loopback-spice-partial-probe" if partial else
                     "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe")
             client = [str(exe), mode, str(profile)]
-            if agent == "clipboard-full":
-                client = [str(exe), "--loopback-spice-clipboard-probe", str(profile)]
+            if agent in ("clipboard-full", "clipboard-invalid-full"):
+                mode = "--loopback-spice-clipboard-invalid-probe" if agent == "clipboard-invalid-full" else "--loopback-spice-clipboard-probe"
+                client = [str(exe), mode, str(profile)]
             elif agent is not None:
                 client = [str(exe), "--loopback-spice-agent-probe", str(profile), agent]
             result = subprocess.run(client, cwd=root, env=env, capture_output=True, text=True, timeout=45)
@@ -71,13 +72,16 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             expected = ("MRV_SPICE_PARTIAL_OK" if partial else "MRV_SPICE_DISPLAY_OK" if display else
                         ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED"))
             if agent is not None:
-                expected = "MRV_SPICE_CLIPBOARD_OK" if agent == "clipboard-full" else "MRV_SPICE_AGENT_OK"
+                expected = "MRV_SPICE_CLIPBOARD_OK" if agent in ("clipboard-full", "clipboard-invalid-full") else "MRV_SPICE_AGENT_OK"
             if result.returncode != 0 or expected not in lines:
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
-            if agent == "clipboard-full":
-                markers = ["MRV_CLIP_HOST_READY", "MRV_CLIP_GUEST_UTF8_OK", "MRV_SPICE_CLIPBOARD_OK"]
+            if agent in ("clipboard-full", "clipboard-invalid-full"):
+                markers = ["MRV_CLIP_HOST_READY", "MRV_CLIP_GUEST_UTF8_OK"]
+                if agent == "clipboard-invalid-full":
+                    markers.append("MRV_CLIP_INVALID_RECOVERY_OK")
+                markers.append("MRV_SPICE_CLIPBOARD_OK")
                 actual = [line for line in lines if line.startswith(("MRV_CLIP_", "MRV_SPICE_CLIPBOARD_OK"))]
                 if actual != markers:
                     raise AssertionError(f"{name}: incomplete clipboard lifecycle {actual}")
@@ -162,10 +166,15 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                         "AGENT_CAPS_DELIVERED", "AGENT_REMOVED", "AGENT_RESULT received=1 delivered=1 removed=1 error=0"]
             if any(lines.count(marker) != 1 for marker in required):
                 raise AssertionError(f"{name}: incomplete synthetic guest-agent exchange")
-            if agent == "clipboard-full":
+            if agent in ("clipboard-full", "clipboard-invalid-full"):
                 clip_markers = ["AGENT_CLIP_HOST_GRAB", "AGENT_CLIP_HOST_REQUEST", "AGENT_CLIP_HOST_UTF8_OK",
-                                "AGENT_CLIP_GUEST_GRAB", "AGENT_CLIP_GUEST_REQUEST", "AGENT_CLIP_GUEST_UTF8_SENT",
-                                "AGENT_CLIP_RESULT host=1 guest-request=1 guest-sent=1"]
+                                "AGENT_CLIP_GUEST_GRAB", "AGENT_CLIP_GUEST_REQUEST", "AGENT_CLIP_GUEST_UTF8_SENT"]
+                if agent == "clipboard-invalid-full":
+                    for stage in range(1, 4):
+                        clip_markers.extend([f"AGENT_CLIP_INVALID_GRAB stage={stage}", f"AGENT_CLIP_INVALID_SENT stage={stage}"])
+                clip_markers.append("AGENT_CLIP_RESULT host=1 guest-request=1 guest-sent=1")
+                if agent == "clipboard-invalid-full":
+                    clip_markers.append("AGENT_CLIP_INVALID_RESULT requests=3 sent=3")
                 actual_clip = [line for line in lines if line.startswith("AGENT_CLIP_")]
                 if actual_clip != clip_markers:
                     raise AssertionError(f"{name}: incomplete wire clipboard exchange {actual_clip}")
@@ -645,6 +654,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-monitor-limited", tls.TICKET, True, agent="monitor-limited")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-full", tls.TICKET, True, agent="clipboard-full")
+        test_case(args.app.resolve(), root, fixture, "agent-clipboard-invalid-full", tls.TICKET, True, agent="clipboard-invalid-full")
         test_clipboard_security(args.app.resolve(), root)
         test_clipboard_isolation(args.app.resolve(), root, fixture)
         # Run both paths independently even if one fails. Do not weaken or
