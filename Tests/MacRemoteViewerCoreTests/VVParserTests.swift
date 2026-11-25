@@ -81,6 +81,68 @@ final class VVParserTests: XCTestCase {
         }
     }
 
+    func testRejectsUnsafeHostAfterINIUnescaping() {
+        for host in ["pve.example.test\\r\\nX-Test: value", "pve.example.test\\tother",
+                     "pve.example.test\\sother", "https://pve.example.test",
+                     "pve.example.test/path", "user@pve.example.test", "pve.example.test?query"] {
+            let text = minimalVV().replacingOccurrences(of: "host=pve.example.test", with: "host=\(host)")
+            XCTAssertThrowsError(try parser.parse(data: Data(text.utf8))) {
+                XCTAssertEqual($0 as? SessionError, .invalidHost)
+            }
+        }
+    }
+
+    func testPreservesNormalHostnameIPv4IPv6AndTLSSubject() throws {
+        for host in ["pve.local", "192.0.2.10", "2001:db8::1", "[2001:db8::1]", "pve.example.test."] {
+            let text = minimalVV().replacingOccurrences(of: "host=pve.example.test", with: "host=\(host)")
+            XCTAssertEqual(try parser.parse(data: Data(text.utf8)).host, host)
+        }
+        let text = minimalVV().replacingOccurrences(of: "CN=pve.example.test",
+            with: "CN=PVE Server,O=Example Org")
+        XCTAssertEqual(try parser.parse(data: Data(text.utf8)).hostSubject, "CN=PVE Server,O=Example Org")
+    }
+
+    func testRejectsAmbiguousProxyEndpointsAndDecodedControls() {
+        for proxy in ["http://proxy.example.test:0", "http://proxy.example.test:65536",
+                      "http://proxy.example.test/path", "http://proxy.example.test?query=1",
+                      "http://proxy.example.test#fragment", "http://proxy.example.test\\nother",
+                      "http://user%0A:pass@proxy.example.test:3128",
+                      "http://proxy.example.test%0D:3128"] {
+            XCTAssertThrowsError(try parser.parse(data: Data(minimalVV(proxy: proxy).utf8)), proxy) {
+                XCTAssertEqual($0 as? SessionError, .invalidProxy)
+            }
+        }
+    }
+
+    func testPreservesHTTPHTTPSAndProxyCredentials() throws {
+        for proxy in ["http://proxy.example.test:3128", "https://proxy.example.test",
+                      "http://proxy.example.test:3128/", "http://[2001:db8::1]:3128",
+                      "http://user:pass%20word@proxy.example.test:3128"] {
+            let profile = try parser.parse(data: Data(minimalVV(proxy: proxy).utf8))
+            XCTAssertNotNil(profile.proxyURL)
+        }
+        XCTAssertNil(try parser.parse(data: Data(minimalVV(proxy: "").utf8)).proxyURL)
+    }
+
+    func testRejectsControlsInNativeTicketAndCertificateSubject() {
+        for (field, value) in [("password", "example-ticket-not-secret"),
+                               ("host-subject", "CN=pve.example.test")] {
+            let text = minimalVV().replacingOccurrences(of: "\(field)=\(value)",
+                with: "\(field)=\(value)\\r\\nextra")
+            XCTAssertThrowsError(try parser.parse(data: Data(text.utf8))) {
+                XCTAssertEqual($0 as? SessionError, .invalidConnectionField)
+            }
+        }
+        XCTAssertThrowsError(try VVParser.validateTransport(host: "pve.example.test", tlsPort: 61001,
+            proxyURL: nil, hostSubject: "CN=PVE", ticket: "secret\u{0000}suffix")) {
+            XCTAssertEqual($0 as? SessionError, .invalidConnectionField)
+        }
+        XCTAssertThrowsError(try VVParser.validateTransport(host: "pve.example.test", tlsPort: 0,
+            proxyURL: nil, hostSubject: "CN=PVE", ticket: "secret")) {
+            XCTAssertEqual($0 as? SessionError, .invalidPort("tls-port"))
+        }
+    }
+
     func testImporterRejectsOversizedRegularFile() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".vv")
         defer { try? FileManager.default.removeItem(at: url) }

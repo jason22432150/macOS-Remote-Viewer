@@ -50,6 +50,9 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     func connect(profile: ConnectionProfile) throws {
+        try VVParser.validateTransport(host: profile.host, tlsPort: profile.tlsPort,
+                                       proxyURL: profile.proxyURL, hostSubject: profile.hostSubject,
+                                       ticket: profile.ticket.value)
         guard let pem = String(data: profile.caPEM, encoding: .utf8) else { throw SessionError.invalidCA }
         let validatedCA = try VVParser.validatedCA(pem)
         disconnect()

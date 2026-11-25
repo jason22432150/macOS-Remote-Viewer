@@ -43,6 +43,8 @@ public struct VVParser: Sendable {
         let caPEM = try decodeCA(try requiredString("ca", in: section))
         let hostSubject = try requiredString("host-subject", in: section)
         let proxyURL = try optionalProxy(section.values["proxy"])
+        try Self.validateTransport(host: host, tlsPort: tlsPort, proxyURL: proxyURL,
+                                   hostSubject: hostSubject, ticket: password)
         let title = section.values["title"]?.isEmpty == false ? section.values["title"]! : "SPICE Session"
         let deleteSourceFile = try optionalBool(section.values["delete-this-file"]) ?? false
 
@@ -108,11 +110,50 @@ public struct VVParser: Sendable {
 
     private func optionalProxy(_ raw: String?) throws -> URL? {
         guard let raw, !raw.isEmpty else { return nil }
-        guard let url = URL(string: raw),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              let host = url.host, !host.isEmpty
-        else {
+        return try Self.validatedProxy(raw)
+    }
+
+    // Check after INI unescaping, not only the raw file bytes. The same
+    // validation is used before crossing the Swift/GLib boundary, including
+    // profiles constructed programmatically without the parser.
+    public static func validateTransport(host: String, tlsPort: UInt16, proxyURL: URL?,
+                                         hostSubject: String, ticket: String) throws {
+        guard isHostToken(host) else { throw SessionError.invalidHost }
+        guard tlsPort != 0 else { throw SessionError.invalidPort("tls-port") }
+        guard !hostSubject.isEmpty, !ticket.isEmpty,
+              !containsControl(hostSubject), !containsControl(ticket) else {
+            throw SessionError.invalidConnectionField
+        }
+        if let proxyURL {
+            _ = try validatedProxy(proxyURL.absoluteString)
+        }
+    }
+
+    private static func containsControl(_ value: String) -> Bool {
+        let forbidden = CharacterSet.controlCharacters.union(.newlines)
+        return value.unicodeScalars.contains { forbidden.contains($0) }
+    }
+
+    private static func isHostToken(_ value: String) -> Bool {
+        let forbidden = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+            .union(CharacterSet(charactersIn: "/\\?#@"))
+        // Do not impose an ASCII-only DNS policy: existing IPv6, IDN and
+        // local hostname forms remain accepted here. Resolution and TLS
+        // subject validation are still the native transport's responsibility.
+        return !value.isEmpty && !value.unicodeScalars.contains { forbidden.contains($0) }
+    }
+
+    private static func validatedProxy(_ raw: String) throws -> URL {
+        guard !containsControl(raw),
+              !raw.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) }),
+              let parts = URLComponents(string: raw),
+              let scheme = parts.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = parts.host, isHostToken(host),
+              parts.percentEncodedPath.isEmpty || parts.percentEncodedPath == "/",
+              parts.query == nil, parts.fragment == nil,
+              !containsControl(parts.user ?? ""), !containsControl(parts.password ?? ""),
+              parts.port.map({ (1...65535).contains($0) }) ?? true,
+              let url = parts.url else {
             throw SessionError.invalidProxy
         }
         return url

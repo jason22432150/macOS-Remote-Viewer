@@ -83,6 +83,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case errorInvalidPort
     case errorPlaintextPort
     case errorInvalidProxy
+    case errorInvalidHost
+    case errorInvalidConnectionField
     case errorInvalidBoolean
     case errorInvalidCA
     case errorInvalidHotKey
@@ -202,7 +204,9 @@ public enum L10n {
         .errorDuplicateField: "連線檔含有重複的必要欄位：%@。",
         .errorInvalidPort: "tls-port 必須是 1 到 65535 的整數。",
         .errorPlaintextPort: "此連線檔沒有 tls-port。第一版不會改走明文 port。",
-        .errorInvalidProxy: "proxy 必須是 http 或 https 的 CONNECT 位址。",
+        .errorInvalidProxy: "proxy 必須是有效的 http 或 https CONNECT 端點，不可包含路徑、查詢或控制字元。",
+        .errorInvalidHost: "host 必須是不含空白、控制字元或網址路徑的主機名稱或 IP 位址。",
+        .errorInvalidConnectionField: "票證或憑證主體欄位為空白或包含不允許的控制字元。",
         .errorInvalidBoolean: "布林欄位只接受 0 或 1。",
         .errorInvalidCA: "ca 憑證資料格式無效。",
         .errorInvalidHotKey: "快捷鍵格式無法辨識。",
@@ -299,7 +303,9 @@ public enum L10n {
         .errorDuplicateField: "The connection file has a duplicated required field: %@.",
         .errorInvalidPort: "tls-port must be an integer from 1 to 65535.",
         .errorPlaintextPort: "This connection file has no tls-port. The first release will not fall back to a plaintext port.",
-        .errorInvalidProxy: "proxy must be an http or https CONNECT address.",
+        .errorInvalidProxy: "proxy must be a valid http or https CONNECT endpoint without a path, query or control characters.",
+        .errorInvalidHost: "host must be a hostname or IP address without whitespace, control characters or URL paths.",
+        .errorInvalidConnectionField: "The ticket or certificate subject is empty or contains forbidden control characters.",
         .errorInvalidBoolean: "Boolean fields only accept 0 or 1.",
         .errorInvalidCA: "The ca certificate data is invalid.",
         .errorInvalidHotKey: "The hotkey format is not recognized.",

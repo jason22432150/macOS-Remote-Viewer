@@ -11,6 +11,8 @@ public enum SessionError: Error, Equatable, Sendable {
     case invalidPort(String)
     case plaintextPortNotAllowed
     case invalidProxy
+    case invalidHost
+    case invalidConnectionField
     case invalidBoolean(String)
     case invalidCA
     case invalidHotKey(String)
@@ -50,6 +52,10 @@ public enum SessionError: Error, Equatable, Sendable {
             return L10n.string(.errorPlaintextPort, language: language)
         case .invalidProxy:
             return L10n.string(.errorInvalidProxy, language: language)
+        case .invalidHost:
+            return L10n.string(.errorInvalidHost, language: language)
+        case .invalidConnectionField:
+            return L10n.string(.errorInvalidConnectionField, language: language)
         case .invalidBoolean:
             return L10n.string(.errorInvalidBoolean, language: language)
         case .invalidCA:
