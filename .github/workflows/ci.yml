@@ -29,6 +29,23 @@ jobs:
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport -p 'test_package_portable.py'
 
+  spice-source-audit:
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install locked spice-gtk keg
+        run: brew install spice-gtk
+      - name: Verify upstream archive and capture receive path evidence
+        run: python3 BuildSupport/audit-spice-source.py --output "$RUNNER_TEMP/spice-source-audit"
+      - name: Upload source audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: spice-gtk-source-audit
+          path: ${{ runner.temp }}/spice-source-audit/
+          if-no-files-found: error
+          retention-days: 14
+
   app:
     runs-on: macos-15
     timeout-minutes: 45

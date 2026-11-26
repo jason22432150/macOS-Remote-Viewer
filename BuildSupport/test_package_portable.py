@@ -34,7 +34,44 @@ dmg = importlib.util.module_from_spec(DMG_SPEC)
 DMG_SPEC.loader.exec_module(dmg)
 
 
+SPICE_SOURCE_SPEC = importlib.util.spec_from_file_location(
+    "audit_spice_source", Path(__file__).with_name("audit-spice-source.py"))
+spice_source = importlib.util.module_from_spec(SPICE_SOURCE_SPEC)
+SPICE_SOURCE_SPEC.loader.exec_module(spice_source)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_spice_source_archive_selects_exact_regular_members(self):
+        def archive(entries):
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w:xz") as tar:
+                for name, body in entries:
+                    info = tarfile.TarInfo(name)
+                    if body is None:
+                        info.type = tarfile.SYMTYPE
+                        info.linkname = "/tmp/elsewhere"
+                        tar.addfile(info)
+                    else:
+                        info.size = len(body)
+                        tar.addfile(info, io.BytesIO(body))
+            return stream.getvalue()
+        main = ("spice-gtk-0.43/src/channel-main.c", b"static void main_handle_agent_data(void) {}")
+        channel = ("spice-gtk-0.43/src/spice-channel.c", b"void *p = g_malloc(size);")
+        data = archive([main, channel, ("spice-gtk-0.43/src/unrelated.c", b"ignored")])
+        self.assertEqual(set(spice_source.read_source_files(data, "0.43")),
+                         {"src/channel-main.c", "src/spice-channel.c"})
+        for entries in ([main], [main, main, channel],
+                        [main, (channel[0], None)],
+                        [main, channel, ("../escape", b"x")]):
+            with self.assertRaises(ValueError):
+                spice_source.read_source_files(archive(entries), "0.43")
+        with self.assertRaises(ValueError):
+            spice_source.verify_digest(data, "0" * 64)
+        with self.assertRaises(ValueError):
+            spice_source.check_url("https://example.com/spice.tar.xz")
+        self.assertTrue(spice_source.review_lines(main[1].decode(), "src/channel-main.c"))
+
+
     def test_openssl_modules_follow_linked_crypto_keg(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
