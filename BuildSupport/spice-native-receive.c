@@ -90,9 +90,10 @@ static void *worker(void *unused)
 int main(int argc, char **argv)
 {
     if (argc == 2 && g_strcmp0(argv[1], "--agent-layout") == 0) {
-        printf("%u %zu %zu %zu %zu\n", SPICE_MSG_MAIN_AGENT_DATA,
+        printf("%u %zu %zu %zu %zu %u\n", SPICE_MSG_MAIN_AGENT_DATA,
                sizeof(VDAgentMessage), offsetof(VDAgentMessage, size),
-               offsetof(SpiceMiniDataHeader, type), sizeof(SpiceMiniDataHeader));
+               offsetof(SpiceMiniDataHeader, type), sizeof(SpiceMiniDataHeader),
+               SPICE_MSG_PING);
         return 0;
     }
     if (argc == 2 && g_strcmp0(argv[1], "--layout") == 0) {

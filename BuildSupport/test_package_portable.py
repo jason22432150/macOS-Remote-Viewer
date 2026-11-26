@@ -74,13 +74,31 @@ class PortablePackagingTests(unittest.TestCase):
 
         stream = FragmentedStream(struct.pack("<HI", 3, 0) +
                                   struct.pack("<HI", 4, 3) + b"abc")
-        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 1)[1:], (3, b""))
-        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 2)[1:], (4, b"abc"))
+        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 1, 4)[1:], (3, b""))
+        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 2, 4)[1:], (4, b"abc"))
         self.assertFalse(stream.payload)
         with self.assertRaises(ValueError):
-            agent_fixture.read_mini_frame(FragmentedStream(struct.pack("<HI", 4, 65537)), 6, 0, 2, 1)
+            agent_fixture.read_mini_frame(FragmentedStream(struct.pack("<HI", 109, 65537)), 6, 0, 2, 1, 4)
         with self.assertRaises(ValueError):
-            agent_fixture.read_mini_frame(FragmentedStream(b""), 8, 0, 2, 1)
+            agent_fixture.read_mini_frame(FragmentedStream(b""), 8, 0, 2, 1, 4)
+        # Real CI bandwidth probe size; allow only the PING type, retaining
+        # the smaller non-PING cap. Use BytesIO to avoid quadratic short reads.
+        class BufferedStream:
+            def __init__(self, payload):
+                self.stream = io.BytesIO(payload)
+
+            def recv(self, count):
+                return self.stream.read(count)
+
+        padded = b"\0" * 256012
+        stream = BufferedStream(struct.pack("<HI", 4, len(padded)) + padded +
+                                struct.pack("<HI", 109, 3) + b"abc")
+        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 1, 4)[1:], (4, padded))
+        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 2, 4)[1:], (109, b"abc"))
+        with self.assertRaises(ValueError):
+            agent_fixture.read_mini_frame(BufferedStream(struct.pack("<HI", 4, 512 * 1024 + 1)), 6, 0, 2, 1, 4)
+        with self.assertRaises(ValueError):
+            agent_fixture.read_mini_frame(BufferedStream(struct.pack("<HI", 109, len(padded))), 6, 0, 2, 1, 4)
 
     def test_fixture_certificates_pass_strict_tls_and_reject_wrong_identity(self):
         import ssl

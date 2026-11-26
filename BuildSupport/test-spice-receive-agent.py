@@ -22,9 +22,12 @@ DIRECT = "MRV_NATIVE_AGENT_DIRECT_LIMIT_REJECTED"
 FRAGMENT = "MRV_NATIVE_AGENT_FRAGMENT_LIMIT_REJECTED"
 REASSEMBLED = "MRV_NATIVE_AGENT_REASSEMBLED"
 DELIVERED = "MRV_NATIVE_AGENT_DIRECT_DELIVERED"
+NORMAL_FRAME_MAX = 64 * 1024
+PING_FRAME_MAX = 512 * 1024
+RELAY_TOTAL_MAX = 2 * 1024 * 1024
 
 
-def read_mini_frame(peer, mini_size, type_offset, size_offset, frame_index):
+def read_mini_frame(peer, mini_size, type_offset, size_offset, frame_index, ping_type):
     if (mini_size, type_offset, size_offset) != (6, 0, 2):
         raise ValueError("unexpected installed packed mini-header layout")
     header = bytearray(wire.link.read_exact(peer, mini_size))
@@ -32,13 +35,19 @@ def read_mini_frame(peer, mini_size, type_offset, size_offset, frame_index):
     size = wire.word(header, size_offset)
     if frame_index <= 32:
         print(f"agent relay frame={frame_index} type={kind} size={size}", flush=True)
-    if not kind or size > 65536:
+    # libspice-server's initial bandwidth measurement uses a padded PING.
+    # Allow that message only a separate bounded fixture budget; no change
+    # to the production receive policy or Agent payload limits.
+    maximum = PING_FRAME_MAX if kind == ping_type else NORMAL_FRAME_MAX
+    if not kind or size > maximum:
         raise ValueError(f"invalid local agent fixture framing at frame {frame_index}: type={kind}, size={size}")
     return header, kind, wire.link.read_exact(peer, size)
 
 
 def agent_frame(client, server, mini, layout, declared, reject, agent_layout, split):
-    msg_type, agent_size, agent_offset, type_offset, mini_size = agent_layout
+    msg_type, agent_size, agent_offset, type_offset, mini_size, ping_type = agent_layout
+    if not ping_type or ping_type == msg_type:
+        raise ValueError("unexpected installed ping type")
     if not mini or mini_size != layout[5]:
         raise ValueError("agent fixture requires negotiated mini-header")
     size_offset = layout[6]
@@ -56,9 +65,9 @@ def agent_frame(client, server, mini, layout, declared, reject, agent_layout, sp
         if not server.pending() and not select.select([server], [], [], 0.05)[0]:
             continue
         frame_index += 1
-        header, kind, body = read_mini_frame(server, mini_size, type_offset, size_offset, frame_index)
+        header, kind, body = read_mini_frame(server, mini_size, type_offset, size_offset, frame_index, ping_type)
         transferred += len(body) + mini_size
-        if transferred > 1024 * 1024 or frame_index > 256:
+        if transferred > RELAY_TOTAL_MAX or frame_index > 256:
             raise ValueError("unexpected local fixture traffic")
         if kind != msg_type:
             client.sendall(header + body)
@@ -92,7 +101,7 @@ def agent_frame(client, server, mini, layout, declared, reject, agent_layout, sp
             return {"split": split, "closed": True,
                     "close_seconds": round(time.monotonic() - start, 3)}
         transferred += len(data)
-        if transferred > 1024 * 1024:
+        if transferred > RELAY_TOTAL_MAX:
             raise ValueError("unexpected local fixture traffic")
     if reject:
         raise AssertionError("agent limit did not close before body")
@@ -120,7 +129,7 @@ def main():
         wire.auth.compile_native_probe(app, probe, source="spice-native-receive.c")
         layout = tuple(map(int, subprocess.check_output([str(probe), "--layout"], text=True, timeout=10).split()))
         agent_layout = tuple(map(int, subprocess.check_output([str(probe), "--agent-layout"], text=True, timeout=10).split()))
-        if len(layout) != 11 or len(agent_layout) != 5:
+        if len(layout) != 11 or len(agent_layout) != 6:
             raise ValueError("unexpected installed protocol layout")
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
