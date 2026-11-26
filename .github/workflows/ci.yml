@@ -58,6 +58,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload candidate dylib for isolated regression only
+        uses: actions/upload-artifact@v4
+        with:
+          name: spice-gtk-candidate-native-test-only
+          path: |
+            ${{ runner.temp }}/spice-candidate-build/prefix/lib/libspice-client-glib-2.0.8.dylib
+            ${{ runner.temp }}/spice-source-audit/native-build-report.json
+          if-no-files-found: error
+          retention-days: 14
+
   app:
     runs-on: macos-15
     timeout-minutes: 45
@@ -125,4 +135,41 @@ jobs:
             dist/*.notices.zip.sha256
             ${{ runner.temp }}/native-build.json
           if-no-files-found: error
+          retention-days: 14
+
+  spice-candidate-runtime:
+    needs: [spice-source-audit, app]
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download baseline preview
+        uses: actions/download-artifact@v4
+        with:
+          name: MacRemoteViewer-arm64-preview
+          path: baseline-preview
+      - name: Download isolated candidate binary
+        uses: actions/download-artifact@v4
+        with:
+          name: spice-gtk-candidate-native-test-only
+          path: candidate-native
+      - name: Install test-only native dependencies
+        run: brew install pkgconf spice-gtk spice-server spice-protocol
+      - name: Stage isolated candidate app from verified baseline DMG
+        run: |
+          python3 BuildSupport/stage-spice-candidate-app.py --baseline baseline-preview --candidate candidate-native --output "$RUNNER_TEMP/spice-candidate-runtime"
+      - name: Exercise candidate real TLS link
+        run: python3 BuildSupport/test-loopback-tls.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+      - name: Exercise candidate real SPICE authentication, display, clipboard and workspace
+        run: python3 BuildSupport/test-spice-auth.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+      - name: Upload candidate runtime staging evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spice-gtk-candidate-runtime-evidence
+          path: |
+            ${{ runner.temp }}/spice-candidate-runtime/staging-report.json
+            ${{ runner.temp }}/spice-candidate-runtime/startup.stdout.txt
+            ${{ runner.temp }}/spice-candidate-runtime/startup.stderr.txt
+          if-no-files-found: warn
           retention-days: 14
