@@ -78,7 +78,7 @@ def forward_auth(client, server):
     raise TimeoutError("local ticket exchange did not finish")
 
 
-def observe(listener, client_context, server_context, backend_port, layout, declared, reject):
+def observe(listener, client_context, server_context, backend_port, layout, declared, reject, handler=None):
     listener.settimeout(8)
     raw, address = listener.accept()
     with raw:
@@ -99,6 +99,8 @@ def observe(listener, client_context, server_context, backend_port, layout, decl
                     mini = (capability(request, client_count, client_offset, mini_bit) and
                             capability(reply, server_count, server_offset, mini_bit))
                     forward_auth(client, server)
+                    if handler is not None:
+                        return handler(client, server, mini, layout, declared, reject)
                     size, offset = (mini_size, mini_offset) if mini else (full_size, full_offset)
                     header = bytearray(link.read_exact(server, size))
                     original = word(header, offset)
@@ -132,7 +134,9 @@ def observe(listener, client_context, server_context, backend_port, layout, decl
                     return {"mini_header": mini, "closed": False, "waited_for_body": True}
 
 
-def test_case(root, fixture, probe, context, upstream_context, layout, name, declared, reject):
+def test_case(root, fixture, probe, context, upstream_context, layout, name, declared, reject,
+              observe_fn=observe, fixture_args=(), marker=MARKER, expected_count=None,
+              forbidden_markers=()):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         backend_port = reserved.getsockname()[1]
@@ -142,7 +146,7 @@ def test_case(root, fixture, probe, context, upstream_context, layout, name, dec
         listener.listen(1)
         server = subprocess.Popen([str(fixture), str(backend_port), str(root / "trusted.pem"),
                                    str(root / "server.pem"), str(root / "server.key"),
-                                   auth.tls.TICKET], stdout=output, stderr=subprocess.STDOUT)
+                                   auth.tls.TICKET, *fixture_args], stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 10
             while "READY" not in log.read_text(errors="replace").splitlines():
@@ -155,7 +159,7 @@ def test_case(root, fixture, probe, context, upstream_context, layout, name, dec
             env.update(PATH="/usr/bin:/bin:/usr/sbin:/sbin", NO_PROXY="127.0.0.1",
                        MRV_ENABLE_INTEGRATION_PROBES="1", MRV_RECEIVE_TEST_TRACE="1")
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(observe, listener, context, upstream_context, backend_port,
+                future = pool.submit(observe_fn, listener, context, upstream_context, backend_port,
                                      layout, declared, reject)
                 result = subprocess.run([str(probe), str(root / "trusted.pem"),
                                          str(listener.getsockname()[1]), "reject" if reject else "control"],
@@ -167,10 +171,12 @@ def test_case(root, fixture, probe, context, upstream_context, layout, name, dec
                     print(result.stdout[-4000:])
                     print(result.stderr[-4000:])
                     raise
-            count = result.stderr.splitlines().count(MARKER)
+            diagnostics = result.stderr.splitlines()
+            count = diagnostics.count(marker)
+            expected_count = int(reject) if expected_count is None else expected_count
             print(f"{name}: {outcome}, native_markers={count}", flush=True)
             print(result.stdout[-4000:])
-            if result.returncode or "MRV_NATIVE_WIRE_TERMINAL_OK" not in result.stdout.splitlines() or count != int(reject):
+            if result.returncode or "MRV_NATIVE_WIRE_TERMINAL_OK" not in result.stdout.splitlines() or count != expected_count or any(m in diagnostics for m in forbidden_markers):
                 print(result.stderr[-4000:])
                 raise AssertionError("native wire result did not match policy")
             if "MAIN_INITIALIZED tls=1" not in log.read_text(errors="replace").splitlines():

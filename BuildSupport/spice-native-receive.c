@@ -1,6 +1,8 @@
 /* Independent candidate-only native receive probe. No GUI or guest access. */
 #include <spice-client.h>
 #include <spice/protocol.h>
+#include <spice/enums.h>
+#include <spice/vd_agent.h>
 #include <glib.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -87,6 +89,12 @@ static void *worker(void *unused)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && g_strcmp0(argv[1], "--agent-layout") == 0) {
+        printf("%u %zu %zu %zu %zu\n", SPICE_MSG_MAIN_AGENT_DATA,
+               sizeof(VDAgentMessage), offsetof(VDAgentMessage, size),
+               offsetof(SpiceMiniDataHeader, type), sizeof(SpiceMiniDataHeader));
+        return 0;
+    }
     if (argc == 2 && g_strcmp0(argv[1], "--layout") == 0) {
         /* Derive offsets and negotiated flags from actual installed headers. */
         printf("%zu %zu %zu %zu %zu %zu %zu %zu %zu %u %u\n",

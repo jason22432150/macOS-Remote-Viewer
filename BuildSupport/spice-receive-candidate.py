@@ -60,7 +60,11 @@ def patch_agent(text):
     text = replace_once(text,
         '            g_return_if_fail(c->agent_msg_data == NULL);\n'
         '            c->agent_msg_data = g_malloc0(c->agent_msg.size);',
-        '            if (c->agent_msg_data != NULL || !mrv_agent_size_allowed(c->agent_msg.size))\n'
+        '            if (!mrv_agent_size_allowed(c->agent_msg.size)) {\n'
+        '                mrv_receive_test_trace("MRV_NATIVE_AGENT_FRAGMENT_LIMIT_REJECTED");\n'
+        '                return FALSE;\n'
+        '            }\n'
+        '            if (c->agent_msg_data != NULL)\n'
         '                return FALSE;\n'
         '            c->agent_msg_data = g_try_malloc0(MAX(c->agent_msg.size, 1u));\n'
         '            if (!c->agent_msg_data)\n'
@@ -69,6 +73,10 @@ def patch_agent(text):
         '        memcpy(c->agent_msg_data + c->agent_msg_pos - sizeof(VDAgentMessage), *msg_pos, n);',
         '        if (n > 0)\n'
         '            memcpy(c->agent_msg_data + c->agent_msg_pos - sizeof(VDAgentMessage), *msg_pos, n);')
+    text = replace_once(text,
+        '        main_agent_handle_msg(channel, &c->agent_msg, c->agent_msg_data);',
+        '        main_agent_handle_msg(channel, &c->agent_msg, c->agent_msg_data);\n'
+        '        mrv_receive_test_trace("MRV_NATIVE_AGENT_REASSEMBLED");')
     text = replace_once(text,
         '        c->agent_msg_pos = 0;\n    }\n}\n\n/* coroutine context */\nstatic void main_handle_agent_data(',
         '        c->agent_msg_pos = 0;\n    }\n    return TRUE;\n}\n\n/* coroutine context */\nstatic void main_handle_agent_data(')
@@ -84,8 +92,10 @@ def patch_agent(text):
         '        if (msg_size + sizeof(VDAgentMessage) == len) {',
         '        msg = (VDAgentMessage *)data;\n'
         '        msg_size = msg->size;\n'
-        '        if (!mrv_agent_size_allowed(msg_size))\n'
-        '            goto reject;\n\n'
+        '        if (!mrv_agent_size_allowed(msg_size)) {\n'
+        '            mrv_receive_test_trace("MRV_NATIVE_AGENT_DIRECT_LIMIT_REJECTED");\n'
+        '            goto reject;\n'
+        '        }\n\n'
         '        if (msg_size == (guint)(len - sizeof(VDAgentMessage))) {')
     text = replace_once(text,
         '    data = spice_msg_in_raw(in, &len);\n'
