@@ -1,7 +1,7 @@
 import Foundation
 
 /// 工作階段生命週期。connecting 的細部進度只依底層可觀察事件更新。
-public enum SessionState: Equatable, Sendable {
+public enum SessionState: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     case idle
     case parsing
     case connecting
@@ -9,6 +9,20 @@ public enum SessionState: Equatable, Sendable {
     case disconnecting
     case disconnected
     case failed(SessionError)
+
+    public var description: String {
+        switch self {
+        case .idle: return "idle"
+        case .parsing: return "parsing"
+        case .connecting: return "connecting"
+        case .connected: return "connected"
+        case .disconnecting: return "disconnecting"
+        case .disconnected: return "disconnected"
+        case .failed(let error): return "failed(\(error.description))"
+        }
+    }
+
+    public var debugDescription: String { description }
 }
 
 /// 遠端 guest agent 能力。缺少剪貼簿時畫面與輸入仍可用。

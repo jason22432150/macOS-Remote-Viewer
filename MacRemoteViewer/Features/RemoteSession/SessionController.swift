@@ -347,7 +347,7 @@ public final class SessionController: SpiceEngineDelegate, Identifiable {
     private func fail(_ error: SessionError) {
         pendingSourceIdentity = nil
         resetResolutionSync()
-        state = .failed(error)
+        state = .failed(error.sanitizedForRetention)
         agent = AgentCapabilities()
         displaySize = nil
         relativeMouseRequested = false

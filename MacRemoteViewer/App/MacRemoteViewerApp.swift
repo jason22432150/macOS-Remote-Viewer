@@ -534,7 +534,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.orderOut(nil)
                 Darwin.exit(0)
             } catch {
-                print("MRV_WORKSPACE_FAILED error=\(error)")
+                let category = (error as? SessionError)?.description ?? "external-error"
+                print("MRV_WORKSPACE_FAILED error=\(category)")
                 cleanup()
                 fflush(nil)
                 window.orderOut(nil)

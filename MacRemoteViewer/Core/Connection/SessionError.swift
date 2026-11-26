@@ -1,7 +1,8 @@
 import Foundation
 
 /// 可顯示的錯誤分類。訊息不得包含票證、原始 `.vv` 或剪貼簿內容。
-public enum SessionError: Error, Equatable, Sendable {
+public enum SessionError: Error, Equatable, Sendable, CustomStringConvertible,
+                          CustomDebugStringConvertible, CustomReflectable {
     case fileTooLarge(maxBytes: Int)
     case invalidEncoding
     case missingSection
@@ -26,6 +27,14 @@ public enum SessionError: Error, Equatable, Sendable {
     case guestAgentUnavailable
     case disconnected
     case unknown(code: String)
+
+    /// Safe for diagnostics, including generic Error interpolation. Never
+    /// include associated values from a parser or external engine.
+    public var description: String { DiagnosticLogPolicy.errorCode(self) }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror {
+        Mirror(self, children: ["category": description], displayStyle: .enum)
+    }
 
     /// 給使用者看的說明；刻意不帶入主機、票證或檔案內容。
     public var userMessage: String {

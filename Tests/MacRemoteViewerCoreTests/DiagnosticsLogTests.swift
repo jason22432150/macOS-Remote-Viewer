@@ -2,6 +2,31 @@ import XCTest
 @testable import MacRemoteViewerCore
 
 final class DiagnosticsLogTests: XCTestCase {
+    func testGenericErrorAndStateDescriptionsDoNotExposePayloads() {
+        let secret = "synthetic-private-value"
+        let cases: [(SessionError, String)] = [
+            (.unsupportedType(secret), "unsupported-type"),
+            (.missingField(secret), "missing-field"),
+            (.duplicateField(secret), "duplicate-field"),
+            (.invalidPort(secret), "invalid-port"),
+            (.invalidBoolean(secret), "invalid-boolean"),
+            (.invalidHotKey(secret), "invalid-hot-key"),
+            (.unknown(code: secret), "unknown")
+        ]
+        for (error, code) in cases {
+            let erased: any Error = error
+            XCTAssertEqual(String(describing: erased), code)
+            XCTAssertEqual(String(reflecting: error), code)
+            XCTAssertEqual(Mirror(reflecting: error).children.first?.value as? String, code)
+            let state = SessionState.failed(error)
+            XCTAssertEqual(String(describing: state), "failed(\(code))")
+            XCTAssertFalse(String(reflecting: state).contains(secret))
+            XCTAssertFalse(error.userMessage.contains(secret))
+            XCTAssertFalse(String(reflecting: error.sanitizedForRetention).contains(secret))
+        }
+        XCTAssertEqual(String(describing: SessionState.connected), "connected")
+    }
+
     func testExportDoesNotContainSampleSecrets() {
         let log = DiagnosticsLog(sessionID: "session-demo")
         let lines = log.exportSanitizedLines(sampleSecrets: ["example-ticket-not-secret", "pve.example.test"])

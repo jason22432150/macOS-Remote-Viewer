@@ -4,6 +4,15 @@ import XCTest
 
 @MainActor
 final class SessionControllerTests: XCTestCase {
+    func testEngineFailureDiscardsArbitraryAssociatedPayload() throws {
+        let engine = MockEngine()
+        let controller = SessionController(engine: engine)
+        controller.open(try VVParser().parse(data: Data(Self.minimalVV().utf8)))
+        engine.delegate?.engineDidFail(.unknown(code: "synthetic-private-engine-error"))
+        XCTAssertEqual(controller.state, .failed(.unknown(code: "<redacted>")))
+        controller.cancel()
+    }
+
     func testControllerKeepsPresentationNotTransportCredentials() throws {
         let engine = MockEngine()
         let controller = SessionController(engine: engine)
