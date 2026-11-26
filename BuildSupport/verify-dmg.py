@@ -6,7 +6,9 @@ import importlib.util
 import json
 import os
 import plistlib
+import resource
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -91,6 +93,7 @@ def smoke_test(app, temp):
         lines = completed.stdout.splitlines()
         if (completed.returncode != 0 or lines.count("MRV_STARTUP_SMOKE_OK") != 1
                 or lines.count("MRV_GST_REGISTRY_OK") != 1
+                or lines.count("MRV_CORE_DUMP_LIMIT_OK") != 1
                 or "MRV_GST_REGISTRY_FAILED" in lines):
             print(completed.stdout[-4000:])
             print(completed.stderr[-4000:])
@@ -98,6 +101,32 @@ def smoke_test(app, temp):
 
     startup_smoke(env)
     print("AppKit/Metal/worker startup smoke passed.")
+
+    # Start the same executable with an explicitly nonzero inherited soft
+    # core limit where the CI parent's hard limit permits it. No deliberate
+    # crash or actual core file. Use an exec wrapper rather than a fork hook.
+    _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+    if hard != 0:
+        requested = 1024 * 1024 if hard == resource.RLIM_INFINITY else min(hard, 1024 * 1024)
+        launcher = (
+            "import os, resource, sys; "
+            "_, hard = resource.getrlimit(resource.RLIMIT_CORE); "
+            "resource.setrlimit(resource.RLIMIT_CORE, (int(sys.argv[1]), hard)); "
+            "os.execv(sys.argv[2], sys.argv[2:])"
+        )
+        inherited = subprocess.run(
+            [sys.executable, "-c", launcher, str(requested), str(executable), "--startup-smoke-test"],
+            cwd=temp, env=env, capture_output=True, text=True, timeout=40)
+        lines = inherited.stdout.splitlines()
+        if (inherited.returncode != 0 or lines.count("MRV_CORE_DUMP_INHERITED_NONZERO") != 1
+                or lines.count("MRV_CORE_DUMP_LIMIT_OK") != 1
+                or lines.count("MRV_STARTUP_SMOKE_OK") != 1
+                or lines.count("MRV_GST_REGISTRY_OK") != 1):
+            raise ValueError("nonzero inherited core limit isolation failed")
+        print("MRV_CORE_DUMP_INHERITANCE_OK")
+    else:
+        print("MRV_CORE_DUMP_INHERITANCE_UNAVAILABLE parent-hard-zero")
+    print("MRV_CORE_DUMP_LIMIT_OK")
 
     # Exercise the actual installed GLib log handler with synthetic secrets
     # in both the message and domain. Require the fixed severity output as

@@ -150,7 +150,8 @@ def main():
     (output / "startup.stderr.txt").write_text(result.stderr)
     lines = result.stdout.splitlines()
     if (result.returncode != 0 or lines.count("MRV_STARTUP_SMOKE_OK") != 1
-            or lines.count("MRV_GST_REGISTRY_OK") != 1):
+            or lines.count("MRV_GST_REGISTRY_OK") != 1
+            or lines.count("MRV_CORE_DUMP_LIMIT_OK") != 1):
         raise ValueError("candidate app startup failed")
     # dyld may report /private/var instead of /var. Require a matching real
     # path in the loader's diagnostics; merely checking linkage is insufficient.

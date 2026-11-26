@@ -91,6 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Darwin.exit(2)
         }
         do {
+            // Before accepting any .vv or starting a native worker, prevent
+            // ordinary process core dumps, even if the launcher permits them.
+            try restrictProcessCoreDumps(reportInheritedLimit: isIntegrationProbe &&
+                ProcessInfo.processInfo.arguments.contains("--startup-smoke-test"))
             portableRegistryDirectory = try preparePortableRuntime(
                 verifyRegistry: isIntegrationProbe &&
                     ProcessInfo.processInfo.arguments.contains("--startup-smoke-test"),
@@ -1604,6 +1608,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     removePortableRegistry()
                 }
+                // Read the actual process limits again after native startup.
+                guard processCoreDumpsDisabled() else { throw SessionError.engineUnavailable }
+                print("MRV_CORE_DUMP_LIMIT_OK")
                 // A distinct, machine-readable sentinel, emitted only after all checks.
                 print("MRV_STARTUP_SMOKE_OK")
                 fflush(nil)
@@ -1793,6 +1800,30 @@ enum AppWindowPresenter {
         // Finder 用文件啟動時，無參數的 `activate()` 不會搶前景。
         application.activate(ignoringOtherApps: true)
     }
+}
+
+/// Restrict ordinary POSIX core files for this process and inherited children.
+/// This does not disable macOS diagnostic/crash reports or privileged memory
+/// inspection, and does not claim to protect memory before AppDelegate runs.
+private func restrictProcessCoreDumps(reportInheritedLimit: Bool) throws {
+    var inherited = rlimit()
+    guard Darwin.getrlimit(RLIMIT_CORE, &inherited) == 0 else {
+        throw SessionError.engineUnavailable
+    }
+    if reportInheritedLimit && inherited.rlim_cur != 0 {
+        print("MRV_CORE_DUMP_INHERITED_NONZERO")
+    }
+    var disabled = rlimit(rlim_cur: 0, rlim_max: 0)
+    guard Darwin.setrlimit(RLIMIT_CORE, &disabled) == 0,
+          processCoreDumpsDisabled() else {
+        throw SessionError.engineUnavailable
+    }
+}
+
+private func processCoreDumpsDisabled() -> Bool {
+    var limits = rlimit()
+    return Darwin.getrlimit(RLIMIT_CORE, &limits) == 0 &&
+        limits.rlim_cur == 0 && limits.rlim_max == 0
 }
 
 /// Configure GStreamer before the worker calls gst_init(NULL, NULL).
