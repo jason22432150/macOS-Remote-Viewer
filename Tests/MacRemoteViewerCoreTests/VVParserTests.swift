@@ -4,6 +4,39 @@ import XCTest
 final class VVParserTests: XCTestCase {
     private let parser = VVParser()
 
+    func testTicketSharedStorageLifetimeAndRedactedReflection() throws {
+        typealias Ticket = ConnectionProfile.Ticket
+        let secret = "synthetic-\u{1F512}-ticket"
+        var first: Ticket? = Ticket(secret)
+        weak var storage: Ticket.Storage? = first?.storage
+        var copy = first
+        XCTAssertTrue(first?.storage === copy?.storage)
+        first = nil
+        XCTAssertNotNil(storage)
+        XCTAssertEqual(copy?.value, secret)
+        XCTAssertEqual(copy, Ticket(secret))
+        XCTAssertNotEqual(copy, Ticket("other"))
+        XCTAssertFalse(String(reflecting: try XCTUnwrap(copy)).contains(secret))
+        let children = Mirror(reflecting: try XCTUnwrap(copy)).children
+        XCTAssertEqual(children.count, 1)
+        XCTAssertEqual(children.first?.value as? String, "<redacted>")
+        copy = nil
+        XCTAssertNil(storage)
+        XCTAssertEqual(Ticket("").value, "")
+        XCTAssertEqual(Ticket("\u{00E9}"), Ticket("e\u{0301}"))
+        XCTAssertEqual(Ticket("a\u{0000}b").value, "a\u{0000}b")
+    }
+
+    func testTicketOwnedMemoryClearOnlyTouchesRequestedRange() {
+        var bytes: [UInt8] = [0x11, 0x22, 0, 0x33, 0x44]
+        bytes.withUnsafeMutableBytes { buffer in
+            let middle = UnsafeMutableRawBufferPointer(start: buffer.baseAddress?.advanced(by: 1), count: 3)
+            ConnectionProfile.Ticket.clearOwnedBytes(middle)
+        }
+        XCTAssertEqual(bytes, [0x11, 0, 0, 0, 0x44])
+        ConnectionProfile.Ticket.clearOwnedBytes(UnsafeMutableRawBufferPointer(start: nil, count: 0))
+    }
+
     func testParsesSyntheticFixture() throws {
         let url = Bundle.module.url(forResource: "valid-spice", withExtension: "vv", subdirectory: "Fixtures")
             ?? Bundle.module.url(forResource: "valid-spice", withExtension: "vv")

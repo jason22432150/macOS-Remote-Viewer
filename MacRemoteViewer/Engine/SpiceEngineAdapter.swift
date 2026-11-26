@@ -52,9 +52,12 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     }
 
     func connect(profile: ConnectionProfile) throws {
+        // Materialize a single temporary String for validation and the
+        // synchronous Objective-C bridge, not two independent copies.
+        let ticket = profile.ticket.value
         try VVParser.validateTransport(host: profile.host, tlsPort: profile.tlsPort,
                                        proxyURL: profile.proxyURL, hostSubject: profile.hostSubject,
-                                       ticket: profile.ticket.value)
+                                       ticket: ticket)
         guard let pem = String(data: profile.caPEM, encoding: .utf8) else { throw SessionError.invalidCA }
         let validatedCA = try VVParser.validatedCA(pem)
         disconnect()
@@ -71,7 +74,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
                 proxy: proxy,
                 ca: validatedCA,
                 certSubject: profile.hostSubject,
-                password: profile.ticket.value
+                password: ticket
             )
         } catch {
             connection.delegate = nil
