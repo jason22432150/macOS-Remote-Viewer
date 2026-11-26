@@ -47,6 +47,24 @@ BUILD_SPICE_SPEC.loader.exec_module(build_spice)
 
 
 class PortablePackagingTests(unittest.TestCase):
+    def test_candidate_library_path_is_fixed_and_confined(self):
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw) / "prefix"
+            lib = prefix / "lib"
+            lib.mkdir(parents=True)
+            (lib / "gstreamer").write_bytes(b"not spice")
+            with self.assertRaises(FileNotFoundError):
+                build_spice.spice_client_library(prefix)
+            expected = lib / "libspice-client-glib-2.0.8.dylib"
+            expected.write_bytes(b"candidate")
+            self.assertEqual(build_spice.spice_client_library(prefix), expected.resolve())
+            expected.unlink()
+            outside = Path(raw) / "outside.dylib"
+            outside.write_bytes(b"outside")
+            expected.symlink_to(outside)
+            with self.assertRaises(ValueError):
+                build_spice.spice_client_library(prefix)
+
     def test_candidate_tls_abi_pair_requires_single_matching_major(self):
         for abi in ("3", "4"):
             ssl = f"/opt/homebrew/opt/openssl@{abi}/lib/libssl.{abi}.dylib"

@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
+SPICE_CLIENT_DYLIB = "libspice-client-glib-2.0.8.dylib"
 SPEC = importlib.util.spec_from_file_location("audit_spice_source", HERE / "audit-spice-source.py")
 audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
@@ -127,6 +128,14 @@ def resolve_tls_pair(library):
     return paths
 
 
+def spice_client_library(prefix):
+    libdir = (prefix / "lib").resolve(strict=True)
+    library = (libdir / SPICE_CLIENT_DYLIB).resolve(strict=True)
+    if not library.is_relative_to(libdir) or not library.is_file():
+        raise ValueError("spice client library escapes expected prefix or is not a file")
+    return library
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--audit", type=Path, required=True)
@@ -167,20 +176,19 @@ def main():
     expected = json.loads((evidence / "candidate.json").read_text())
     if expected["upstream_sha256"] != lock["upstream_sha256"]:
         raise ValueError("candidate source version mismatch")
-    for name, digest in expected["patched_file_sha256"].items():
-        if sha((source / name).read_bytes()) != digest:
-            raise ValueError(f"patched source mismatch: {name}")
+    for source_name, digest in expected["patched_file_sha256"].items():
+        if sha((source / source_name).read_bytes()) != digest:
+            raise ValueError(f"patched source mismatch: {source_name}")
     build, prefix = work / "build", work / "prefix"
     env = os.environ.copy()
     # Select the actual ABI of the locked bottle, not any installed formula.
-    name = "libspice-client-glib-2.0.8.dylib"
-    baseline = (keg / "lib" / name).resolve(strict=True)
+    baseline = spice_client_library(keg)
     baseline_tls = resolve_tls_pair(baseline)
     tls_libdir = baseline_tls["crypto"].parent
     pc = [str(tls_libdir / "pkgconfig")]
     print("Baseline TLS dependencies:", {k: str(p) for k, p in baseline_tls.items()}, flush=True)
-    for name in ("gettext", "gobject-introspection", "spice-protocol", "glib", "gstreamer"):
-        base = Path(capture("brew", "--prefix", name)).resolve()
+    for formula_name in ("gettext", "gobject-introspection", "spice-protocol", "glib", "gstreamer"):
+        base = Path(capture("brew", "--prefix", formula_name)).resolve()
         pc.extend(str(base / suffix) for suffix in ("lib/pkgconfig", "share/pkgconfig"))
     if env.get("PKG_CONFIG_PATH"):
         pc.append(env["PKG_CONFIG_PATH"])
@@ -226,7 +234,8 @@ def main():
         log = build / "meson-logs" / "meson-log.txt"
         if log.is_file():
             shutil.copyfile(log, evidence / "meson-log.txt")
-    library = (prefix / "lib" / name).resolve(strict=True)
+    library = spice_client_library(prefix)
+    print("Installed candidate:", library, flush=True)
     candidate_tls = resolve_tls_pair(library)
     if candidate_tls != baseline_tls:
         raise ValueError("candidate OpenSSL dependencies differ from baseline bottle")

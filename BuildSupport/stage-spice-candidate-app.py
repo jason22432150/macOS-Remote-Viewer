@@ -23,7 +23,7 @@ def load(name, filename):
 pack = load("package_portable", "package-portable.py")
 dmg = load("verify_dmg", "verify-dmg.py")
 build = load("build_spice_candidate", "build-spice-candidate.py")
-LIBRARY = "libspice-client-glib-2.0.8.dylib"
+LIBRARY = build.SPICE_CLIENT_DYLIB
 APP = "Mac Remote Viewer.app"
 
 
