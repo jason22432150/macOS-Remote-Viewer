@@ -38,6 +38,11 @@ jobs:
         run: brew install spice-gtk
       - name: Verify upstream archive and capture receive path evidence
         run: python3 BuildSupport/audit-spice-source.py --output "$RUNNER_TEMP/spice-source-audit"
+      - name: Apply candidate bounds to verified upstream sources and test shared limit policy
+        run: |
+          python3 BuildSupport/spice-receive-candidate.py --audit "$RUNNER_TEMP/spice-source-audit"
+          xcrun clang -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags glib-2.0) BuildSupport/test-spice-receive-limits.c -o "$RUNNER_TEMP/spice-receive-limits" $(pkg-config --libs glib-2.0)
+          "$RUNNER_TEMP/spice-receive-limits"
       - name: Upload source audit evidence
         uses: actions/upload-artifact@v4
         with:
