@@ -147,14 +147,43 @@ def main():
     if env.get("PKG_CONFIG_PATH"):
         pc.append(env["PKG_CONFIG_PATH"])
     env["PKG_CONFIG_PATH"] = os.pathsep.join(pc)
-    env["CC"] = capture("xcrun", "--find", "clang")
-    env["CXX"] = capture("xcrun", "--find", "clang++")
+    # Direct invocation of the Xcode clang binary does not necessarily inherit
+    # the SDK selection performed by xcrun. Set it explicitly for both compile
+    # and link stages, including Meson's initial compiler sanity check.
+    sdk = Path(capture("xcrun", "--sdk", "macosx", "--show-sdk-path")).resolve(strict=True)
+    if not (sdk / "usr/lib/libSystem.tbd").is_file():
+        raise ValueError("selected macOS SDK is missing libSystem.tbd")
+    env["SDKROOT"] = str(sdk)
+    env["CC"] = capture("xcrun", "--sdk", "macosx", "--find", "clang")
+    env["CXX"] = capture("xcrun", "--sdk", "macosx", "--find", "clang++")
     env["MACOSX_DEPLOYMENT_TARGET"] = capture("xcrun", "--sdk", "macosx", "--show-sdk-version")
+    import shlex
+    flags = "-arch arm64 -isysroot " + shlex.quote(str(sdk))
+    # Keep candidate flags reproducible rather than inheriting runner overrides.
+    for key in ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS"):
+        env[key] = flags
+    print("SDK:", sdk, "deployment:", env["MACOSX_DEPLOYMENT_TARGET"], flush=True)
     print("OpenSSL build version:", capture("pkg-config", "--modversion", "openssl", env=env), flush=True)
-    run("meson", "setup", build, source, "--prefix", prefix,
-        "--buildtype=release", "--wrap-mode=nodownload", env=env)
-    run("meson", "compile", "-C", build, env=env)
-    run("meson", "install", "-C", build, env=env)
+    for lang, compiler, extension in (("c", "CC", "c"), ("c++", "CXX", "cc")):
+        test_source = work / ("sdk-check." + extension)
+        test_executable = work / ("sdk-check-" + extension)
+        test_source.write_text("#include <stdio.h>\nint main(void) { return puts(\"SDK OK\") < 0; }\n")
+        run(env[compiler], *shlex.split(flags), test_source, "-o", test_executable, env=env)
+        if capture("lipo", "-archs", test_executable) != "arm64":
+            raise ValueError(f"{lang} SDK preflight architecture mismatch")
+        run(test_executable, env=env)
+    print("MRV_SPICE_CANDIDATE_SDK_PREFLIGHT_OK", flush=True)
+    try:
+        run("meson", "setup", build, source, "--prefix", prefix,
+            "--buildtype=release", "--wrap-mode=nodownload", env=env)
+        run("meson", "compile", "-C", build, env=env)
+        run("meson", "install", "-C", build, env=env)
+    finally:
+        # Preserve complete Meson diagnostics in the always-uploaded evidence,
+        # including if setup fails before compilation.
+        log = build / "meson-logs" / "meson-log.txt"
+        if log.is_file():
+            shutil.copyfile(log, evidence / "meson-log.txt")
     name = "libspice-client-glib-2.0.8.dylib"
     baseline = (keg / "lib" / name).resolve(strict=True)
     library = (prefix / "lib" / name).resolve(strict=True)
@@ -193,6 +222,8 @@ def main():
         "candidate_exports": len(symbols),
         "extra_exports": extra,
         "meson": capture("meson", "--version"),
+        "sdk_version": env["MACOSX_DEPLOYMENT_TARGET"],
+        "compiler": capture(env["CC"], "--version"),
         "openssl": capture("pkg-config", "--modversion", "openssl", env=env),
     }
     (evidence / "native-build-report.json").write_text(json.dumps(report, indent=2) + "\n")

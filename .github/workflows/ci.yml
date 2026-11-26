@@ -46,9 +46,9 @@ jobs:
       - name: Build candidate in isolated prefix and compare ABI
         run: |
           python3 -m venv "$RUNNER_TEMP/spice-build-venv"
-          "$RUNNER_TEMP/spice-build-venv/bin/python" -m pip install 'pyparsing==3.3.3'
+          "$RUNNER_TEMP/spice-build-venv/bin/python" -m pip install 'pyparsing==3.3.3' 'meson==1.12.1'
           export PATH="$RUNNER_TEMP/spice-build-venv/bin:$PATH"
-          python3 BuildSupport/build-spice-candidate.py --audit "$RUNNER_TEMP/spice-source-audit" --work "$RUNNER_TEMP/spice-candidate-build"
+          "$RUNNER_TEMP/spice-build-venv/bin/python" BuildSupport/build-spice-candidate.py --audit "$RUNNER_TEMP/spice-source-audit" --work "$RUNNER_TEMP/spice-candidate-build"
       - name: Upload source audit evidence
         if: always()
         uses: actions/upload-artifact@v4
