@@ -75,6 +75,39 @@ static void test_budget(void)
     puts("MRV_SPICE_AGENT_AGGREGATE_BUDGET_OK");
 }
 
+static void test_wire_budget(void)
+{
+    MRVReceiveBudget budget = { .limit = MRV_WIRE_TOTAL_MAX };
+    /* Logical reservations only: do not allocate hundreds of MiB in CI. */
+    for (unsigned i = 0; i < 5; ++i)
+        g_assert_true(mrv_receive_budget_reserve(&budget, MRV_WIRE_MAX));
+    g_assert_false(mrv_receive_budget_reserve(&budget, 1));
+    mrv_receive_budget_release(&budget, MRV_WIRE_MAX);
+    g_assert_true(mrv_receive_budget_reserve(&budget, MRV_WIRE_MAX));
+    for (unsigned i = 0; i < 5; ++i)
+        mrv_receive_budget_release(&budget, MRV_WIRE_MAX);
+    g_assert_cmpuint(budget.used, ==, 0);
+    g_mutex_clear(&budget.lock);
+
+    MRVReceiveBudget small = { .limit = 8 };
+    gsize root_charge = 0, sub_charge = 0;
+    guint8 *root = mrv_receive_budget_alloc(&small, 8, &root_charge);
+    g_assert_nonnull(root);
+    guint8 *borrowed = root + 2;
+    /* The child has no allocation and never clears the borrowed pointer. */
+    g_assert_cmpuint(sub_charge, ==, 0);
+    borrowed[0] = 42;
+    g_assert_cmpuint(root[2], ==, 42);
+    g_assert_cmpuint(small.used, ==, 8);
+    borrowed = NULL;
+    g_assert_null(borrowed);
+    g_assert_false(mrv_receive_budget_reserve(&small, 1));
+    mrv_receive_budget_clear(&small, &root, &root_charge);
+    g_assert_cmpuint(small.used, ==, 0);
+    g_mutex_clear(&small.lock);
+    puts("MRV_SPICE_WIRE_AGGREGATE_BUDGET_OK");
+}
+
 int main(void)
 {
     g_assert_true(mrv_link_size_allowed(MRV_LINK_MAX));
@@ -91,6 +124,7 @@ int main(void)
     g_assert_false(mrv_agent_size_allowed(MRV_AGENT_MAX + 1u));
     g_assert_false(mrv_agent_size_allowed(UINT32_MAX));
     test_budget();
+    test_wire_budget();
     puts("MRV_SPICE_RECEIVE_POLICY_BOUNDARIES_OK");
     return 0;
 }

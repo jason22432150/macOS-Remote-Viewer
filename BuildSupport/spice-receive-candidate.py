@@ -44,13 +44,41 @@ def patch_channel(text):
         '    }\n'
         '    msg_size = (int)wire_size;')
     text = replace_once(text, '    in->data = g_malloc0(msg_size);',
-        '    in->data = g_try_malloc0(MAX(msg_size, 1));\n'
+        '    in->data = mrv_receive_budget_alloc(&mrv_wire_budget, (gsize)msg_size, &in->mrv_wire_charge);\n'
         '    if (!in->data) {\n'
+        '        mrv_receive_test_trace("MRV_NATIVE_WIRE_BUDGET_OR_ALLOC_REJECTED");\n'
         '        c->event = SPICE_CHANNEL_ERROR_IO;\n'
         '        c->has_error = TRUE;\n'
         '        goto end;\n'
         '    }')
-    return '#include "mrv-receive-limits.h"\n' + text
+    # Submessages borrow parent->data and retain the parent. Only the
+    # final reference to an owning root may free its allocation/charge.
+    text = replace_once(text,
+        '    if (in->parent) {\n'
+        '        spice_msg_in_unref(in->parent);\n'
+        '    } else {\n'
+        '        g_free(in->data);\n'
+        '    }',
+        '    if (in->parent) {\n'
+        '        spice_msg_in_unref(in->parent);\n'
+        '    } else {\n'
+        '        mrv_receive_budget_clear(&mrv_wire_budget, &in->data, &in->mrv_wire_charge);\n'
+        '    }')
+    if ('g_free(in->data)' in text or
+            text.count('mrv_receive_budget_alloc(&mrv_wire_budget,') != 1 or
+            text.count('mrv_receive_budget_clear(&mrv_wire_budget,') != 1):
+        raise ValueError("wire receive budget ownership anchors changed")
+    return ('#include "mrv-receive-limits.h"\n'
+            'static MRVReceiveBudget mrv_wire_budget = { .limit = MRV_WIRE_TOTAL_MAX };\n' + text)
+
+
+def patch_private_header(text):
+    return replace_once(text,
+        '    uint8_t               *data;\n'
+        '    int                   dpos;',
+        '    uint8_t               *data;\n'
+        '    gsize                 mrv_wire_charge; /* owning root only */\n'
+        '    int                   dpos;')
 
 
 def patch_agent(text):
@@ -154,7 +182,8 @@ def main():
     archive = (args.audit / f"spice-gtk-{version}.tar.xz").read_bytes()
     audit.verify_digest(archive, lock["upstream_sha256"])
     sources = audit.read_source_files(archive, version)
-    changes = {audit.FILES[0]: patch_agent, audit.FILES[1]: patch_channel}
+    changes = {audit.FILES[0]: patch_agent, audit.FILES[1]: patch_channel,
+               audit.FILES[2]: patch_private_header}
     diffs = []
     hashes = {}
     for name, body in sources.items():

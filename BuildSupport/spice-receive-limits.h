@@ -22,6 +22,9 @@ static inline void mrv_receive_test_trace(const char *marker)
 /* Aggregate across all main channels in this process, not an RSS limit.
  * Leave headroom for four concurrent maximum-size clipboard messages. */
 #define MRV_AGENT_TOTAL_MAX ((gsize)(96u * 1024u * 1024u))
+/* Process-wide owning wire payload allocations, independent of Agent.
+ * Four maximum-size frames plus one frame of headroom. Not total RSS. */
+#define MRV_WIRE_TOTAL_MAX ((gsize)(640u * 1024u * 1024u))
 
 typedef struct {
     GMutex lock;
