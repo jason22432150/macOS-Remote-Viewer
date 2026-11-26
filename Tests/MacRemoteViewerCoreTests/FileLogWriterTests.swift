@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import MacRemoteViewerCore
 
 final class FileLogWriterTests: XCTestCase {
@@ -88,6 +89,70 @@ final class FileLogWriterTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: target.path)
         XCTAssertThrowsError(try FoundationFileLogWriter(directoryURL: target).append("blocked"))
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
+    }
+
+    func testHistoricalMaintenanceProtectsOwnedLogsAndPrunesOnlyExpiredEntries() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacRemoteViewer-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fm = FileManager.default
+        let directory = root.appendingPathComponent("logs", isDirectory: true)
+        let writer = FoundationFileLogWriter(directoryURL: directory)
+        try writer.maintainExistingLogs()
+        XCTAssertFalse(fm.fileExists(atPath: directory.path))
+        try writer.ensureDirectoryExists()
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = now.addingTimeInterval(-40 * 86400)
+        let recent = now.addingTimeInterval(-5 * 86400)
+        func make(_ name: String, modified: Date) throws -> URL {
+            let url = directory.appendingPathComponent(name)
+            try Data("historical\n".utf8).write(to: url)
+            try fm.setAttributes([.posixPermissions: 0o644, .modificationDate: modified], ofItemAtPath: url.path)
+            return url
+        }
+        let expired = try make("MacRemoteViewer-2026-01-01.log.1", modified: old)
+        let active = try make("MacRemoteViewer-2026-02-01.log", modified: recent)
+        let rotated = try make("MacRemoteViewer-2026-02-01.log.3", modified: recent)
+        let unrelated = try make("unrelated.log", modified: old)
+        let link = directory.appendingPathComponent("MacRemoteViewer-2026-01-02.log")
+        try fm.createSymbolicLink(at: link, withDestinationURL: unrelated)
+        let hardLink = directory.appendingPathComponent("MacRemoteViewer-2026-01-03.log")
+        try fm.linkItem(at: unrelated, to: hardLink)
+        let fifo = directory.appendingPathComponent("MacRemoteViewer-2026-01-04.log")
+        XCTAssertEqual(mkfifo(fifo.path, mode_t(0o600)), 0)
+        try writer.maintainExistingLogs(now: now)
+        XCTAssertFalse(fm.fileExists(atPath: expired.path))
+        for url in [active, rotated] {
+            let attributes = try fm.attributesOfItem(atPath: url.path)
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+            XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "historical\n")
+        }
+        let mode = try fm.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o700)
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: link.path), unrelated.path)
+        XCTAssertTrue(fm.fileExists(atPath: hardLink.path))
+        XCTAssertTrue(fm.fileExists(atPath: fifo.path))
+        let unrelatedMode = try fm.attributesOfItem(atPath: unrelated.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(unrelatedMode?.intValue, 0o644)
+        XCTAssertEqual(try String(contentsOf: unrelated, encoding: .utf8), "historical\n")
+    }
+
+    func testRotationRefusesSuspiciousHistoricalEntryWithoutOverwritingTarget() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacRemoteViewer-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = FoundationFileLogWriter(directoryURL: directory, maximumFileBytes: 8, retainedRotations: 2)
+        try writer.append("1234567")
+        let active = directory.appendingPathComponent(FoundationFileLogWriter.fileName(for: Date()))
+        let target = directory.appendingPathComponent("untouched.txt")
+        try Data("original".utf8).write(to: target)
+        let rotation = active.appendingPathExtension("2")
+        try FileManager.default.createSymbolicLink(at: rotation, withDestinationURL: target)
+        XCTAssertThrowsError(try writer.append("next"))
+        XCTAssertEqual(try String(contentsOf: active, encoding: .utf8), "1234567\n")
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "original")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: rotation.path), target.path)
     }
 
     func testSinkDoesNotWriteWhenDisabled() throws {

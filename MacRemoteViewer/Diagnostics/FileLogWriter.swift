@@ -31,97 +31,192 @@ public struct FoundationFileLogWriter: FileLogWriting, Sendable {
     }
 
     public func ensureDirectoryExists() throws {
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
+        let fd = try openDirectory(create: true)
+        Darwin.close(fd)
+    }
+
+    /// Anchor all child operations to the verified directory, not its path.
+    /// An existing shared-writable or redirected directory is never adopted.
+    private func openDirectory(create: Bool) throws -> Int32 {
+        if create {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
+        let fd = Darwin.open(directoryURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if fd < 0 {
+            if !create && errno == ENOENT { return -1 }
+            throw CocoaError(.fileWriteNoPermission)
+        }
         var info = stat()
-        // Refuse a redirected or shared-writable leaf directory. Existing
-        // owner-only writable directories remain usable (including 0755).
-        guard lstat(directoryURL.path, &info) == 0,
+        guard fstat(fd, &info) == 0,
               (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
-              info.st_uid == geteuid(), (info.st_mode & mode_t(0o022)) == 0 else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
-    }
-
-    public func append(_ line: String) throws {
-        try ensureDirectoryExists()
-        let url = directoryURL.appendingPathComponent(Self.fileName(for: Date()), isDirectory: false)
-        let data = Data((line + "\n").utf8)
-        guard data.count <= maximumFileBytes else { throw CocoaError(.fileWriteOutOfSpace) }
-        // The application uses a single serial AsyncFileLogWriter. Do not follow
-        // symlinks or write into special files, and create private log files.
-        var fd = try openLog(url)
-        defer { if fd >= 0 { Darwin.close(fd) } }
-        var info = stat()
-        guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-              info.st_nlink == 1, info.st_size >= 0 else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
-        if info.st_size > Int64(maximumFileBytes - data.count) {
-            Darwin.close(fd)
-            fd = -1
-            try rotate(url)
-            fd = try openLog(url)
-        }
-        // O_APPEND prevents seek/write races. FileHandle does not own this fd.
-        try FileHandle(fileDescriptor: fd, closeOnDealloc: false).write(contentsOf: data)
-    }
-
-    private func openLog(_ url: URL) throws -> Int32 {
-        let fd = Darwin.open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, mode_t(0o600))
-        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
-        var info = stat()
-        guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-              info.st_nlink == 1, info.st_uid == geteuid() else {
-            Darwin.close(fd)
-            throw CocoaError(.fileWriteNoPermission)
-        }
-        // O_CREAT's mode does not change an existing file. Tighten legacy
-        // permissions via the verified descriptor before appending, never
-        // through a path which might now refer to a different file.
-        if (info.st_mode & mode_t(0o7777)) != mode_t(0o600) &&
-            fchmod(fd, mode_t(0o600)) != 0 {
+              info.st_uid == geteuid(), (info.st_mode & mode_t(0o022)) == 0,
+              ((info.st_mode & mode_t(0o7777)) == mode_t(0o700) ||
+               fchmod(fd, mode_t(0o700)) == 0) else {
             Darwin.close(fd)
             throw CocoaError(.fileWriteNoPermission)
         }
         return fd
     }
 
-    private func rotate(_ url: URL) throws {
-        let fm = FileManager.default
-        func rotation(_ number: Int) -> URL {
-            url.appendingPathExtension(String(number))
+    public func append(_ line: String) throws {
+        let data = Data((line + "\n").utf8)
+        guard data.count <= maximumFileBytes else { throw CocoaError(.fileWriteOutOfSpace) }
+        let directory = try openDirectory(create: true)
+        defer { Darwin.close(directory) }
+        let name = Self.fileName(for: Date())
+        var fd = try openLog(directory, name)
+        defer { if fd >= 0 { Darwin.close(fd) } }
+        var info = stat()
+        guard fstat(fd, &info) == 0, isOwnedRegular(info), info.st_size >= 0 else {
+            throw CocoaError(.fileWriteNoPermission)
         }
-        func regularFileExists(_ candidate: URL) throws -> Bool {
+        if info.st_size > Int64(maximumFileBytes - data.count) {
+            Darwin.close(fd)
+            fd = -1
+            try rotate(directory, name)
+            fd = try openLog(directory, name)
+        }
+        try FileHandle(fileDescriptor: fd, closeOnDealloc: false).write(contentsOf: data)
+    }
+
+    private func isOwnedRegular(_ info: stat) -> Bool {
+        (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) &&
+            info.st_nlink == 1 && info.st_uid == geteuid()
+    }
+
+    private func makePrivate(_ fd: Int32, _ info: stat) throws {
+        guard isOwnedRegular(info),
+              ((info.st_mode & mode_t(0o7777)) == mode_t(0o600) ||
+               fchmod(fd, mode_t(0o600)) == 0) else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+    }
+
+    private func openLog(_ directory: Int32, _ name: String) throws -> Int32 {
+        let fd = Darwin.openat(directory, name,
+            O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, mode_t(0o600))
+        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        do {
             var info = stat()
-            if lstat(candidate.path, &info) != 0 {
-                if errno == ENOENT { return false }
-                throw CocoaError(.fileWriteNoPermission)
-            }
-            guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_nlink == 1,
-                  info.st_uid == geteuid() else {
-                throw CocoaError(.fileWriteNoPermission)
-            }
+            guard fstat(fd, &info) == 0 else { throw CocoaError(.fileWriteNoPermission) }
+            try makePrivate(fd, info)
+            return fd
+        } catch {
+            Darwin.close(fd)
+            throw error
+        }
+    }
+
+    private func entry(_ directory: Int32, _ name: String) throws -> stat? {
+        var info = stat()
+        if fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            if errno == ENOENT { return nil }
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        return info
+    }
+
+    private func privateExistingLog(_ directory: Int32, _ name: String, expected: stat) throws -> stat {
+        let fd = Darwin.openat(directory, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        defer { Darwin.close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, isOwnedRegular(info),
+              info.st_dev == expected.st_dev, info.st_ino == expected.st_ino else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try makePrivate(fd, info)
+        return info
+    }
+
+    private func rotate(_ directory: Int32, _ name: String) throws {
+        func rotation(_ number: Int) -> String { "\(name).\(number)" }
+        func regularFileExists(_ candidate: String) throws -> Bool {
+            guard let info = try entry(directory, candidate) else { return false }
+            guard isOwnedRegular(info) else { throw CocoaError(.fileWriteNoPermission) }
+            _ = try privateExistingLog(directory, candidate, expected: info)
             return true
         }
-        // Refuse suspicious entries before touching any file.
+        // Check the entire rotation set before any unlink or rename.
+        _ = try regularFileExists(name)
         for number in 1...retainedRotations {
             _ = try regularFileExists(rotation(number))
         }
         if try regularFileExists(rotation(retainedRotations)) {
-            try fm.removeItem(at: rotation(retainedRotations))
+            guard unlinkat(directory, rotation(retainedRotations), 0) == 0 else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
         }
         if retainedRotations > 1 {
             for number in stride(from: retainedRotations - 1, through: 1, by: -1) {
                 let source = rotation(number)
                 if try regularFileExists(source) {
-                    try fm.moveItem(at: source, to: rotation(number + 1))
+                    guard renameat(directory, source, directory, rotation(number + 1)) == 0 else {
+                        throw CocoaError(.fileWriteNoPermission)
+                    }
                 }
             }
         }
-        if try regularFileExists(url) {
-            try fm.moveItem(at: url, to: rotation(1))
+        if try regularFileExists(name) {
+            guard renameat(directory, name, directory, rotation(1)) == 0 else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
         }
+    }
+
+    /// Maintenance does not create a log directory when logging is disabled.
+    /// Never follow links or touch unrelated files. Preserve the existing
+    /// 30-day modification-time retention policy for owned regular logs.
+    func maintainExistingLogs(now: Date = Date(), calendar: Calendar = .current) throws {
+        let directory = try openDirectory(create: false)
+        guard directory >= 0 else { return }
+        defer { Darwin.close(directory) }
+        guard let cutoff = calendar.date(byAdding: .day, value: -30, to: now) else { return }
+        let copy = fcntl(directory, F_DUPFD_CLOEXEC, 0)
+        guard copy >= 0 else { throw CocoaError(.fileReadUnknown) }
+        guard let stream = fdopendir(copy) else {
+            Darwin.close(copy)
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { closedir(stream) }
+        var hadError = false
+        while true {
+            errno = 0
+            guard let item = readdir(stream) else {
+                if errno != 0 { hadError = true }
+                break
+            }
+            let length = Int(item.pointee.d_namlen) + 1
+            let name = withUnsafePointer(to: &item.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: length) {
+                    String(validatingUTF8: $0)
+                }
+            }
+            guard let name,
+                  name.range(of: #"\AMacRemoteViewer-[0-9]{4}-[0-9]{2}-[0-9]{2}\.log(?:\.([1-9]|10))?\z"#,
+                             options: .regularExpression) != nil else { continue }
+            do {
+                guard let expected = try entry(directory, name), isOwnedRegular(expected) else { continue }
+                let info = try privateExistingLog(directory, name, expected: expected)
+                let modified = Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec) +
+                                    Double(info.st_mtimespec.tv_nsec) / 1_000_000_000)
+                if modified < cutoff {
+                    // Recheck identity and link count immediately before unlink.
+                    guard let current = try entry(directory, name), isOwnedRegular(current),
+                          current.st_dev == info.st_dev, current.st_ino == info.st_ino,
+                          current.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec,
+                          current.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec else { continue }
+                    guard unlinkat(directory, name, 0) == 0 else {
+                        throw CocoaError(.fileWriteNoPermission)
+                    }
+                }
+            } catch {
+                // Finish protecting other entries even if one failed.
+                hadError = true
+            }
+        }
+        if hadError { throw CocoaError(.fileWriteNoPermission) }
     }
 
     public static func fileName(for date: Date, calendar: Calendar = .current) -> String {
@@ -146,6 +241,11 @@ public final class AsyncFileLogWriter: FileLogWriting, @unchecked Sendable {
 
     public init(writer: FoundationFileLogWriter = FoundationFileLogWriter()) {
         self.writer = writer
+        // Protect historical logs even when no new event is written. Keep
+        // filesystem work off the AppKit thread and on the same serial queue.
+        queue.async { [self] in
+            pruneIfNeeded()
+        }
     }
 
     public var directoryURL: URL { writer.directoryURL }
@@ -176,24 +276,16 @@ public final class AsyncFileLogWriter: FileLogWriting, @unchecked Sendable {
         }
     }
 
-    // Only delete this application's dated log files, never unrelated user files.
     private func pruneIfNeeded() {
         let now = Date()
         let day = FoundationFileLogWriter.fileName(for: now)
         guard lastPrunedDay != day else { return }
-        lastPrunedDay = day
-        guard (try? writer.ensureDirectoryExists()) != nil,
-              let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) else { return }
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
-        guard let urls = try? FileManager.default.contentsOfDirectory(at: directoryURL,
-            includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return }
-        for url in urls {
-            guard url.lastPathComponent.range(of: #"^MacRemoteViewer-[0-9]{4}-[0-9]{2}-[0-9]{2}\.log(\.([1-9]|10))?$"#,
-                options: .regularExpression) != nil,
-                let values = try? url.resourceValues(forKeys: keys),
-                values.isRegularFile == true, values.isSymbolicLink != true,
-                let modified = values.contentModificationDate, modified < cutoff else { continue }
-            try? FileManager.default.removeItem(at: url)
+        do {
+            try writer.maintainExistingLogs(now: now)
+            lastPrunedDay = day
+        } catch {
+            // Retry on a later write rather than mark a failed pass complete.
+            logger.error("file-log-maintenance-failed")
         }
     }
 }
