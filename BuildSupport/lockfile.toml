@@ -21,6 +21,8 @@ formula = "spice-gtk"
 version = "0.43_1"
 upstream_url = "https://www.spice-space.org/download/gtk/spice-gtk-0.43.tar.xz"
 upstream_sha256 = "cee26e5b2d22909f35b40a94398d1e863ca3962ee46494ca97aab206abc3203b"
+macos_patch_url = "https://gitlab.freedesktop.org/spice/spice-gtk/-/commit/02377912fe173e4af7714aef036d0555ee7531bc.diff"
+macos_patch_sha256 = "f2cc068e62d4310825f1107820fefb4c29c318acd45cabc4247528a91f7945be"
 note = "原型以 overlay 相容：CSMain 使用 g_main_context_default()，gst_ios_init 改呼叫 gst_init。缺少 UTM fork 的 spice_util_set_main_context 與靜態 gst_plugin_*_register。"
 
 [glib]

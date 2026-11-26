@@ -31,11 +31,11 @@ jobs:
 
   spice-source-audit:
     runs-on: macos-15
-    timeout-minutes: 12
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
-      - name: Install locked spice-gtk keg
-        run: brew install spice-gtk
+      - name: Install locked spice-gtk keg and candidate build tools
+        run: brew install spice-gtk pkgconf meson ninja gettext gobject-introspection vala
       - name: Verify upstream archive and capture receive path evidence
         run: python3 BuildSupport/audit-spice-source.py --output "$RUNNER_TEMP/spice-source-audit"
       - name: Apply candidate bounds to verified upstream sources and test shared limit policy
@@ -43,7 +43,14 @@ jobs:
           python3 BuildSupport/spice-receive-candidate.py --audit "$RUNNER_TEMP/spice-source-audit"
           xcrun clang -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags glib-2.0) BuildSupport/test-spice-receive-limits.c -o "$RUNNER_TEMP/spice-receive-limits" $(pkg-config --libs glib-2.0)
           "$RUNNER_TEMP/spice-receive-limits"
+      - name: Build candidate in isolated prefix and compare ABI
+        run: |
+          python3 -m venv "$RUNNER_TEMP/spice-build-venv"
+          "$RUNNER_TEMP/spice-build-venv/bin/python" -m pip install 'pyparsing==3.3.3'
+          export PATH="$RUNNER_TEMP/spice-build-venv/bin:$PATH"
+          python3 BuildSupport/build-spice-candidate.py --audit "$RUNNER_TEMP/spice-source-audit" --work "$RUNNER_TEMP/spice-candidate-build"
       - name: Upload source audit evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: spice-gtk-source-audit

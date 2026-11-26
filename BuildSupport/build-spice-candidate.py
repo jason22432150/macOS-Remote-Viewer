@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Compile the verified receive candidate in a private prefix; never replace Homebrew."""
+import argparse
+import ctypes
+import hashlib
+import importlib.util
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import tarfile
+import tomllib
+import urllib.request
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
+
+HERE = Path(__file__).resolve().parent
+SPEC = importlib.util.spec_from_file_location("audit_spice_source", HERE / "audit-spice-source.py")
+audit = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(audit)
+
+
+def run(*args, cwd=None, env=None, timeout=600):
+    print("+", " ".join(map(str, args)), flush=True)
+    subprocess.run(list(map(str, args)), cwd=cwd, env=env, check=True, timeout=timeout)
+
+
+def capture(*args, env=None):
+    return subprocess.check_output(list(map(str, args)), env=env, text=True, timeout=60).strip()
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def fetch_patch(url, digest):
+    def check(value):
+        parts = urlsplit(value)
+        if (parts.scheme != "https" or parts.hostname != "gitlab.freedesktop.org"
+                or parts.username or parts.password or parts.port not in (None, 443)):
+            raise ValueError("unexpected downstream patch URL")
+
+    class RestrictedRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            check(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    check(url)
+    with urllib.request.build_opener(RestrictedRedirect()).open(url, timeout=30) as response:
+        check(response.geturl())
+        data = response.read(2 * 1024 * 1024 + 1)
+    if len(data) > 2 * 1024 * 1024 or sha(data) != digest:
+        raise ValueError("downstream patch checksum/size mismatch")
+    return data
+
+
+def unpack(data, destination, version):
+    expected = f"spice-gtk-{version}"
+    seen = set()
+    total = 0
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r|*") as archive:
+        for count, member in enumerate(archive, 1):
+            path = PurePosixPath(member.name)
+            total += max(0, member.size)
+            if (count > 100000 or total > audit.MAX_EXPANDED or path.is_absolute()
+                    or ".." in path.parts or "\\" in member.name
+                    or not path.parts or path.parts[0] != expected
+                    or path in seen or not (member.isfile() or member.isdir())):
+                raise ValueError(f"unsafe or unsupported source member: {member.name}")
+            seen.add(path)
+            output = destination.joinpath(*path.parts)
+            if member.isdir():
+                output.mkdir(parents=True, exist_ok=True)
+            else:
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with archive.extractfile(member) as src, output.open("xb") as dst:
+                    shutil.copyfileobj(src, dst)
+                output.chmod(0o755 if member.mode & 0o111 else 0o644)
+    return destination / expected
+
+
+def exported_symbols(library):
+    # -j prints just symbol names, -U excludes undefined imports.
+    return set(capture("nm", "-gjU", library).splitlines())
+
+
+def install_name(library):
+    lines = capture("otool", "-D", library).splitlines()
+    if len(lines) != 2:
+        raise ValueError("unexpected dylib install name")
+    return lines[1]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--audit", type=Path, required=True)
+    parser.add_argument("--work", type=Path, required=True)
+    args = parser.parse_args()
+    evidence = args.audit.resolve()
+    work = args.work.resolve()
+    work.mkdir(parents=True, exist_ok=False)
+    with (HERE / "lockfile.toml").open("rb") as handle:
+        lock = tomllib.load(handle)["spice_gtk"]
+    version = lock["version"].split("_", 1)[0]
+    archive = (evidence / f"spice-gtk-{version}.tar.xz").read_bytes()
+    audit.verify_digest(archive, lock["upstream_sha256"])
+    source = unpack(archive, work, version)
+    keg = Path(capture("brew", "--prefix", "spice-gtk")).resolve()
+    if keg.name != lock["version"]:
+        raise ValueError("spice-gtk keg changed")
+    formula = (keg / ".brew" / "spice-gtk.rb").read_bytes()
+    if formula != (evidence / "installed-formula.rb").read_bytes():
+        raise ValueError("installed formula changed since audit")
+    formula_text = formula.decode("utf-8")
+    if (lock["macos_patch_url"] not in formula_text
+            or lock["macos_patch_sha256"] not in formula_text
+            or "-#!/usr/bin/python3" not in formula_text
+            or "+#!/usr/bin/env python3" not in formula_text):
+        raise ValueError("installed formula downstream patch evidence differs")
+    downstream = fetch_patch(lock["macos_patch_url"], lock["macos_patch_sha256"])
+    (evidence / "homebrew-macos-drm.patch").write_bytes(downstream)
+    candidate = evidence / "receive-limits-candidate.patch"
+    run("/usr/bin/patch", "-p1", "-F", "0", "-i", candidate, cwd=source)
+    run("/usr/bin/patch", "-p1", "-F", "0", "-i",
+        evidence / "homebrew-macos-drm.patch", cwd=source)
+    keymap = source / "subprojects/keycodemapdb/tools/keymap-gen"
+    original = keymap.read_bytes()
+    if not original.startswith(b"#!/usr/bin/python3\n"):
+        raise ValueError("unexpected keymap-gen shebang")
+    keymap.write_bytes(original.replace(b"#!/usr/bin/python3\n", b"#!/usr/bin/env python3\n", 1))
+    expected = json.loads((evidence / "candidate.json").read_text())
+    if expected["upstream_sha256"] != lock["upstream_sha256"]:
+        raise ValueError("candidate source version mismatch")
+    for name, digest in expected["patched_file_sha256"].items():
+        if sha((source / name).read_bytes()) != digest:
+            raise ValueError(f"patched source mismatch: {name}")
+    build, prefix = work / "build", work / "prefix"
+    env = os.environ.copy()
+    # Homebrew OpenSSL 3 is the observed library used by the locked bottle.
+    crypto = Path(capture("brew", "--prefix", "openssl@3")).resolve()
+    pc = [str(crypto / "lib/pkgconfig")]
+    for name in ("gettext", "gobject-introspection", "spice-protocol", "glib", "gstreamer"):
+        base = Path(capture("brew", "--prefix", name)).resolve()
+        pc.extend(str(base / suffix) for suffix in ("lib/pkgconfig", "share/pkgconfig"))
+    if env.get("PKG_CONFIG_PATH"):
+        pc.append(env["PKG_CONFIG_PATH"])
+    env["PKG_CONFIG_PATH"] = os.pathsep.join(pc)
+    env["CC"] = capture("xcrun", "--find", "clang")
+    env["CXX"] = capture("xcrun", "--find", "clang++")
+    env["MACOSX_DEPLOYMENT_TARGET"] = capture("xcrun", "--sdk", "macosx", "--show-sdk-version")
+    print("OpenSSL build version:", capture("pkg-config", "--modversion", "openssl", env=env), flush=True)
+    run("meson", "setup", build, source, "--prefix", prefix,
+        "--buildtype=release", "--wrap-mode=nodownload", env=env)
+    run("meson", "compile", "-C", build, env=env)
+    run("meson", "install", "-C", build, env=env)
+    name = "libspice-client-glib-2.0.8.dylib"
+    baseline = (keg / "lib" / name).resolve(strict=True)
+    library = (prefix / "lib" / name).resolve(strict=True)
+    if not library.is_relative_to(prefix) or capture("lipo", "-archs", library) != "arm64":
+        raise ValueError("candidate architecture/path mismatch")
+    if Path(install_name(baseline)).name != Path(install_name(library)).name:
+        raise ValueError("candidate ABI install-name mismatch")
+    base_symbols = exported_symbols(baseline)
+    symbols = exported_symbols(library)
+    missing = sorted(base_symbols - symbols)
+    extra = sorted(symbols - base_symbols)
+    print("ABI baseline exports:", len(base_symbols), "candidate:", len(symbols), flush=True)
+    if not base_symbols or missing:
+        raise ValueError(f"candidate missing exports: {missing}")
+    print(capture("otool", "-L", library), flush=True)
+    # Fresh process loads candidate by absolute path, not via the opt alias.
+    # g_object_unref is resolved through the candidate dependency closure.
+    loaded = ctypes.CDLL(str(library))
+    loaded.spice_session_new.restype = ctypes.c_void_p
+    loaded.spice_session_new.argtypes = []
+    loaded.g_object_unref.argtypes = [ctypes.c_void_p]
+    loaded.g_object_unref.restype = None
+    session = loaded.spice_session_new()
+    if not session:
+        raise ValueError("candidate failed to create native SpiceSession")
+    loaded.g_object_unref(session)
+    report = {
+        "scope": "isolated candidate; not linked into app",
+        "upstream_sha256": lock["upstream_sha256"],
+        "downstream_sha256": lock["macos_patch_sha256"],
+        "candidate_patch_sha256": sha(candidate.read_bytes()),
+        "baseline_sha256": sha(baseline.read_bytes()),
+        "candidate_dylib_sha256": sha(library.read_bytes()),
+        "candidate_install_name": install_name(library),
+        "baseline_exports": len(base_symbols),
+        "candidate_exports": len(symbols),
+        "extra_exports": extra,
+        "meson": capture("meson", "--version"),
+        "openssl": capture("pkg-config", "--modversion", "openssl", env=env),
+    }
+    (evidence / "native-build-report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print("MRV_SPICE_CANDIDATE_NATIVE_BUILD_OK", flush=True)
+    print("MRV_SPICE_CANDIDATE_ABI_OK", flush=True)
+    print("MRV_SPICE_CANDIDATE_SESSION_SMOKE_OK", flush=True)
+
+
+if __name__ == "__main__":
+    main()
