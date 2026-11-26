@@ -23,8 +23,11 @@ def replace_once(text, old, new):
 def patch_channel(text):
     text = replace_once(text,
         '    if (c->peer_hdr.size < sizeof(*c->peer_msg)) {',
-        '    if (c->peer_hdr.size < sizeof(*c->peer_msg) ||\n'
-        '        !mrv_link_size_allowed(c->peer_hdr.size)) {')
+        '    if (!mrv_link_size_allowed(c->peer_hdr.size)) {\n'
+        '        mrv_receive_test_trace("MRV_NATIVE_LINK_LIMIT_REJECTED");\n'
+        '        goto error;\n'
+        '    }\n'
+        '    if (c->peer_hdr.size < sizeof(*c->peer_msg)) {')
     text = replace_once(text, '    c->peer_msg = g_malloc0(c->peer_hdr.size);',
                         '    c->peer_msg = g_try_malloc0(c->peer_hdr.size);')
     text = replace_once(text,

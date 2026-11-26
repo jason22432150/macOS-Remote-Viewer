@@ -73,7 +73,7 @@ def serve(listener, context, declared, reject):
                     "close_seconds": round(time.monotonic() - start, 3)}
 
 
-def test_case(app, root, context, name, declared, reject):
+def test_case(app, root, context, name, declared, reject, trace=True):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
@@ -88,21 +88,27 @@ def test_case(app, root, context, name, declared, reject):
         env.update(NO_PROXY="127.0.0.1", PATH="/usr/bin:/bin:/usr/sbin:/sbin",
                    MRV_ENABLE_INTEGRATION_PROBES="1")
         env.pop("G_DEBUG", None)
+        env.pop("MRV_RECEIVE_TEST_TRACE", None)
+        if trace:
+            env["MRV_RECEIVE_TEST_TRACE"] = "1"
         executable = app / "Contents" / "MacOS" / "Mac Remote Viewer"
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             observed = pool.submit(serve, listener, context, declared, reject)
             result = subprocess.run([str(executable), "--loopback-tls-probe", str(profile)],
                                     cwd=root, env=env, capture_output=True, text=True, timeout=25)
             outcome = observed.result(timeout=10)
-        diagnostic = f"invalid peer header size: {declared}"
+        diagnostic = "MRV_NATIVE_LINK_LIMIT_REJECTED"
+        expected_count = int(reject and trace)
+        marker_count = result.stderr.splitlines().count(diagnostic)
+        print(f"{name}: {outcome}, native_limit_markers={marker_count}", flush=True)
         if result.returncode != 0 or "MRV_TLS_PROBE_TERMINAL" not in result.stdout.splitlines():
             print(result.stdout[-4000:])
             print(result.stderr[-4000:])
             raise AssertionError(f"{name}: expected terminal client state")
-        if (diagnostic in result.stderr) != reject:
+        if marker_count != expected_count:
+            print(result.stdout[-4000:])
             print(result.stderr[-4000:])
-            raise AssertionError(f"{name}: incorrect native receive-limit diagnostic")
-        print(f"{name}: {outcome}", flush=True)
+            raise AssertionError(f"{name}: expected {expected_count} native receive-limit markers, got {marker_count}")
 
 
 def main():
@@ -128,6 +134,7 @@ def main():
         context.load_cert_chain(root / "server.pem", root / "server.key")
         test_case(app, root, context, "link-at-limit", maximum, False)
         test_case(app, root, context, "link-over-limit", maximum + 1, True)
+        test_case(app, root, context, "link-over-limit-no-trace", maximum + 1, True, trace=False)
         test_case(app, root, context, "link-at-limit-after-rejection", maximum, False)
     print("MRV_SPICE_CANDIDATE_LINK_RECEIVE_BOUNDARY_OK", flush=True)
 
