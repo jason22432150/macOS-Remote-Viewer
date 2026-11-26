@@ -632,9 +632,13 @@ def overlay_connection_pve_api(checkout: Path) -> None:
                  "enable-audio", FALSE,
                  "enable-usbredir", FALSE,
                  "verify", SPICE_SESSION_VERIFY_SUBJECT,
-                 "proxy", proxy.length ? proxy.UTF8String : NULL,
+                 // Empty string explicitly disables proxy; NULL re-reads SPICE_PROXY.
+                 "proxy", proxy.length ? proxy.UTF8String : "",
                  "pubkey", NULL,
                  NULL);
+        // Reject an invalid native proxy rather than silently connecting direct.
+        SpiceURI *appliedProxy = spice_session_get_proxy_uri(self.spiceSession);
+        if ((proxy.length > 0) != (appliedProxy != NULL)) return;
         GByteArray *caArray = g_byte_array_new();
         g_byte_array_append(caArray, ca.bytes, (guint)ca.length);
         g_object_set(self.spiceSession, "ca", caArray, NULL);

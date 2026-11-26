@@ -7,11 +7,14 @@ must not transmit application bytes or downgrade to a plaintext connection.
 """
 import argparse
 import os
+import select
 import socket
 import ssl
 import subprocess
 import tempfile
 import threading
+import time
+from contextlib import ExitStack
 from pathlib import Path
 
 SUBJECT = "CN=mrv-ci.test"
@@ -112,17 +115,94 @@ def assert_observations(name, observations, expect_link):
         raise AssertionError(f"{name}: rejected peer sent application data")
 
 
-def test_case(app, root, context, name, ca, subject, expect_link, injected_env=None):
+def observe_proxy(listener, target, stop, observations, forward):
+    """Synthetic loopback CONNECT relay or decoy; never resolve a supplied host."""
+    listener.settimeout(0.2)
+    while not stop.is_set():
+        try:
+            peer, address = listener.accept()
+        except socket.timeout:
+            continue
+        with peer:
+            observations["connections"] += 1
+            if not forward:
+                continue
+            try:
+                if address[0] != "127.0.0.1":
+                    raise ValueError("non-loopback proxy peer")
+                peer.settimeout(3)
+                request = bytearray()
+                while not request.endswith(b"\r\n\r\n"):
+                    part = peer.recv(1)
+                    if not part or len(request) >= 8192:
+                        raise ValueError("incomplete CONNECT request")
+                    request.extend(part)
+                expected = f"CONNECT 127.0.0.1:{target} ".encode("ascii")
+                if not request.split(b"\r\n", 1)[0].startswith(expected):
+                    raise ValueError("unexpected CONNECT target")
+                with socket.create_connection(("127.0.0.1", target), timeout=3) as upstream:
+                    peer.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    observations["tunnels"] += 1
+                    deadline = time.monotonic() + 8
+                    transferred = 0
+                    while time.monotonic() < deadline and not stop.is_set():
+                        readable, _, _ = select.select([peer, upstream], [], [], 0.2)
+                        for source in readable:
+                            data = source.recv(4096)
+                            if not data:
+                                break
+                            transferred += len(data)
+                            if transferred > 1024 * 1024:
+                                raise ValueError("unexpected local tunnel traffic")
+                            (upstream if source is peer else peer).sendall(data)
+                        else:
+                            continue
+                        break
+            except (ValueError, OSError):
+                observations["errors"] += 1
+
+
+def test_case(app, root, context, name, ca, subject, expect_link, injected_env=None,
+              proxy_mode=None):
     observations = dict(connections=0, handshakes=0, plaintext=False,
                         application_data=False, link_header=False)
     stop = threading.Event()
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    with ExitStack() as stack:
+        listener = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         listener.bind(("127.0.0.1", 0))
         listener.listen(8)
         profile = root / f"{name}.vv"
-        profile.write_text(fixture_profile(listener.getsockname()[1], ca, subject))
+        target = listener.getsockname()[1]
+        profile_text = fixture_profile(target, ca, subject)
+        proxy_threads = []
+        proxy_env = {}
+        proxy_observations = {}
+        if proxy_mode is not None:
+            if proxy_mode not in ("direct", "explicit"):
+                raise ValueError("unknown proxy fixture mode")
+            for role in ("decoy", "explicit") if proxy_mode == "explicit" else ("decoy",):
+                proxy_listener = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+                proxy_listener.bind(("127.0.0.1", 0))
+                proxy_listener.listen(8)
+                url = f"http://127.0.0.1:{proxy_listener.getsockname()[1]}"
+                stats = dict(connections=0, tunnels=0, errors=0)
+                proxy_observations[role] = stats
+                proxy_thread = threading.Thread(target=observe_proxy,
+                    args=(proxy_listener, target, stop, stats, role == "explicit"), daemon=True)
+                proxy_threads.append(proxy_thread)
+                if role == "decoy":
+                    proxy_env = {"SPICE_PROXY": url, "spice_proxy": url,
+                                 "http_proxy": url, "HTTP_PROXY": url,
+                                 "https_proxy": url, "HTTPS_PROXY": url,
+                                 "all_proxy": url, "ALL_PROXY": url,
+                                 "NO_PROXY": "", "no_proxy": ""}
+                else:
+                    profile_text += f"proxy={url}\n"
+        profile.write_text(profile_text)
         thread = threading.Thread(target=observe, args=(listener, context, stop, observations), daemon=True)
         thread.start()
+        for proxy_thread in proxy_threads:
+            proxy_thread.start()
         env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
         for key in list(env):
             if key.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "spice_proxy"):
@@ -133,6 +213,7 @@ def test_case(app, root, context, name, ca, subject, expect_link, injected_env=N
         env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
         if injected_env is not None:
             env.update(injected_env)
+        env.update(proxy_env)
         executable = app / "Contents" / "MacOS" / "Mac Remote Viewer"
         try:
             result = subprocess.run([str(executable), "--loopback-tls-probe", str(profile)],
@@ -140,12 +221,24 @@ def test_case(app, root, context, name, ca, subject, expect_link, injected_env=N
         finally:
             stop.set()
             thread.join(timeout=6)
-        if thread.is_alive():
+            for proxy_thread in proxy_threads:
+                proxy_thread.join(timeout=10)
+        if thread.is_alive() or any(t.is_alive() for t in proxy_threads):
             raise AssertionError(f"{name}: fixture failed to stop")
         markers = {"MRV_TLS_PROBE_REJECTED_TLS", "MRV_TLS_PROBE_TERMINAL"}
         if result.returncode != 0 or not markers.intersection(result.stdout.splitlines()):
             raise AssertionError(f"{name}: client probe failed (exit={result.returncode})")
         assert_observations(name, observations, expect_link)
+        if proxy_mode is not None:
+            if proxy_observations["decoy"]["connections"]:
+                raise AssertionError(f"{name}: inherited proxy received a connection")
+            if proxy_mode == "explicit":
+                stats = proxy_observations["explicit"]
+                if not stats["tunnels"] or stats["errors"] or stats["tunnels"] != stats["connections"]:
+                    raise AssertionError(f"{name}: explicit CONNECT tunnel not established")
+                if observations["connections"] != stats["tunnels"]:
+                    raise AssertionError(f"{name}: unexpected direct connection bypass")
+            print(f"{name}: proxy observations={proxy_observations}", flush=True)
         print(f"{name}: {observations}", flush=True)
 
 
@@ -193,6 +286,14 @@ def main():
         if keylog.exists():
             raise AssertionError("inherited SSLKEYLOGFILE was used")
         print("MRV_OPENSSL_ENV_ISOLATION_OK", flush=True)
+
+        test_case(app, root, context, "ambient-proxy-direct", root / "trusted.pem",
+                  SUBJECT, True, proxy_mode="direct")
+        test_case(app, root, context, "ambient-proxy-explicit", root / "trusted.pem",
+                  SUBJECT, True, proxy_mode="explicit")
+        test_case(app, root, context, "ambient-proxy-explicit-wrong-ca", root / "untrusted.pem",
+                  SUBJECT, False, proxy_mode="explicit")
+        print("MRV_SPICE_PROXY_ENV_ISOLATION_OK", flush=True)
     print("Real SPICE TLS/link boundary checks passed (not a complete SPICE session).")
 
 

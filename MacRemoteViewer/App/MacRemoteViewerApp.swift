@@ -1521,8 +1521,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Integration-only probe. Restrict it to a synthetic loopback profile; never
-    /// send a real PVE ticket or enable clipboard, source deletion or a proxy.
+    /// Integration-only probe. Restrict both destination and optional HTTP
+    /// CONNECT proxy to synthetic IPv4 loopback; never use real PVE credentials.
     private func runLoopbackTLSProbe(file: URL) {
         Task { @MainActor in
             let engine = SpiceEngineAdapter()
@@ -1530,9 +1530,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
                 let profile = try VVParser().parse(data: data)
-                guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                guard profile.host == "127.0.0.1",
                       profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
                     throw SessionError.cancelled
+                }
+                if let proxy = profile.proxyURL {
+                    guard proxy.scheme == "http", proxy.host == "127.0.0.1",
+                          proxy.port != nil, proxy.user == nil, proxy.password == nil else {
+                        throw SessionError.cancelled
+                    }
                 }
                 controller.setClipboardSharingEnabled(false)
                 controller.open(profile)
@@ -1799,6 +1805,12 @@ private func preparePortableRuntime(verifyRegistry: Bool) throws -> URL? {
     let opensslModules = contents.appendingPathComponent("Resources/ossl-modules", isDirectory: true)
     let opensslConfig = contents.appendingPathComponent("Resources/mrv-openssl.cnf")
 
+    // spice_session_new() and setting proxy=NULL both consult SPICE_PROXY.
+    // Apply this for development and packaged launches before the worker starts.
+    // Explicit, validated .vv proxy settings are the sole SPICE proxy authority.
+    for key in ["SPICE_PROXY", "spice_proxy"] {
+        guard unsetenv(key) == 0 else { throw SessionError.engineUnavailable }
+    }
     // Only the packaged runtime may enable the registry inspection.
     guard unsetenv("MRV_VERIFY_PACKAGED_GST") == 0 else { throw SessionError.engineUnavailable }
     let bundled = fileManager.fileExists(atPath: gstPlugins.path) ||
