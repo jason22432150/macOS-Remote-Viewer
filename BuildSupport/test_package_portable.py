@@ -40,7 +40,27 @@ spice_source = importlib.util.module_from_spec(SPICE_SOURCE_SPEC)
 SPICE_SOURCE_SPEC.loader.exec_module(spice_source)
 
 
+BUILD_SPICE_SPEC = importlib.util.spec_from_file_location(
+    "build_spice_candidate", Path(__file__).with_name("build-spice-candidate.py"))
+build_spice = importlib.util.module_from_spec(BUILD_SPICE_SPEC)
+BUILD_SPICE_SPEC.loader.exec_module(build_spice)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_candidate_tls_abi_pair_requires_single_matching_major(self):
+        for abi in ("3", "4"):
+            ssl = f"/opt/homebrew/opt/openssl@{abi}/lib/libssl.{abi}.dylib"
+            crypto = f"/opt/homebrew/opt/openssl@{abi}/lib/libcrypto.{abi}.dylib"
+            self.assertEqual(build_spice.tls_load_names(
+                [ssl, crypto, "/usr/lib/libSystem.B.dylib"]),
+                {"ssl": ssl, "crypto": crypto})
+        for deps in ([], ["libssl.3.dylib"],
+                     ["libssl.3.dylib", "libcrypto.4.dylib"],
+                     ["libssl.3.dylib", "libssl.4.dylib", "libcrypto.3.dylib"]):
+            with self.assertRaises(ValueError):
+                build_spice.tls_load_names(deps)
+
+
     def test_spice_source_archive_selects_exact_regular_members(self):
         def archive(entries):
             stream = io.BytesIO()

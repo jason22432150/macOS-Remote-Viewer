@@ -22,6 +22,7 @@ def load(name, filename):
 
 pack = load("package_portable", "package-portable.py")
 dmg = load("verify_dmg", "verify-dmg.py")
+build = load("build_spice_candidate", "build-spice-candidate.py")
 LIBRARY = "libspice-client-glib-2.0.8.dylib"
 APP = "Mac Remote Viewer.app"
 
@@ -40,6 +41,14 @@ def digest(path):
 
 def run(*args, timeout=120):
     subprocess.run(list(map(str, args)), check=True, timeout=timeout)
+
+
+def source_properties(bom, relative):
+    matches = [item for item in dmg.validator.components(bom["components"])
+               if item["type"] == "file" and item["name"] == relative]
+    if len(matches) != 1:
+        raise ValueError(f"missing or duplicate baseline SBOM file: {relative}")
+    return {entry["name"]: entry["value"] for entry in matches[0]["properties"]}
 
 
 def main():
@@ -82,9 +91,33 @@ def main():
     baseline_hash = digest(target)
     if baseline_hash == digest(raw_library):
         raise ValueError("unexpected identical baseline and candidate binary")
-    old_id, _, _ = pack.parse_macho(target)
+    old_id, old_deps, _ = pack.parse_macho(target)
     if old_id != "@rpath/" + LIBRARY:
         raise ValueError("unexpected baseline library install name")
+    baseline_bom = json.loads(bom.read_text())
+    props = source_properties(baseline_bom, "Contents/Frameworks/" + LIBRARY)
+    if props["mrv:source-sha256"] != report["baseline_sha256"]:
+        raise ValueError("candidate built against a different baseline spice client")
+    old_tls = {kind: Path(value).name for kind, value in build.tls_load_names(old_deps).items()}
+    _, raw_deps, _ = pack.parse_macho(raw_library)
+    new_tls = {kind: Path(value).name for kind, value in build.tls_load_names(raw_deps).items()}
+    if old_tls != new_tls or set(report["tls_dependencies"]) != set(old_tls):
+        raise ValueError("candidate TLS ABI differs from packaged baseline")
+    for kind, name in old_tls.items():
+        expected = report["tls_dependencies"][kind]
+        props = source_properties(baseline_bom, "Contents/Frameworks/" + name)
+        if (name != expected["name"] or props["mrv:source-sha256"] != expected["sha256"]
+                or props["mrv:formula"] != expected["formula"]
+                or props["mrv:version"] != expected["version"]):
+            raise ValueError("candidate TLS source provenance differs from baseline SBOM")
+    (output / "staging-report.json").write_text(json.dumps({
+        "scope": "test-only candidate app; TLS and baseline source provenance preflight",
+        "baseline_dmg_sha256": digest(image),
+        "baseline_bundled_dylib_sha256": baseline_hash,
+        "candidate_raw_sha256": report["candidate_dylib_sha256"],
+        "tls_dependencies": report["tls_dependencies"],
+    }, indent=2) + "\n")
+    print("MRV_SPICE_CANDIDATE_APP_TLS_PROVENANCE_OK", flush=True)
     pack.chmod_writable(target)
     shutil.copyfile(raw_library, target)
     pack.chmod_writable(target)
@@ -135,6 +168,7 @@ def main():
         "candidate_raw_sha256": report["candidate_dylib_sha256"],
         "candidate_signed_sha256": final_hash,
         "candidate_patch_sha256": report["candidate_patch_sha256"],
+        "tls_dependencies": report["tls_dependencies"],
         "minimum_macos": minimum,
         "dyld_image_lines": load_lines,
     }, indent=2) + "\n")

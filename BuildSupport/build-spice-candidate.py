@@ -93,6 +93,40 @@ def install_name(library):
     return lines[1]
 
 
+def tls_load_names(dependencies):
+    """Require exactly one SSL/crypto pair with the same Mach-O ABI suffix."""
+    matches = {}
+    for dependency in dependencies:
+        match = re.fullmatch(r"lib(ssl|crypto)\.(\d+(?:\.\d+)*)\.dylib", Path(dependency).name)
+        if match:
+            kind, abi = match.groups()
+            if kind in matches:
+                raise ValueError("ambiguous OpenSSL library dependency")
+            matches[kind] = (abi, dependency)
+    if set(matches) != {"ssl", "crypto"} or matches["ssl"][0] != matches["crypto"][0]:
+        raise ValueError("missing or mismatched OpenSSL ABI pair")
+    return {kind: item[1] for kind, item in matches.items()}
+
+
+def linked_dependencies(library):
+    # otool -L lists the dylib's own install name first.
+    lines = capture("otool", "-L", library).splitlines()[2:]
+    return [line.strip().split(" (compatibility version ", 1)[0] for line in lines]
+
+
+def resolve_tls_pair(library):
+    pair = tls_load_names(linked_dependencies(library))
+    paths = {kind: Path(value).resolve(strict=True) for kind, value in pair.items()
+             if Path(value).is_absolute()}
+    if set(paths) != set(pair) or len({path.parent for path in paths.values()}) != 1:
+        raise ValueError("OpenSSL libraries do not resolve to the same keg directory")
+    libdir = paths["crypto"].parent
+    if ("Cellar" not in libdir.parts or libdir.name != "lib"
+            or not libdir.parent.parent.name.startswith("openssl@")):
+        raise ValueError("OpenSSL dependency is not from a versioned Homebrew keg")
+    return paths
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--audit", type=Path, required=True)
@@ -138,15 +172,23 @@ def main():
             raise ValueError(f"patched source mismatch: {name}")
     build, prefix = work / "build", work / "prefix"
     env = os.environ.copy()
-    # Homebrew OpenSSL 3 is the observed library used by the locked bottle.
-    crypto = Path(capture("brew", "--prefix", "openssl@3")).resolve()
-    pc = [str(crypto / "lib/pkgconfig")]
+    # Select the actual ABI of the locked bottle, not any installed formula.
+    name = "libspice-client-glib-2.0.8.dylib"
+    baseline = (keg / "lib" / name).resolve(strict=True)
+    baseline_tls = resolve_tls_pair(baseline)
+    tls_libdir = baseline_tls["crypto"].parent
+    pc = [str(tls_libdir / "pkgconfig")]
+    print("Baseline TLS dependencies:", {k: str(p) for k, p in baseline_tls.items()}, flush=True)
     for name in ("gettext", "gobject-introspection", "spice-protocol", "glib", "gstreamer"):
         base = Path(capture("brew", "--prefix", name)).resolve()
         pc.extend(str(base / suffix) for suffix in ("lib/pkgconfig", "share/pkgconfig"))
     if env.get("PKG_CONFIG_PATH"):
         pc.append(env["PKG_CONFIG_PATH"])
     env["PKG_CONFIG_PATH"] = os.pathsep.join(pc)
+    for module in ("openssl", "libssl", "libcrypto"):
+        pc_libdir = Path(capture("pkg-config", "--variable=libdir", module, env=env)).resolve(strict=True)
+        if pc_libdir != tls_libdir:
+            raise ValueError(f"pkg-config {module} does not match baseline TLS keg")
     # Direct invocation of the Xcode clang binary does not necessarily inherit
     # the SDK selection performed by xcrun. Set it explicitly for both compile
     # and link stages, including Meson's initial compiler sanity check.
@@ -184,9 +226,11 @@ def main():
         log = build / "meson-logs" / "meson-log.txt"
         if log.is_file():
             shutil.copyfile(log, evidence / "meson-log.txt")
-    name = "libspice-client-glib-2.0.8.dylib"
-    baseline = (keg / "lib" / name).resolve(strict=True)
     library = (prefix / "lib" / name).resolve(strict=True)
+    candidate_tls = resolve_tls_pair(library)
+    if candidate_tls != baseline_tls:
+        raise ValueError("candidate OpenSSL dependencies differ from baseline bottle")
+    print("MRV_SPICE_CANDIDATE_TLS_ABI_OK", flush=True)
     if not library.is_relative_to(prefix) or capture("lipo", "-archs", library) != "arm64":
         raise ValueError("candidate architecture/path mismatch")
     if Path(install_name(baseline)).name != Path(install_name(library)).name:
@@ -225,6 +269,11 @@ def main():
         "sdk_version": env["MACOSX_DEPLOYMENT_TARGET"],
         "compiler": capture(env["CC"], "--version"),
         "openssl": capture("pkg-config", "--modversion", "openssl", env=env),
+        "tls_dependencies": {
+            kind: {"name": path.name, "sha256": sha(path.read_bytes()),
+                   "formula": path.parent.parent.parent.name, "version": path.parent.parent.name}
+            for kind, path in baseline_tls.items()
+        },
     }
     (evidence / "native-build-report.json").write_text(json.dumps(report, indent=2) + "\n")
     print("MRV_SPICE_CANDIDATE_NATIVE_BUILD_OK", flush=True)
