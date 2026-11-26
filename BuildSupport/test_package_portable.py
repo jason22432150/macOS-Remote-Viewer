@@ -52,7 +52,13 @@ class PortablePackagingTests(unittest.TestCase):
                 pack.find_openssl_modules(linked)
             modules.unlink()
             modules.mkdir()
-            self.assertEqual(pack.find_openssl_modules(linked), modules)
+            # macOS /var is a symlink to /private/var; the production
+            # function deliberately returns the physical libcrypto keg path.
+            self.assertEqual(pack.find_openssl_modules(linked), modules.resolve())
+            alias = root / "opt-crypto"
+            alias.symlink_to(lib, target_is_directory=True)
+            self.assertEqual(pack.find_openssl_modules({"libcrypto.3.dylib": alias / crypto.name}),
+                             modules.resolve())
             with self.assertRaisesRegex(pack.BundleError, "exactly one"):
                 pack.find_openssl_modules({})
             with self.assertRaisesRegex(pack.BundleError, "exactly one"):
