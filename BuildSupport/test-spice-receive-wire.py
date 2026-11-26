@@ -44,12 +44,19 @@ def capability(body, count_offset, caps_offset, bit):
     return bit // 32 < count and bool(word(body, offset + 4 * (bit // 32)) & (1 << (bit % 32)))
 
 
-def relay_link(source, destination):
+def relay_link(source, destination, clear_cap=None):
     header = link.read_exact(source, LINK.size)
     magic, _, _, size = LINK.unpack(header)
     if magic != b"REDQ" or not 0 < size <= 65536:
         raise ValueError("invalid local fixture link")
     body = link.read_exact(source, size)
+    if clear_cap is not None:
+        count_offset, caps_offset, bit = clear_cap
+        if not capability(body, count_offset, caps_offset, bit):
+            raise AssertionError("expected mini-header capability before full-header negotiation")
+        body = bytearray(body)
+        offset = word(body, caps_offset) + 4 * (bit // 32)
+        struct.pack_into("<I", body, offset, word(body, offset) & ~(1 << (bit % 32)))
     destination.sendall(header + body)
     return body
 
@@ -78,7 +85,7 @@ def forward_auth(client, server):
     raise TimeoutError("local ticket exchange did not finish")
 
 
-def observe(listener, client_context, server_context, backend_port, layout, declared, reject, handler=None):
+def observe(listener, client_context, server_context, backend_port, layout, declared, reject, handler=None, force_full=False):
     listener.settimeout(8)
     raw, address = listener.accept()
     with raw:
@@ -92,12 +99,14 @@ def observe(listener, client_context, server_context, backend_port, layout, decl
                      mini_size, mini_offset, full_size, full_offset, mini_bit, _) = layout
                     if link_size != LINK.size:
                         raise ValueError("unexpected installed link layout")
-                    request = relay_link(client, server)
-                    reply = relay_link(server, client)
+                    request = relay_link(client, server, (client_count, client_offset, mini_bit) if force_full else None)
+                    reply = relay_link(server, client, (server_count, server_offset, mini_bit) if force_full else None)
                     if word(reply, 0) != 0:
                         raise AssertionError("local link rejected")
                     mini = (capability(request, client_count, client_offset, mini_bit) and
                             capability(reply, server_count, server_offset, mini_bit))
+                    if force_full and mini:
+                        raise AssertionError("full-header negotiation failed")
                     forward_auth(client, server)
                     if handler is not None:
                         print(f"agent relay authentication complete; mini={mini}", flush=True)
@@ -137,7 +146,7 @@ def observe(listener, client_context, server_context, backend_port, layout, decl
 
 def test_case(root, fixture, probe, context, upstream_context, layout, name, declared, reject,
               observe_fn=observe, fixture_args=(), marker=MARKER, expected_count=None,
-              forbidden_markers=(), required_server_markers=()):
+              forbidden_markers=(), required_server_markers=(), required_native_counts=()):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         backend_port = reserved.getsockname()[1]
@@ -177,7 +186,10 @@ def test_case(root, fixture, probe, context, upstream_context, layout, name, dec
             expected_count = int(reject) if expected_count is None else expected_count
             print(f"{name}: {outcome}, native_markers={count}", flush=True)
             print(result.stdout[-4000:])
-            if result.returncode or "MRV_NATIVE_WIRE_TERMINAL_OK" not in result.stdout.splitlines() or count != expected_count or any(m in diagnostics for m in forbidden_markers):
+            if (result.returncode or "MRV_NATIVE_WIRE_TERMINAL_OK" not in result.stdout.splitlines()
+                    or count != expected_count or any(m in diagnostics for m in forbidden_markers)
+                    or any(diagnostics.count(m) != n for m, n in required_native_counts)):
+
                 print(result.stderr[-4000:])
                 raise AssertionError("native wire result did not match policy")
             server_lines = log.read_text(errors="replace").splitlines()

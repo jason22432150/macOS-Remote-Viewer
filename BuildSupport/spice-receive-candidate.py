@@ -64,6 +64,65 @@ def patch_channel(text):
         '    } else {\n'
         '        mrv_receive_budget_clear(&mrv_wire_budget, &in->data, &in->mrv_wire_charge);\n'
         '    }')
+    text = replace_once(text,
+        '    spice_msg_in_ref(parent);\n    return in;',
+        '    spice_msg_in_ref(parent);\n'
+        '    parent->mrv_wire_has_child = TRUE;\n'
+        '    mrv_receive_test_trace("MRV_NATIVE_WIRE_CHILD_RETAINED");\n'
+        '    return in;')
+    text = replace_once(text,
+        '    if (in->parent) {\n'
+        '        spice_msg_in_unref(in->parent);\n'
+        '    } else {\n'
+        '        mrv_receive_budget_clear(&mrv_wire_budget, &in->data, &in->mrv_wire_charge);\n'
+        '    }',
+        '    if (in->parent) {\n'
+        '        mrv_receive_test_trace("MRV_NATIVE_WIRE_CHILD_RELEASED");\n'
+        '        spice_msg_in_unref(in->parent);\n'
+        '    } else {\n'
+        '        mrv_receive_budget_clear(&mrv_wire_budget, &in->data, &in->mrv_wire_charge);\n'
+        '        if (in->mrv_wire_has_child)\n'
+        '            mrv_receive_test_trace("MRV_NATIVE_WIRE_PARENT_RELEASED");\n'
+        '    }')
+    # Validate the entire list before taking any borrowed submessage reference.
+    text = replace_once(text,
+        '        sub_list = (SpiceSubMessageList *)(in->data + sub_list_offset);\n'
+        '        for (i = 0; i < sub_list->size; i++) {',
+        '        if (sub_list_offset < 0 || (gsize)sub_list_offset > (gsize)msg_size ||\n'
+        '            (gsize)msg_size - (gsize)sub_list_offset < G_STRUCT_OFFSET(SpiceSubMessageList, sub_messages))\n'
+        '            goto reject_sublist;\n'
+        '        sub_list = (SpiceSubMessageList *)(in->data + sub_list_offset);\n'
+        '        if ((gsize)sub_list->size > ((gsize)msg_size - (gsize)sub_list_offset -\n'
+        '            G_STRUCT_OFFSET(SpiceSubMessageList, sub_messages)) / sizeof(sub_list->sub_messages[0]))\n'
+        '            goto reject_sublist;\n'
+        '        for (i = 0; i < sub_list->size; i++) {\n'
+        '            gsize off = sub_list->sub_messages[i];\n'
+        '            if (off > (gsize)msg_size || (gsize)msg_size - off < sizeof(SpiceSubMessage))\n'
+        '                goto reject_sublist;\n'
+        '            sub = (SpiceSubMessage *)(in->data + off);\n'
+        '            if ((gsize)sub->size > (gsize)msg_size - off - sizeof(SpiceSubMessage))\n'
+        '                goto reject_sublist;\n'
+        '        }\n'
+        '        for (i = 0; i < sub_list->size; i++) {')
+    text = replace_once(text,
+        '                           c->name, spice_header_get_msg_type(sub_in->header, c->use_mini_header));\n'
+        '                goto end;',
+        '                           c->name, spice_header_get_msg_type(sub_in->header, c->use_mini_header));\n'
+        '                spice_msg_in_unref(sub_in);\n'
+        '                mrv_receive_test_trace("MRV_NATIVE_WIRE_CHILD_PARSE_REJECTED");\n'
+        '                c->event = SPICE_CHANNEL_ERROR_IO;\n'
+        '                c->has_error = TRUE;\n'
+        '                goto end;')
+    text = replace_once(text,
+        '    /* ack message */',
+        '    goto sublist_checked;\n'
+        'reject_sublist:\n'
+        '    mrv_receive_test_trace("MRV_NATIVE_WIRE_SUBLIST_REJECTED");\n'
+        '    c->event = SPICE_CHANNEL_ERROR_IO;\n'
+        '    c->has_error = TRUE;\n'
+        '    goto end;\n'
+        'sublist_checked:\n'
+        '    /* ack message */')
     if ('g_free(in->data)' in text or
             text.count('mrv_receive_budget_alloc(&mrv_wire_budget,') != 1 or
             text.count('mrv_receive_budget_clear(&mrv_wire_budget,') != 1):
@@ -78,6 +137,7 @@ def patch_private_header(text):
         '    int                   dpos;',
         '    uint8_t               *data;\n'
         '    gsize                 mrv_wire_charge; /* owning root only */\n'
+        '    gboolean              mrv_wire_has_child;\n'
         '    int                   dpos;')
 
 

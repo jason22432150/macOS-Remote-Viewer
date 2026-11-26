@@ -89,6 +89,18 @@ static void *worker(void *unused)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && g_strcmp0(argv[1], "--sub-layout") == 0) {
+        printf("%u %u %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu\n",
+               SPICE_MSG_LIST, SPICE_MSG_PING,
+               sizeof(SpiceDataHeader), offsetof(SpiceDataHeader, type),
+               offsetof(SpiceDataHeader, serial), offsetof(SpiceDataHeader, size),
+               offsetof(SpiceDataHeader, sub_list),
+               offsetof(SpiceSubMessageList, sub_messages),
+               sizeof(((SpiceSubMessageList *)0)->size),
+               sizeof(SpiceSubMessage), offsetof(SpiceSubMessage, type),
+               offsetof(SpiceSubMessage, size));
+        return 0;
+    }
     if (argc == 2 && g_strcmp0(argv[1], "--agent-layout") == 0) {
         printf("%u %zu %zu %zu %zu %u\n", SPICE_MSG_MAIN_AGENT_DATA,
                sizeof(VDAgentMessage), offsetof(VDAgentMessage, size),
