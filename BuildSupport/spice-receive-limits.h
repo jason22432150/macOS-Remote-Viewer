@@ -61,14 +61,21 @@ static inline guint8 *mrv_receive_budget_alloc(MRVReceiveBudget *budget, gsize b
 {
     guint8 *buffer;
     bytes = MAX(bytes, (gsize)1);
-    if (*charge != 0 || !mrv_receive_budget_reserve(budget, bytes))
+    if (*charge != 0)
         return NULL;
+    if (!mrv_receive_budget_reserve(budget, bytes)) {
+        mrv_receive_test_trace("MRV_NATIVE_RECEIVE_BUDGET_EXHAUSTED");
+        return NULL;
+    }
     buffer = g_try_malloc0(bytes);
     if (!buffer) {
         mrv_receive_budget_release(budget, bytes);
+        mrv_receive_test_trace("MRV_NATIVE_RECEIVE_ALLOC_FAILED");
         return NULL;
     }
     *charge = bytes;
+    if (bytes >= 1024u * 1024u)
+        mrv_receive_test_trace("MRV_NATIVE_RECEIVE_LARGE_RESERVED");
     return buffer;
 }
 
@@ -79,6 +86,8 @@ static inline void mrv_receive_budget_clear(MRVReceiveBudget *budget, guint8 **b
     g_clear_pointer(buffer, g_free);
     *charge = 0;
     mrv_receive_budget_release(budget, bytes);
+    if (bytes >= 1024u * 1024u)
+        mrv_receive_test_trace("MRV_NATIVE_RECEIVE_LARGE_RELEASED");
 }
 
 static inline gboolean mrv_link_size_allowed(guint32 size)

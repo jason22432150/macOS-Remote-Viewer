@@ -44,7 +44,8 @@ def read_mini_frame(peer, mini_size, type_offset, size_offset, frame_index, ping
     return header, kind, wire.link.read_exact(peer, size)
 
 
-def agent_frame(client, server, mini, layout, declared, reject, agent_layout, split):
+def agent_frame(client, server, mini, layout, declared, reject, agent_layout, split,
+                incomplete=False, hold=None):
     msg_type, agent_size, agent_offset, type_offset, mini_size, ping_type = agent_layout
     if not ping_type or ping_type == msg_type:
         raise ValueError("unexpected installed ping type")
@@ -74,7 +75,7 @@ def agent_frame(client, server, mini, layout, declared, reject, agent_layout, sp
             continue
         if len(body) <= agent_size or wire.word(body, agent_offset) != len(body) - agent_size:
             raise ValueError("expected complete synthetic agent capability message")
-        if reject:
+        if reject or incomplete:
             body = bytearray(body[:agent_size])
             struct.pack_into("<I", body, agent_offset, declared)
         parts = [body[:agent_size // 2], body[agent_size // 2:]] if split else [body]
@@ -85,6 +86,8 @@ def agent_frame(client, server, mini, layout, declared, reject, agent_layout, sp
     else:
         raise TimeoutError("local fixture did not deliver agent data")
 
+    if hold is not None:
+        return hold(client, reject)
     start = time.monotonic()
     deadline = start + (4 if reject else 0.75)
     while time.monotonic() < deadline:
