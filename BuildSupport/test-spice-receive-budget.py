@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate-only real concurrent Agent buffer budget and recovery regression."""
+"""Candidate-only real concurrent Agent and wire buffer budget recovery regression."""
 import argparse
 import concurrent.futures
 from contextlib import ExitStack
@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import ssl
+import struct
 import subprocess
 import tempfile
 import threading
@@ -26,10 +27,25 @@ RELEASED = "MRV_NATIVE_RECEIVE_LARGE_RELEASED"
 EXHAUSTED = "MRV_NATIVE_RECEIVE_BUDGET_EXHAUSTED"
 ALLOC_FAILED = "MRV_NATIVE_RECEIVE_ALLOC_FAILED"
 AGENT_REJECT = "MRV_NATIVE_AGENT_BUDGET_OR_ALLOC_REJECTED"
+WIRE_REJECT = "MRV_NATIVE_WIRE_BUDGET_OR_ALLOC_REJECTED"
+
+
+def wire_frame(client, server, mini, layout, declared, reject, release):
+    # Same authenticated initial-frame control as the single-session wire
+    # boundary gate. Keep the real allocation pending without sending a body.
+    size, offset = (layout[5], layout[6]) if mini else (layout[7], layout[8])
+    header = bytearray(wire.link.read_exact(server, size))
+    original = wire.word(header, offset)
+    if not 0 < original <= 65536:
+        raise ValueError("unexpected initial local server frame size")
+    struct.pack_into("<I", header, offset, declared)
+    client.sendall(header)
+    return hold(client, reject, release)
 
 
 def hold(client, reject, release):
     deadline = time.monotonic() + (4 if reject else 75)
+    consumed = 0
     while time.monotonic() < deadline:
         if not reject and release.is_set():
             return "released-by-test"
@@ -44,6 +60,9 @@ def hold(client, reject, release):
             if reject:
                 return "budget-rejected"
             raise AssertionError("admitted session closed before test released it")
+        consumed += len(data)
+        if consumed > 1024 * 1024:
+            raise ValueError("unexpected local control traffic while holding reservation")
     raise TimeoutError("budget peer did not reach expected closure")
 
 
@@ -57,8 +76,20 @@ def stop(process):
         process.wait(timeout=5)
 
 
-def test(root, app, fixture, probe, layout, agent_layout, context, upstream):
-    maximum = 16 * 1024 * 1024 + 64 * 1024
+def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
+    if kind == "agent":
+        maximum = 16 * 1024 * 1024 + 64 * 1024
+        expected_reject, other_reject = AGENT_REJECT, WIRE_REJECT
+        fixture_args = ("agent-full",)
+        server_markers = {"MAIN_INITIALIZED tls=1", "AGENT_CLIENT_CAPS", "AGENT_CAPS_DELIVERED"}
+    elif kind == "wire":
+        maximum = 128 * 1024 * 1024
+        expected_reject, other_reject = WIRE_REJECT, AGENT_REJECT
+        fixture_args = ()
+        server_markers = {"MAIN_INITIALIZED tls=1"}
+    else:
+        raise ValueError("unknown budget test kind")
+    print(f"starting candidate {kind} budget recovery", flush=True)
     events = [threading.Event() for _ in range(7)]
     futures = {}
     servers = {}
@@ -109,14 +140,17 @@ def test(root, app, fixture, probe, layout, agent_layout, context, upstream):
             with log.open("wb") as output:
                 server = subprocess.Popen([str(fixture), str(port), str(root / "trusted.pem"),
                                            str(root / "server.pem"), str(root / "server.key"),
-                                           wire.auth.tls.TICKET, "agent-full"],
+                                           wire.auth.tls.TICKET, *fixture_args],
                                           stdout=output, stderr=subprocess.STDOUT)
             servers[index] = server, log
             stack.callback(stop, server)
             wait_for(lambda: "READY" in lines(log), "backend ready")
-            handler = functools.partial(agent.agent_frame, agent_layout=agent_layout,
-                                        split=True, incomplete=True,
-                                        hold=functools.partial(hold, release=events[index]))
+            if kind == "agent":
+                handler = functools.partial(agent.agent_frame, agent_layout=agent_layout,
+                                            split=True, incomplete=True,
+                                            hold=functools.partial(hold, release=events[index]))
+            else:
+                handler = functools.partial(wire_frame, release=events[index])
             futures[index] = pool.submit(wire.observe, listeners[index], context, upstream,
                                          port, layout, maximum, reject, handler)
             (root / f"start-{index}").touch()
@@ -135,8 +169,10 @@ def test(root, app, fixture, probe, layout, agent_layout, context, upstream):
             if futures[5].result(timeout=6) != "budget-rejected":
                 raise AssertionError("sixth session was not rejected")
             wait_for(lambda: "MRV_BUDGET_TERMINAL peer=5 io=1" in lines(out_path), "budget IO error")
-            if count(EXHAUSTED) != 1 or count(AGENT_REJECT) != 1 or count(ALLOC_FAILED):
-                raise AssertionError("expected budget denial, not allocation failure")
+            if (count(EXHAUSTED) != 1 or count(expected_reject) != 1 or
+                    count(other_reject) or count(ALLOC_FAILED) or count(wire.MARKER) or
+                    count(agent.DIRECT) or count(agent.FRAGMENT)):
+                raise AssertionError("expected matching aggregate budget denial, not per-message or allocation failure")
             if count(RESERVED) != 5 or count(RELEASED) or any(futures[i].done() for i in range(5)):
                 raise AssertionError("rejection affected admitted sessions")
             events[0].set()
@@ -158,12 +194,15 @@ def test(root, app, fixture, probe, layout, agent_layout, context, upstream):
             native.wait(timeout=5)
             if native.returncode or "MRV_NATIVE_BUDGET_SESSIONS_OK" not in lines(out_path):
                 raise AssertionError("native session lifecycle failed")
-            if count(RESERVED) != 6 or count(RELEASED) != 6 or count(EXHAUSTED) != 1 or count(ALLOC_FAILED):
+            if (count(RESERVED) != 6 or count(RELEASED) != 6 or
+                    count(EXHAUSTED) != 1 or count(expected_reject) != 1 or
+                    count(other_reject) or count(ALLOC_FAILED) or count(wire.MARKER) or
+                    count(agent.DIRECT) or count(agent.FRAGMENT)):
                 raise AssertionError("final accounting markers mismatch")
             for _, log in servers.values():
-                if not {"MAIN_INITIALIZED tls=1", "AGENT_CLIENT_CAPS", "AGENT_CAPS_DELIVERED"}.issubset(lines(log)):
-                    raise AssertionError("backend did not complete agent handshake")
-            print("MRV_SPICE_CANDIDATE_AGENT_AGGREGATE_RUNTIME_OK", flush=True)
+                if not server_markers.issubset(lines(log)):
+                    raise AssertionError("backend did not complete required handshake")
+            print(f"MRV_SPICE_CANDIDATE_{kind.upper()}_AGGREGATE_RUNTIME_OK", flush=True)
         finally:
             print(out_path.read_text(errors="replace")[-6000:])
             print(err_path.read_text(errors="replace")[-6000:])
@@ -174,6 +213,7 @@ def test(root, app, fixture, probe, layout, agent_layout, context, upstream):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True, type=Path)
+    parser.add_argument("--kind", choices=("agent", "wire"), default="agent")
     args = parser.parse_args()
     app = args.app.resolve()
     report = json.loads((app.parent / "staging-report.json").read_text())
@@ -182,9 +222,11 @@ def main():
         raise ValueError("candidate identity not verified")
     policy = (HERE / "spice-receive-limits.h").read_text()
     if ("#define MRV_AGENT_TOTAL_MAX ((gsize)(96u * 1024u * 1024u))" not in policy or
-            "#define MRV_AGENT_MAX ((guint32)(16u * 1024u * 1024u + 64u * 1024u))" not in policy):
-        raise ValueError("agent budget policy changed")
-    with tempfile.TemporaryDirectory(prefix="mrv-agent-budget-") as raw:
+            "#define MRV_AGENT_MAX ((guint32)(16u * 1024u * 1024u + 64u * 1024u))" not in policy or
+            "#define MRV_WIRE_TOTAL_MAX ((gsize)(640u * 1024u * 1024u))" not in policy or
+            "#define MRV_WIRE_MAX ((guint32)(128u * 1024u * 1024u))" not in policy):
+        raise ValueError("receive budget policy changed")
+    with tempfile.TemporaryDirectory(prefix=f"mrv-{args.kind}-budget-") as raw:
         root = Path(raw)
         fixture, probe, layout_probe = root / "server", root / "probe", root / "layout"
         wire.auth.tls.create_certificates(root)
@@ -199,7 +241,7 @@ def main():
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(root / "server.pem", root / "server.key")
         upstream = wire.auth.tls.strict_client_context(root / "trusted.pem")
-        test(root, app, fixture, probe, layout, agent_layout, context, upstream)
+        test(root, fixture, probe, layout, agent_layout, context, upstream, args.kind)
 
 
 if __name__ == "__main__":

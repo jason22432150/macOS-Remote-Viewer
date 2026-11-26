@@ -169,6 +169,9 @@ jobs:
         run: python3 BuildSupport/test-spice-receive-agent.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Verify candidate concurrent agent budget exhaustion and recovery
         run: python3 BuildSupport/test-spice-receive-budget.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+      - name: Verify candidate concurrent wire budget exhaustion and recovery
+        if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
+        run: python3 BuildSupport/test-spice-receive-budget.py --kind wire --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Exercise candidate real SPICE authentication, display, clipboard and workspace
         if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
         run: python3 BuildSupport/test-spice-auth.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
