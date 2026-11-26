@@ -4,6 +4,7 @@
 
 #include <glib.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Fixed test-only diagnostics bypass application GLib log handlers.
  * No remote-controlled values, addresses, tickets or packet bytes. */
@@ -15,6 +16,36 @@ static inline void mrv_receive_test_trace(const char *marker)
         fputc('\n', stderr);
         fflush(stderr);
     }
+}
+/* Volatile byte stores are observable side effects, unlike a dead memset.
+ * Only call for writable, owned memory of a verified extent. */
+static inline void mrv_secure_clear(void *memory, gsize bytes)
+{
+    volatile guint8 *cursor = memory;
+    if (!cursor)
+        return;
+    while (bytes--)
+        *cursor++ = 0;
+}
+
+static inline void mrv_secure_buffer_free(void *memory, gsize bytes, const char *marker)
+{
+    if (!memory)
+        return;
+    mrv_secure_clear(memory, bytes);
+    g_free(memory);
+    mrv_receive_test_trace(marker);
+}
+
+static inline void mrv_secure_string_free_tag(gchar *value, const char *marker)
+{
+    if (value)
+        mrv_secure_buffer_free(value, strlen(value) + 1, marker);
+}
+
+static inline void mrv_secure_proxy_string_free(gpointer value)
+{
+    mrv_secure_string_free_tag(value, "MRV_NATIVE_PROXY_SECRET_WIPED");
 }
 #define MRV_LINK_MAX ((guint32)(1024u * 1024u))
 #define MRV_WIRE_MAX ((guint32)(128u * 1024u * 1024u))

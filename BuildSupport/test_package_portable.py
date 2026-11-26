@@ -220,13 +220,16 @@ class PortablePackagingTests(unittest.TestCase):
         main = ("spice-gtk-0.43/src/channel-main.c", b"static void main_handle_agent_data(void) {}")
         channel = ("spice-gtk-0.43/src/spice-channel.c", b"void *p = g_malloc(size);")
         private = ("spice-gtk-0.43/src/spice-channel-priv.h", b"struct _SpiceMsgIn { int refcount; };")
-        data = archive([main, channel, private, ("spice-gtk-0.43/src/unrelated.c", b"ignored")])
+        session = ("spice-gtk-0.43/src/spice-session.c", b"g_free(s->password);")
+        uri = ("spice-gtk-0.43/src/spice-uri.c", b"g_free(self->password);")
+        entries_ok = [main, channel, private, session, uri]
+        data = archive(entries_ok + [("spice-gtk-0.43/src/unrelated.c", b"ignored")])
         self.assertEqual(set(spice_source.read_source_files(data, "0.43")),
-                         {"src/channel-main.c", "src/spice-channel.c", "src/spice-channel-priv.h"})
-        for entries in ([main], [main, channel], [main, main, channel, private],
-                        [main, (channel[0], None), private],
-                        [main, channel, (private[0], None)],
-                        [main, channel, private, ("../escape", b"x")]):
+                         set(spice_source.FILES))
+        for entries in ([main], entries_ok[:-1], entries_ok + [main],
+                        [main, (channel[0], None), private, session, uri],
+                        [main, channel, (private[0], None), session, uri],
+                        entries_ok + [("../escape", b"x")]):
             with self.assertRaises(ValueError):
                 spice_source.read_source_files(archive(entries), "0.43")
         with self.assertRaises(ValueError):
@@ -235,6 +238,8 @@ class PortablePackagingTests(unittest.TestCase):
             spice_source.check_url("https://example.com/spice.tar.xz")
         self.assertTrue(spice_source.review_lines(main[1].decode(), "src/channel-main.c"))
         self.assertTrue(spice_source.review_lines(private[1].decode(), "src/spice-channel-priv.h"))
+        self.assertTrue(spice_source.review_lines(session[1].decode(), "src/spice-session.c"))
+        self.assertTrue(spice_source.review_lines(uri[1].decode(), "src/spice-uri.c"))
 
 
     def test_openssl_modules_follow_linked_crypto_keg(self):

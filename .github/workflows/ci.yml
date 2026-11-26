@@ -182,7 +182,7 @@ jobs:
         run: python3 BuildSupport/test-spice-receive-budget.py --kind wire --alloc-fault --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Exercise candidate real SPICE authentication, display, clipboard and workspace
         if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
-        run: python3 BuildSupport/test-spice-auth.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-auth.py --require-credential-wipe --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Upload candidate runtime staging evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -17,11 +17,14 @@ HOSTS = {"www.spice-space.org", "spice-space.org"}
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_EXPANDED = 256 * 1024 * 1024
 MAX_MEMBER = 2 * 1024 * 1024
-FILES = ("src/channel-main.c", "src/spice-channel.c", "src/spice-channel-priv.h")
+FILES = ("src/channel-main.c", "src/spice-channel.c", "src/spice-channel-priv.h",
+         "src/spice-session.c", "src/spice-uri.c")
 PATTERNS = {
     FILES[0]: re.compile(r"agent_msg|main_handle_agent_data|agent_data|[Mm]ax.clipboard|g_(?:try_)?(?:malloc|realloc|new0?)\s*\("),
     FILES[1]: re.compile(r"spice_channel_recv_msg|spice_channel_read|header.*size|msg_size|g_(?:try_)?(?:malloc|realloc|new0?)\s*\(|spice_malloc|spice_msg_in_(?:ref|unref|new|sub_new)|in->data|peer_msg"),
     FILES[2]: re.compile(r"struct _SpiceMsgIn|refcount|SpiceMsgIn\s+\*parent"),
+    FILES[3]: re.compile(r"g_free\((?:s->)?(?:password|username|host|uri)\)|g_value_dup_string|spice_parse_uri"),
+    FILES[4]: re.compile(r"g_(?:free|clear_pointer)\((?:&)?(?:self->(?:user|password)|dup)|spice_uri_set_(?:user|password)|spice_uri_reset"),
 }
 
 

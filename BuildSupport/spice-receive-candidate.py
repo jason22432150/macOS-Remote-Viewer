@@ -22,6 +22,12 @@ def replace_once(text, old, new):
 
 def patch_channel(text):
     text = replace_once(text,
+        '    g_free(password);\n    return ret;',
+        '    mrv_secure_string_free_tag(password, "MRV_NATIVE_AUTH_TICKET_WIPED");\n    return ret;')
+    text = replace_once(text,
+        '        memset(encrypted, 0, nRSASize);',
+        '        mrv_secure_clear(encrypted, nRSASize);')
+    text = replace_once(text,
         '    if (c->peer_hdr.size < sizeof(*c->peer_msg)) {',
         '    if (!mrv_link_size_allowed(c->peer_hdr.size)) {\n'
         '        mrv_receive_test_trace("MRV_NATIVE_LINK_LIMIT_REJECTED");\n'
@@ -232,6 +238,45 @@ def patch_agent(text):
             'static MRVReceiveBudget mrv_agent_budget = { .limit = MRV_AGENT_TOTAL_MAX };\n' + text)
 
 
+def replace_count(text, old, new, expected):
+    if text.count(old) != expected:
+        raise ValueError(f"upstream ownership anchor mismatch: {old!r}")
+    return text.replace(old, new)
+
+
+def patch_session(text):
+    for name in ("host", "username", "password"):
+        text = replace_count(text, f"g_free(s->{name});",
+            f'mrv_secure_string_free_tag(s->{name}, "MRV_NATIVE_SESSION_SECRET_WIPED");', 3)
+        text = replace_once(text, f"g_free({name});",
+            f'mrv_secure_string_free_tag({name}, "MRV_NATIVE_SESSION_SECRET_WIPED");')
+    # The parser splits the mutable URI in place. Preserve its original
+    # extent, including all bytes beyond inserted NUL terminators.
+    text = replace_once(text, '    uri = g_strdup(original_uri);',
+        '    gsize mrv_uri_bytes = strlen(original_uri) + 1;\n'
+        '    uri = g_strdup(original_uri);')
+    text = replace_count(text, 'g_free(uri);',
+        'mrv_secure_buffer_free(uri, mrv_uri_bytes, "MRV_NATIVE_SESSION_URI_COPY_WIPED");', 2)
+    return '#include "mrv-receive-limits.h"\n' + text
+
+
+def patch_uri(text):
+    for name in ("user", "password"):
+        text = replace_once(text, f'g_clear_pointer(&self->{name}, g_free);',
+            f'g_clear_pointer(&self->{name}, mrv_secure_proxy_string_free);')
+        text = replace_once(text,
+            f'    g_free(self->{name});\n    self->{name} = g_strdup({name});',
+            f'    gchar *replacement = g_strdup({name});\n'
+            f'    mrv_secure_proxy_string_free(self->{name});\n'
+            f'    self->{name} = replacement;')
+    text = replace_once(text, '    uri = dup = g_strdup(_uri);',
+        '    gsize mrv_uri_bytes = strlen(_uri) + 1;\n'
+        '    uri = dup = g_strdup(_uri);')
+    text = replace_once(text, '    g_free(dup);',
+        '    mrv_secure_buffer_free(dup, mrv_uri_bytes, "MRV_NATIVE_PROXY_URI_COPY_WIPED");')
+    return '#include "mrv-receive-limits.h"\n' + text
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--audit", required=True, type=Path)
@@ -243,7 +288,8 @@ def main():
     audit.verify_digest(archive, lock["upstream_sha256"])
     sources = audit.read_source_files(archive, version)
     changes = {audit.FILES[0]: patch_agent, audit.FILES[1]: patch_channel,
-               audit.FILES[2]: patch_private_header}
+               audit.FILES[2]: patch_private_header, audit.FILES[3]: patch_session,
+               audit.FILES[4]: patch_uri}
     diffs = []
     hashes = {}
     for name, body in sources.items():

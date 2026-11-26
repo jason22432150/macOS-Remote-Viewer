@@ -108,8 +108,25 @@ static void test_wire_budget(void)
     puts("MRV_SPICE_WIRE_AGGREGATE_BUDGET_OK");
 }
 
+static void test_secure_clear(void)
+{
+    guint8 bytes[] = { 0x11, 0x22, 0, 0x33, 0x44, 0x55, 0x66 };
+    mrv_secure_clear(bytes + 1, 5);
+    g_assert_cmpuint(bytes[0], ==, 0x11);
+    g_assert_cmpuint(bytes[6], ==, 0x66);
+    for (unsigned i = 1; i < 6; ++i)
+        g_assert_cmpuint(bytes[i], ==, 0);
+    mrv_secure_clear(NULL, 0);
+    mrv_secure_clear(bytes, 0);
+    g_assert_cmpuint(bytes[0], ==, 0x11);
+    mrv_secure_string_free_tag(g_strdup("synthetic"), "MRV_UNIT_WIPE");
+    mrv_secure_proxy_string_free(NULL);
+    puts("MRV_SPICE_SECURE_CLEAR_OK");
+}
+
 int main(void)
 {
+    test_secure_clear();
     g_assert_true(mrv_link_size_allowed(MRV_LINK_MAX));
     g_assert_false(mrv_link_size_allowed(MRV_LINK_MAX + 1u));
     g_assert_false(mrv_link_size_allowed(UINT32_MAX));

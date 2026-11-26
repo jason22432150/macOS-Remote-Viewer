@@ -25,7 +25,8 @@ def compile_fixture(destination):
                     "-o", str(destination), *flags], check=True, timeout=60)
 
 
-def test_case(app, root, fixture, name, server_ticket, success, display=False, partial=False, agent=None):
+def test_case(app, root, fixture, name, server_ticket, success, display=False, partial=False,
+              agent=None, require_credential_wipe=False):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -59,6 +60,8 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
             env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
+            if require_credential_wipe:
+                env["MRV_RECEIVE_TEST_TRACE"] = "1"
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
             mode = ("--loopback-spice-partial-probe" if partial else
                     "--loopback-spice-display-probe" if display else "--loopback-spice-auth-probe")
@@ -79,6 +82,17 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
+            if require_credential_wipe:
+                markers = result.stderr.splitlines()
+                required = ("MRV_NATIVE_AUTH_TICKET_WIPED", "MRV_NATIVE_SESSION_SECRET_WIPED",
+                            "MRV_NATIVE_PROXY_SECRET_WIPED", "MRV_NATIVE_PROXY_URI_COPY_WIPED")
+                if any(marker not in markers for marker in required):
+                    raise AssertionError(f"{name}: missing candidate credential wipe evidence")
+                if any(secret in result.stdout or secret in result.stderr for secret in
+                       (tls.TICKET, "synthetic-password", "synthetic-user",
+                        "synthetic-disposable-destination")):
+                    raise AssertionError(f"{name}: synthetic credential appeared in output")
+                print(f"MRV_NATIVE_CREDENTIAL_WIPE_OK {name}", flush=True)
             if agent in ("clipboard-full", "clipboard-invalid-full", "clipboard-bulk-full"):
                 markers = ["MRV_CLIP_HOST_READY", "MRV_CLIP_GUEST_UTF8_OK"]
                 if agent == "clipboard-invalid-full":
@@ -746,14 +760,17 @@ def test_clipboard_security(app, root):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", type=Path, required=True)
+    parser.add_argument("--require-credential-wipe", action="store_true")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="mrv-spice-auth-") as raw:
         root = Path(raw)
         tls.create_certificates(root)
         fixture = root / "spice-auth-fixture"
         compile_fixture(fixture)
-        test_case(args.app.resolve(), root, fixture, "valid-ticket", tls.TICKET, True)
-        test_case(args.app.resolve(), root, fixture, "wrong-ticket", "mrv-ci-other-ticket", False)
+        test_case(args.app.resolve(), root, fixture, "valid-ticket", tls.TICKET, True,
+                  require_credential_wipe=args.require_credential_wipe)
+        test_case(args.app.resolve(), root, fixture, "wrong-ticket", "mrv-ci-other-ticket", False,
+                  require_credential_wipe=args.require_credential_wipe)
         test_case(args.app.resolve(), root, fixture, "display", tls.TICKET, True, display=True)
         test_case(args.app.resolve(), root, fixture, "partial", tls.TICKET, True, display=True, partial=True)
         test_case(args.app.resolve(), root, fixture, "agent-full", tls.TICKET, True, agent="full")
