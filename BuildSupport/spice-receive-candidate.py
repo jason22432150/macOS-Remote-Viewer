@@ -55,6 +55,22 @@ def patch_channel(text):
 
 def patch_agent(text):
     text = replace_once(text,
+        '    guint8                      *agent_msg_data;',
+        '    guint8                      *agent_msg_data;\n'
+        '    gsize                       mrv_agent_charge;')
+    # All original ownership-release sites: finalization, agent reset and
+    # successful reconstruction. Reject path below uses the same helper.
+    text = replace_once(text,
+        '    g_free(c->agent_msg_data);\n    agent_free_msg_queue',
+        '    mrv_receive_budget_clear(&mrv_agent_budget, &c->agent_msg_data, &c->mrv_agent_charge);\n'
+        '    agent_free_msg_queue')
+    text = replace_once(text,
+        '    g_clear_pointer(&c->agent_msg_data, g_free);',
+        '    mrv_receive_budget_clear(&mrv_agent_budget, &c->agent_msg_data, &c->mrv_agent_charge);')
+    text = replace_once(text,
+        '        g_free(c->agent_msg_data);\n        c->agent_msg_data = NULL;',
+        '        mrv_receive_budget_clear(&mrv_agent_budget, &c->agent_msg_data, &c->mrv_agent_charge);')
+    text = replace_once(text,
         'static void main_handle_agent_data_msg(SpiceChannel* channel, int* msg_size, guchar** msg_pos)',
         'static gboolean main_handle_agent_data_msg(SpiceChannel* channel, int* msg_size, guchar** msg_pos)')
     text = replace_once(text,
@@ -66,9 +82,11 @@ def patch_agent(text):
         '            }\n'
         '            if (c->agent_msg_data != NULL)\n'
         '                return FALSE;\n'
-        '            c->agent_msg_data = g_try_malloc0(MAX(c->agent_msg.size, 1u));\n'
-        '            if (!c->agent_msg_data)\n'
-        '                return FALSE;')
+        '            c->agent_msg_data = mrv_receive_budget_alloc(&mrv_agent_budget, c->agent_msg.size, &c->mrv_agent_charge);\n'
+        '            if (!c->agent_msg_data) {\n'
+        '                mrv_receive_test_trace("MRV_NATIVE_AGENT_BUDGET_OR_ALLOC_REJECTED");\n'
+        '                return FALSE;\n'
+        '            }')
     text = replace_once(text,
         '        memcpy(c->agent_msg_data + c->agent_msg_pos - sizeof(VDAgentMessage), *msg_pos, n);',
         '        if (n > 0)\n'
@@ -112,11 +130,18 @@ def patch_agent(text):
         '    }\n'
         '    return;\n\n'
         'reject:\n'
-        '    g_clear_pointer(&c->agent_msg_data, g_free);\n'
+        '    mrv_receive_budget_clear(&mrv_agent_budget, &c->agent_msg_data, &c->mrv_agent_charge);\n'
         '    c->agent_msg_pos = 0;\n'
         '    spice_channel_disconnect(channel, SPICE_CHANNEL_ERROR_IO);\n'
         '}')
-    return '#include "mrv-receive-limits.h"\n' + text
+    # Fail if upstream ownership sites have changed or remain unaccounted.
+    if ('g_free(c->agent_msg_data)' in text or
+            'g_clear_pointer(&c->agent_msg_data, g_free)' in text or
+            text.count('mrv_receive_budget_clear(&mrv_agent_budget, &c->agent_msg_data, &c->mrv_agent_charge)') != 4 or
+            text.count('mrv_receive_budget_alloc(&mrv_agent_budget, c->agent_msg.size, &c->mrv_agent_charge)') != 1):
+        raise ValueError("agent receive budget ownership anchors changed")
+    return ('#include "mrv-receive-limits.h"\n'
+            'static MRVReceiveBudget mrv_agent_budget = { .limit = MRV_AGENT_TOTAL_MAX };\n' + text)
 
 
 def main():

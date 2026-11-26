@@ -19,6 +19,64 @@ static inline void mrv_receive_test_trace(const char *marker)
 #define MRV_LINK_MAX ((guint32)(1024u * 1024u))
 #define MRV_WIRE_MAX ((guint32)(128u * 1024u * 1024u))
 #define MRV_AGENT_MAX ((guint32)(16u * 1024u * 1024u + 64u * 1024u))
+/* Aggregate across all main channels in this process, not an RSS limit.
+ * Leave headroom for four concurrent maximum-size clipboard messages. */
+#define MRV_AGENT_TOTAL_MAX ((gsize)(96u * 1024u * 1024u))
+
+typedef struct {
+    GMutex lock;
+    gsize used;
+    gsize limit;
+} MRVReceiveBudget;
+
+static inline gboolean mrv_receive_budget_reserve(MRVReceiveBudget *budget, gsize bytes)
+{
+    gboolean ok;
+    g_mutex_lock(&budget->lock);
+    ok = bytes > 0 && budget->used <= budget->limit &&
+         bytes <= budget->limit - budget->used;
+    if (ok)
+        budget->used += bytes;
+    g_mutex_unlock(&budget->lock);
+    return ok;
+}
+
+static inline void mrv_receive_budget_release(MRVReceiveBudget *budget, gsize bytes)
+{
+    if (!bytes)
+        return;
+    g_mutex_lock(&budget->lock);
+    /* An accounting mismatch is an internal bug; fail closed (never wrap). */
+    if (G_UNLIKELY(bytes > budget->used))
+        g_error("MRV receive budget accounting mismatch");
+    budget->used -= bytes;
+    g_mutex_unlock(&budget->lock);
+}
+
+static inline guint8 *mrv_receive_budget_alloc(MRVReceiveBudget *budget, gsize bytes,
+                                              gsize *charge)
+{
+    guint8 *buffer;
+    bytes = MAX(bytes, (gsize)1);
+    if (*charge != 0 || !mrv_receive_budget_reserve(budget, bytes))
+        return NULL;
+    buffer = g_try_malloc0(bytes);
+    if (!buffer) {
+        mrv_receive_budget_release(budget, bytes);
+        return NULL;
+    }
+    *charge = bytes;
+    return buffer;
+}
+
+static inline void mrv_receive_budget_clear(MRVReceiveBudget *budget, guint8 **buffer,
+                                            gsize *charge)
+{
+    gsize bytes = *charge;
+    g_clear_pointer(buffer, g_free);
+    *charge = 0;
+    mrv_receive_budget_release(budget, bytes);
+}
 
 static inline gboolean mrv_link_size_allowed(guint32 size)
 {
