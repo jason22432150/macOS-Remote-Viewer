@@ -1185,6 +1185,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard board.string(forType: .string) == "selected tab" else { throw SessionError.cancelled }
                 print("MRV_CLIP_SECURITY_GENERATION_OK")
 
+                // Observe weak owners without reading freed memory or retaining
+                // the payload. Exercise real named-board snapshots and coalescing.
+                let initial = first.bufferLifetimesForProbe()
+                guard initial.count == 1, initial.allSatisfy({ $0.isAlive }) else {
+                    throw SessionError.cancelled
+                }
+                board.clearContents()
+                guard board.setString("replacement snapshot", forType: .string) else {
+                    throw SessionError.cancelled
+                }
+                first.refreshForProbe()
+                guard initial.allSatisfy({ !$0.isAlive }), first.string() == "replacement snapshot" else {
+                    throw SessionError.cancelled
+                }
+                first.setString("superseded pending")
+                let superseded = first.bufferLifetimesForProbe()
+                guard superseded.count == 2, superseded.allSatisfy({ $0.isAlive }) else {
+                    throw SessionError.cancelled
+                }
+                first.setData(Data([0x41, 0x00, 0x42]), for: .png)
+                guard superseded.filter({ !$0.isAlive }).count == 1 else { throw SessionError.cancelled }
+                let beforeStop = first.bufferLifetimesForProbe()
+                guard beforeStop.count == 2 else { throw SessionError.cancelled }
+                first.stopPolling()
+                guard beforeStop.allSatisfy({ !$0.isAlive }),
+                      first.bufferLifetimesForProbe().isEmpty else { throw SessionError.cancelled }
+                try await Task.sleep(for: .milliseconds(100))
+                guard board.string(forType: .string) == "replacement snapshot" else {
+                    throw SessionError.cancelled
+                }
+                print("MRV_CLIP_SECURITY_OWNED_LIFETIME_OK")
+
                 first.stopPolling()
                 board.clearContents()
                 let boundary = Data(repeating: 65, count: limit)
@@ -1198,7 +1230,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard first.data(for: .png)?.count == limit,
                       first.data(for: .tiff)?.count == limit,
                       first.data(for: .jpg) == nil else { throw SessionError.cancelled }
+                let largeOwners = first.bufferLifetimesForProbe()
+                guard largeOwners.count == 2 else { throw SessionError.cancelled }
                 first.stopPolling()
+                guard largeOwners.allSatisfy({ !$0.isAlive }) else { throw SessionError.cancelled }
                 board.clearContents()
                 guard board.setData(Data(repeating: 65, count: limit + 1), forType: .png) else {
                     throw SessionError.cancelled

@@ -750,6 +750,7 @@ def test_clipboard_security(app, root):
         print(result.stderr[-6000:])
     expected = ["MRV_CLIP_SECURITY_INVALID_OVERSIZE_DISABLED_OK",
                 "MRV_CLIP_SECURITY_GENERATION_OK",
+                "MRV_CLIP_SECURITY_OWNED_LIFETIME_OK",
                 "MRV_CLIP_SECURITY_LIMITS_OK item=16777216 snapshot=33554432",
                 "MRV_CLIP_SECURITY_OK"]
     actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_CLIP_SECURITY_")]

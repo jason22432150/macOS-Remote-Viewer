@@ -6,16 +6,86 @@ import CocoaSpiceNoUsb
 /// The GLib worker never waits synchronously for the main thread.
 /// Each activation has a generation; queued writes from old tabs are discarded.
 final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sendable {
+    // Immutable, privately owned bytes. The last strong reference erases
+    // the entire allocation before releasing it. AppKit/CocoaSpice copies
+    // are outside our control; never expose a no-copy Data or raw pointer.
+    fileprivate final class OwnedBuffer: @unchecked Sendable {
+        private let bytes: UnsafeMutableRawPointer
+        let count: Int
+        private let capacity: Int
+
+        init(_ data: Data) {
+            count = data.count
+            capacity = max(1, data.count)
+            let allocation = UnsafeMutableRawPointer.allocate(byteCount: max(1, data.count), alignment: 1)
+            bytes = allocation
+            data.withUnsafeBytes { (source: UnsafeRawBufferPointer) in
+                if let base = source.baseAddress, !source.isEmpty {
+                    allocation.copyMemory(from: base, byteCount: source.count)
+                } else {
+                    allocation.storeBytes(of: UInt8(0), as: UInt8.self)
+                }
+            }
+        }
+
+        func dataValue() -> Data {
+            withExtendedLifetime(self) { Data(bytes: bytes, count: count) }
+        }
+
+        func stringValue() -> String {
+            withExtendedLifetime(self) {
+                String(decoding: UnsafeRawBufferPointer(start: bytes, count: count), as: UTF8.self)
+            }
+        }
+
+        deinit {
+            ConnectionProfile.Ticket.clearOwnedBytes(
+                UnsafeMutableRawBufferPointer(start: bytes, count: capacity))
+            bytes.deallocate()
+        }
+    }
+
+    // Weak handles expose no payload and do not extend its lifetime.
+    final class BufferLifetime: @unchecked Sendable {
+        private weak var buffer: OwnedBuffer?
+        fileprivate init(_ buffer: OwnedBuffer) { self.buffer = buffer }
+        var isAlive: Bool { buffer != nil }
+    }
+
+    private enum WritePayload: Sendable {
+        case text(OwnedBuffer)
+        case binary(String, OwnedBuffer)
+        case clear
+
+        var buffer: OwnedBuffer? {
+            switch self {
+            case .text(let value), .binary(_, let value): return value
+            case .clear: return nil
+            }
+        }
+
+        @MainActor func apply(to pasteboard: NSPasteboard) {
+            pasteboard.clearContents()
+            switch self {
+            case .text(let value):
+                pasteboard.setString(value.stringValue(), forType: .string)
+            case .binary(let key, let value):
+                pasteboard.setData(value.dataValue(), forType: NSPasteboard.PasteboardType(key))
+            case .clear: break
+            }
+        }
+    }
+
     private struct PendingWrite: Sendable {
         let generation: UInt64
-        let body: @MainActor @Sendable (NSPasteboard) -> Void
+        let payload: WritePayload
     }
 
     private struct Snapshot: Sendable {
         var enabled = false
         var generation: UInt64 = 0
         var changeCount = -1
-        var items: [String: Data] = [:]
+        var items: [String: OwnedBuffer] = [:]
         var pendingWrite: PendingWrite?
         var drainScheduled = false
     }
@@ -56,15 +126,19 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
     }
 
     @MainActor func stopPolling() {
-        snapshot.withLock {
-            $0.enabled = false
-            $0.generation &+= 1
-            $0.items.removeAll()
-            $0.pendingWrite = nil
-            $0.changeCount = -1
+        let retired = snapshot.withLock { state -> ([String: OwnedBuffer], PendingWrite?) in
+            let old = (state.items, state.pendingWrite)
+            state.enabled = false
+            state.generation &+= 1
+            state.items = [:]
+            state.pendingWrite = nil
+            state.changeCount = -1
+            return old
         }
         pollTask?.cancel()
         pollTask = nil
+        // Do not wipe multi-MiB buffers while holding the worker lock.
+        withExtendedLifetime(retired) {}
     }
 
     func canReadItem(for type: CSPasteboardType) -> Bool {
@@ -74,64 +148,82 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
 
     func data(for type: CSPasteboardType) -> Data? {
         guard let key = type.pasteboardType?.rawValue else { return nil }
-        return snapshot.withLock { $0.enabled ? $0.items[key] : nil }
+        let buffer = snapshot.withLock { $0.enabled ? $0.items[key] : nil }
+        return buffer?.dataValue()
     }
 
     func string() -> String? {
-        guard let data = data(for: .string) else { return nil }
-        return String(data: data, encoding: .utf8)
+        let key = NSPasteboard.PasteboardType.string.rawValue
+        let buffer = snapshot.withLock { $0.enabled ? $0.items[key] : nil }
+        return buffer?.stringValue()
+    }
+
+    @MainActor func bufferLifetimesForProbe() -> [BufferLifetime] {
+        guard pasteboardName != nil,
+              ProcessInfo.processInfo.environment["MRV_ENABLE_INTEGRATION_PROBES"] == "1" else { return [] }
+        return snapshot.withLock { state in
+            var handles = state.items.values.map { BufferLifetime($0) }
+            if let buffer = state.pendingWrite?.payload.buffer {
+                handles.append(BufferLifetime(buffer))
+            }
+            return handles
+        }
+    }
+
+    @MainActor func refreshForProbe() {
+        guard pasteboardName != nil,
+              ProcessInfo.processInfo.environment["MRV_ENABLE_INTEGRATION_PROBES"] == "1" else { return }
+        refresh(announce: false)
+    }
+
+    private func activeGeneration() -> UInt64? {
+        snapshot.withLock { $0.enabled ? $0.generation : nil }
     }
 
     func setData(_ data: Data, for type: CSPasteboardType) {
-        guard data.count <= Self.maxItemBytes else { return }
+        guard data.count <= Self.maxItemBytes, let generation = activeGeneration() else { return }
         if type == .string {
-            guard let text = String(data: data, encoding: .utf8) else { return }
-            setString(text)
+            guard String(data: data, encoding: .utf8) != nil else { return }
+            enqueueWrite(.text(OwnedBuffer(data)), generation: generation)
             return
         }
         guard let key = type.pasteboardType?.rawValue else { return }
-        enqueueWrite { pasteboard in
-            pasteboard.clearContents()
-            pasteboard.setData(data, forType: NSPasteboard.PasteboardType(key))
-        }
+        enqueueWrite(.binary(key, OwnedBuffer(data)), generation: generation)
     }
 
     func setString(_ string: String) {
-        guard string.utf8.count <= Self.maxItemBytes else { return }
-        enqueueWrite { pasteboard in
-            pasteboard.clearContents()
-            pasteboard.setString(string, forType: .string)
-        }
+        guard string.utf8.count <= Self.maxItemBytes, let generation = activeGeneration() else { return }
+        enqueueWrite(.text(OwnedBuffer(Data(string.utf8))), generation: generation)
     }
 
     func clearContents() {
-        enqueueWrite { $0.clearContents() }
+        guard let generation = activeGeneration() else { return }
+        enqueueWrite(.clear, generation: generation)
     }
 
-    private func enqueueWrite(_ body: @escaping @MainActor @Sendable (NSPasteboard) -> Void) {
-        // Each write replaces the entire pasteboard. Coalesce pending writes
-        // to the newest value and keep at most one queued main-actor drain.
-        let schedule = snapshot.withLock { state -> Bool in
-            guard state.enabled else { return false }
-            state.pendingWrite = PendingWrite(generation: state.generation, body: body)
-            guard !state.drainScheduled else { return false }
+    private func enqueueWrite(_ payload: WritePayload, generation: UInt64) {
+        // A generation captured before copying prevents an old activation's
+        // large buffer from being queued after a stop/start on the main actor.
+        let (schedule, retired) = snapshot.withLock { state -> (Bool, PendingWrite?) in
+            guard state.enabled, state.generation == generation else { return (false, nil) }
+            let old = state.pendingWrite
+            state.pendingWrite = PendingWrite(generation: generation, payload: payload)
+            guard !state.drainScheduled else { return (false, old) }
             state.drainScheduled = true
-            return true
+            return (true, old)
         }
+        withExtendedLifetime(retired) {}
         guard schedule else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let write = self.snapshot.withLock { state -> PendingWrite? in
-                defer {
-                    state.pendingWrite = nil
-                    state.drainScheduled = false
-                }
-                guard state.enabled, let write = state.pendingWrite,
-                      write.generation == state.generation else { return nil }
-                return write
+            let (valid, write) = self.snapshot.withLock { state -> (Bool, PendingWrite?) in
+                let write = state.pendingWrite
+                state.pendingWrite = nil
+                state.drainScheduled = false
+                return (state.enabled && write?.generation == state.generation, write)
             }
-            guard let write else { return }
-            write.body(self.pasteboard)
+            guard valid, let write else { return }
+            write.payload.apply(to: self.pasteboard)
             self.refresh(announce: false)
         }
     }
@@ -144,31 +236,33 @@ final class CocoaSpicePasteboard: NSObject, CSPasteboardDelegate, @unchecked Sen
             return state.generation
         }) else { return }
 
-        var items: [String: Data] = [:]
+        var items: [String: OwnedBuffer] = [:]
         var totalBytes = 0
         if let string = pasteboard.string(forType: .string), string.utf8.count <= Self.maxItemBytes {
             let data = Data(string.utf8)
-            items[NSPasteboard.PasteboardType.string.rawValue] = data
+            items[NSPasteboard.PasteboardType.string.rawValue] = OwnedBuffer(data)
             totalBytes += data.count
         }
         let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, .init("public.jpeg"), .init("com.microsoft.bmp")]
         for type in imageTypes where pasteboard.types?.contains(type) == true {
             if let data = pasteboard.data(forType: type), data.count <= Self.maxItemBytes,
                data.count <= Self.maxSnapshotBytes - totalBytes {
-                items[type.rawValue] = data
+                items[type.rawValue] = OwnedBuffer(data)
                 totalBytes += data.count
             }
         }
         // Do not publish a mixed snapshot if another process changed the board.
         guard pasteboard.changeCount == count else { return }
         let immutableItems = items
-        let changed = snapshot.withLock { state -> Bool in
-            guard state.enabled, state.generation == generation else { return false }
+        let retired = snapshot.withLock { state -> [String: OwnedBuffer]? in
+            guard state.enabled, state.generation == generation else { return nil }
+            let old = state.items
             state.changeCount = count
             state.items = immutableItems
-            return true
+            return old
         }
-        if announce && changed {
+        withExtendedLifetime(retired) {}
+        if announce && retired != nil {
             NotificationCenter.default.post(name: .csPasteboardChanged, object: self)
         }
     }
