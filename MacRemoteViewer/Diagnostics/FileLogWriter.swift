@@ -233,7 +233,7 @@ public final class FileLogSink: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard enabled else { return }
-        let line = "\(Date().ISO8601Format()) \(level) \(message) session=\(sessionID)"
+        let line = "\(Date().ISO8601Format()) \(DiagnosticLogPolicy.level(level)) \(DiagnosticLogPolicy.message(message)) session=\(DiagnosticLogPolicy.session(sessionID))"
         do {
             try writer.append(line)
         } catch {

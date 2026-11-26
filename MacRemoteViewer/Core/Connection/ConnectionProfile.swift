@@ -63,7 +63,7 @@ public struct ConnectionProfile: Sendable, Equatable {
 
 extension ConnectionProfile: CustomStringConvertible, CustomDebugStringConvertible {
     public var description: String {
-        "ConnectionProfile(sessionID: \(sessionID), title: \(redactedTitle), tlsPort: \(tlsPort))"
+        "ConnectionProfile(sessionID: \(DiagnosticLogPolicy.session(sessionID)), title: \(redactedTitle), tlsPort: \(tlsPort))"
     }
 
     public var debugDescription: String { description }

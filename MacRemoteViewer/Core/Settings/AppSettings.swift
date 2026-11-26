@@ -55,7 +55,7 @@ public final class AppSettings {
         do {
             try store.save(preferences)
         } catch {
-            logger.error("preferences-save-failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("preferences-save-failed")
         }
     }
 }

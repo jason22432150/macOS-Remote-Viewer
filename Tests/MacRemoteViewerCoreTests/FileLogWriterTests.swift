@@ -98,7 +98,7 @@ final class FileLogWriterTests: XCTestCase {
         sink.isEnabled = true
         sink.write(level: "INFO", message: "connected", sessionID: "abc")
         XCTAssertEqual(writer.lines.count, 1)
-        XCTAssertTrue(writer.lines[0].contains("INFO connected session=abc"))
+        XCTAssertTrue(writer.lines[0].contains("INFO connected session=<redacted>"))
     }
 }
 
