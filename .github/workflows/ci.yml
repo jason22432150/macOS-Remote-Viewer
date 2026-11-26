@@ -156,6 +156,7 @@ jobs:
       - name: Install test-only native dependencies
         run: brew install pkgconf spice-gtk spice-server spice-protocol
       - name: Stage isolated candidate app from verified baseline DMG
+        id: stage_candidate
         run: |
           python3 BuildSupport/stage-spice-candidate-app.py --baseline baseline-preview --candidate candidate-native --output "$RUNNER_TEMP/spice-candidate-runtime"
       - name: Exercise candidate real TLS link
@@ -165,6 +166,7 @@ jobs:
       - name: Verify candidate native authenticated wire receive bounds
         run: python3 BuildSupport/test-spice-receive-wire.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Exercise candidate real SPICE authentication, display, clipboard and workspace
+        if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
         run: python3 BuildSupport/test-spice-auth.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Upload candidate runtime staging evidence
         if: always()

@@ -160,7 +160,13 @@ def test_case(root, fixture, probe, context, upstream_context, layout, name, dec
                 result = subprocess.run([str(probe), str(root / "trusted.pem"),
                                          str(listener.getsockname()[1]), "reject" if reject else "control"],
                                         cwd=root, env=env, capture_output=True, text=True, timeout=20)
-                outcome = future.result(timeout=10)
+                try:
+                    outcome = future.result(timeout=10)
+                except Exception:
+                    print(f"native probe exit={result.returncode}", flush=True)
+                    print(result.stdout[-4000:])
+                    print(result.stderr[-4000:])
+                    raise
             count = result.stderr.splitlines().count(MARKER)
             print(f"{name}: {outcome}, native_markers={count}", flush=True)
             print(result.stdout[-4000:])
@@ -206,7 +212,7 @@ def main():
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(root / "server.pem", root / "server.key")
-        upstream_context = ssl.create_default_context(cafile=str(root / "trusted.pem"))
+        upstream_context = auth.tls.strict_client_context(root / "trusted.pem")
         test_case(root, fixture, probe, context, upstream_context, layout,
                   "wire-at-limit", maximum, False)
         test_case(root, fixture, probe, context, upstream_context, layout,

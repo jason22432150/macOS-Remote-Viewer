@@ -46,7 +46,51 @@ build_spice = importlib.util.module_from_spec(BUILD_SPICE_SPEC)
 BUILD_SPICE_SPEC.loader.exec_module(build_spice)
 
 
+TLS_SPEC = importlib.util.spec_from_file_location(
+    "tls_fixture", Path(__file__).with_name("test-loopback-tls.py"))
+tls_fixture = importlib.util.module_from_spec(TLS_SPEC)
+TLS_SPEC.loader.exec_module(tls_fixture)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_fixture_certificates_pass_strict_tls_and_reject_wrong_identity(self):
+        import ssl
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            tls_fixture.create_certificates(root)
+            server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            server_context.load_cert_chain(root / "server.pem", root / "server.key")
+
+            def handshake(ca, hostname):
+                # In-memory TLS, no network listener or system trust store changes.
+                ci, co, si, so = (ssl.MemoryBIO() for _ in range(4))
+                client = tls_fixture.strict_client_context(ca).wrap_bio(
+                    ci, co, server_hostname=hostname)
+                server = server_context.wrap_bio(si, so, server_side=True)
+                done = [False, False]
+                for _ in range(40):
+                    for index, peer in enumerate((client, server)):
+                        if not done[index]:
+                            try:
+                                peer.do_handshake()
+                                done[index] = True
+                            except ssl.SSLWantReadError:
+                                pass
+                    if co.pending:
+                        si.write(co.read())
+                    if so.pending:
+                        ci.write(so.read())
+                    if all(done):
+                        return
+                self.fail("strict TLS fixture handshake did not complete")
+
+            handshake(root / "trusted.pem", "mrv-ci.test")
+            handshake(root / "trusted.pem", "127.0.0.1")
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                handshake(root / "untrusted.pem", "mrv-ci.test")
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                handshake(root / "trusted.pem", "wrong.test")
+
     def test_candidate_library_path_is_fixed_and_confined(self):
         with tempfile.TemporaryDirectory() as raw:
             prefix = Path(raw) / "prefix"

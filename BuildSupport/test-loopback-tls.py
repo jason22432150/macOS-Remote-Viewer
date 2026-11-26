@@ -32,6 +32,7 @@ def create_certificates(root):
         "keyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n"
         "[leaf_ext]\nbasicConstraints=critical,CA:FALSE\n"
         "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n"
         "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:mrv-ci.test,IP:127.0.0.1\n"
     )
     for name in ("trusted", "untrusted"):
@@ -44,6 +45,16 @@ def create_certificates(root):
         "-CA", str(root / "trusted.pem"), "-CAkey", str(root / "trusted.key"),
         "-set_serial", "1", "-extfile", str(config), "-extensions", "leaf_ext",
         "-out", str(root / "server.pem"))
+
+
+def strict_client_context(ca):
+    """Use strict chain and hostname validation for the local TLS relay."""
+    context = ssl.create_default_context(cafile=str(ca))
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.verify_flags |= ssl.VERIFY_X509_STRICT
+    if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+        raise ValueError("strict fixture TLS verification is not enabled")
+    return context
 
 
 def fixture_profile(port, ca, subject):
