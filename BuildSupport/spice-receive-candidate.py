@@ -37,6 +37,7 @@ def patch_channel(text):
         '    msg_size = spice_header_get_msg_size(in->header, c->use_mini_header);',
         '    wire_size = spice_header_get_msg_size(in->header, c->use_mini_header);\n'
         '    if (!mrv_wire_size_allowed(wire_size)) {\n'
+        '        mrv_receive_test_trace("MRV_NATIVE_WIRE_LIMIT_REJECTED");\n'
         '        c->event = SPICE_CHANNEL_ERROR_IO;\n'
         '        c->has_error = TRUE;\n'
         '        goto end;\n'

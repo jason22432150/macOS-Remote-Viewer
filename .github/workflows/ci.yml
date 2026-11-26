@@ -162,6 +162,8 @@ jobs:
         run: python3 BuildSupport/test-loopback-tls.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Verify candidate native link reply receive bounds on TLS loopback
         run: python3 BuildSupport/test-spice-receive-link.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+      - name: Verify candidate native authenticated wire receive bounds
+        run: python3 BuildSupport/test-spice-receive-wire.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Exercise candidate real SPICE authentication, display, clipboard and workspace
         run: python3 BuildSupport/test-spice-auth.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
       - name: Upload candidate runtime staging evidence

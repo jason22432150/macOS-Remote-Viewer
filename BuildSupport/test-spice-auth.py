@@ -234,7 +234,7 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
         print(f"{name}: authenticated TLS main channels={len(initialized)}")
 
 
-def compile_native_probe(app, destination):
+def compile_native_probe(app, destination, source="spice-native-multi.c"):
     frameworks = app / "Contents" / "Frameworks"
     names = ("libspice-client-glib-2.0.8.dylib", "libgio-2.0.0.dylib",
              "libgobject-2.0.0.dylib", "libglib-2.0.0.dylib")
@@ -244,7 +244,7 @@ def compile_native_probe(app, destination):
     flags = shlex.split(subprocess.check_output(
         ["pkg-config", "--cflags", "spice-client-glib-2.0"], text=True))
     subprocess.run(["xcrun", "clang", "-std=c11", *flags,
-                    str(HERE / "spice-native-multi.c"), "-o", str(destination),
+                    str(HERE / source), "-o", str(destination),
                     *map(str, libraries), "-Wl,-rpath," + str(frameworks)],
                    check=True, timeout=60)
     # Check linkage before executing: probe must not link host copies.
