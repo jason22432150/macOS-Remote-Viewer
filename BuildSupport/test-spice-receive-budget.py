@@ -26,6 +26,7 @@ RESERVED = "MRV_NATIVE_RECEIVE_LARGE_RESERVED"
 RELEASED = "MRV_NATIVE_RECEIVE_LARGE_RELEASED"
 EXHAUSTED = "MRV_NATIVE_RECEIVE_BUDGET_EXHAUSTED"
 ALLOC_FAILED = "MRV_NATIVE_RECEIVE_ALLOC_FAILED"
+FAULT_INJECTED = "MRV_TEST_ALLOC_FAULT_INJECTED"
 AGENT_REJECT = "MRV_NATIVE_AGENT_BUDGET_OR_ALLOC_REJECTED"
 WIRE_REJECT = "MRV_NATIVE_WIRE_BUDGET_OR_ALLOC_REJECTED"
 
@@ -76,7 +77,7 @@ def stop(process):
         process.wait(timeout=5)
 
 
-def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
+def test(root, fixture, probe, layout, agent_layout, context, upstream, kind, fault_library=None):
     if kind == "agent":
         maximum = 16 * 1024 * 1024 + 64 * 1024
         expected_reject, other_reject = AGENT_REJECT, WIRE_REJECT
@@ -89,7 +90,17 @@ def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
         server_markers = {"MAIN_INITIALIZED tls=1"}
     else:
         raise ValueError("unknown budget test kind")
-    print(f"starting candidate {kind} budget recovery", flush=True)
+    # For fault tests leave exactly one target allocation of budget free.
+    # The seventh peer retries before any admitted peer is released, so a
+    # leaked reservation after the injected failure would prevent recovery.
+    fault = fault_library is not None
+    if fault:
+        maximum = maximum if kind == "agent" else 120 * 1024 * 1024
+        total = (96 if kind == "agent" else 640) * 1024 * 1024
+        fault_size = total - 5 * maximum
+        if not 0 < fault_size <= maximum or fault_size == maximum:
+            raise AssertionError("invalid distinct allocation-fault size")
+    print(f"starting candidate {kind} {'allocation fault' if fault else 'budget'} recovery", flush=True)
     events = [threading.Event() for _ in range(7)]
     futures = {}
     servers = {}
@@ -108,6 +119,10 @@ def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
                k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "spice_proxy")}
         env.update(PATH="/usr/bin:/bin:/usr/sbin:/sbin", NO_PROXY="127.0.0.1",
                    MRV_ENABLE_INTEGRATION_PROBES="1", MRV_RECEIVE_TEST_TRACE="1")
+        env.pop("MRV_TEST_ALLOC_KIND", None)
+        if fault:
+            # Only the independent unsigned native probe receives the test dylib.
+            env.update(DYLD_INSERT_LIBRARIES=str(fault_library), MRV_TEST_ALLOC_KIND=kind)
         native = subprocess.Popen([str(probe), str(root / "trusted.pem"), str(root),
                                    *[str(s.getsockname()[1]) for s in listeners]],
                                   cwd=root, env=env, stdout=out, stderr=err)
@@ -151,8 +166,9 @@ def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
                                             hold=functools.partial(hold, release=events[index]))
             else:
                 handler = functools.partial(wire_frame, release=events[index])
+            declared = fault_size if fault and index in (5, 6) else maximum
             futures[index] = pool.submit(wire.observe, listeners[index], context, upstream,
-                                         port, layout, maximum, reject, handler)
+                                         port, layout, declared, reject, handler)
             (root / f"start-{index}").touch()
             wait_for(lambda: f"MRV_BUDGET_OPENED peer={index}" in lines(out_path), "native opened")
 
@@ -169,23 +185,28 @@ def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
             if futures[5].result(timeout=6) != "budget-rejected":
                 raise AssertionError("sixth session was not rejected")
             wait_for(lambda: "MRV_BUDGET_TERMINAL peer=5 io=1" in lines(out_path), "budget IO error")
-            if (count(EXHAUSTED) != 1 or count(expected_reject) != 1 or
-                    count(other_reject) or count(ALLOC_FAILED) or count(wire.MARKER) or
+            if (count(EXHAUSTED) != int(not fault) or count(expected_reject) != 1 or
+                    count(other_reject) or count(ALLOC_FAILED) != int(fault) or
+                    count(FAULT_INJECTED) != int(fault) or count(wire.MARKER) or
                     count(agent.DIRECT) or count(agent.FRAGMENT)):
-                raise AssertionError("expected matching aggregate budget denial, not per-message or allocation failure")
+                raise AssertionError("expected matching allocation failure or aggregate denial")
             if count(RESERVED) != 5 or count(RELEASED) or any(futures[i].done() for i in range(5)):
                 raise AssertionError("rejection affected admitted sessions")
-            events[0].set()
-            if futures[0].result(timeout=5) != "released-by-test":
-                raise AssertionError("first relay not released")
-            wait_for(lambda: terminal(0) and count(RELEASED) == 1, "first budget release")
+            if not fault:
+                events[0].set()
+                if futures[0].result(timeout=5) != "released-by-test":
+                    raise AssertionError("first relay not released")
+                wait_for(lambda: terminal(0) and count(RELEASED) == 1, "first budget release")
             start(6)
             wait_for(lambda: count(RESERVED) == 6, "recovery reservation")
-            if any(futures[i].done() for i in (1, 2, 3, 4, 6)):
+            retained = (0, 1, 2, 3, 4, 6) if fault else (1, 2, 3, 4, 6)
+            if any(futures[i].done() for i in retained):
                 raise AssertionError("recovered session or retained session closed early")
-            for i in (1, 2, 3, 4, 6):
+            if fault and count(RELEASED):
+                raise AssertionError("fault retry did not precede all admitted releases")
+            for i in retained:
                 events[i].set()
-            for i in (1, 2, 3, 4, 6):
+            for i in retained:
                 if futures[i].result(timeout=5) != "released-by-test":
                     raise AssertionError("relay cleanup failed")
             wait_for(lambda: all(terminal(i) for i in range(7)) and count(RELEASED) == 6,
@@ -195,14 +216,16 @@ def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
             if native.returncode or "MRV_NATIVE_BUDGET_SESSIONS_OK" not in lines(out_path):
                 raise AssertionError("native session lifecycle failed")
             if (count(RESERVED) != 6 or count(RELEASED) != 6 or
-                    count(EXHAUSTED) != 1 or count(expected_reject) != 1 or
-                    count(other_reject) or count(ALLOC_FAILED) or count(wire.MARKER) or
+                    count(EXHAUSTED) != int(not fault) or count(expected_reject) != 1 or
+                    count(other_reject) or count(ALLOC_FAILED) != int(fault) or
+                    count(FAULT_INJECTED) != int(fault) or count(wire.MARKER) or
                     count(agent.DIRECT) or count(agent.FRAGMENT)):
                 raise AssertionError("final accounting markers mismatch")
             for _, log in servers.values():
                 if not server_markers.issubset(lines(log)):
                     raise AssertionError("backend did not complete required handshake")
-            print(f"MRV_SPICE_CANDIDATE_{kind.upper()}_AGGREGATE_RUNTIME_OK", flush=True)
+            suffix = "ALLOC_FAULT_RUNTIME_OK" if fault else "AGGREGATE_RUNTIME_OK"
+            print(f"MRV_SPICE_CANDIDATE_{kind.upper()}_{suffix}", flush=True)
         finally:
             print(out_path.read_text(errors="replace")[-6000:])
             print(err_path.read_text(errors="replace")[-6000:])
@@ -210,10 +233,28 @@ def test(root, fixture, probe, layout, agent_layout, context, upstream, kind):
                 print(f"backend {index}: {log.read_text(errors='replace')[-1500:]}")
 
 
+def compile_fault_library(app, destination):
+    import shlex
+    frameworks = app / "Contents/Frameworks"
+    glib = frameworks / "libglib-2.0.0.dylib"
+    flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "glib-2.0"], text=True))
+    subprocess.run(["xcrun", "clang", "-std=c11", "-dynamiclib", *flags,
+                    str(HERE / "spice-alloc-fault.c"), "-o", str(destination),
+                    str(glib), "-Wl,-rpath," + str(frameworks)],
+                   check=True, timeout=60)
+    linked = subprocess.check_output(["/usr/bin/otool", "-L", str(destination)], text=True)
+    print(linked, flush=True)
+    if "@rpath/libglib-2.0.0.dylib" not in linked or "/opt/homebrew/" in linked or "/usr/local/" in linked:
+        raise AssertionError("fault library must use packaged GLib")
+    return destination
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True, type=Path)
     parser.add_argument("--kind", choices=("agent", "wire"), default="agent")
+    parser.add_argument("--alloc-fault", action="store_true")
     args = parser.parse_args()
     app = args.app.resolve()
     report = json.loads((app.parent / "staging-report.json").read_text())
@@ -241,7 +282,8 @@ def main():
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(root / "server.pem", root / "server.key")
         upstream = wire.auth.tls.strict_client_context(root / "trusted.pem")
-        test(root, fixture, probe, layout, agent_layout, context, upstream, args.kind)
+        fault_library = compile_fault_library(app, root / "alloc-fault.dylib") if args.alloc_fault else None
+        test(root, fixture, probe, layout, agent_layout, context, upstream, args.kind, fault_library)
 
 
 if __name__ == "__main__":
