@@ -171,6 +171,41 @@ final class VVParserTests: XCTestCase {
         }
     }
 
+    func testImporterDoesNotRetainUntrustedErrorPayloads() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".vv")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let secret = "synthetic-private-value"
+        for (input, expected) in [
+            (minimalVV(type: secret), SessionError.unsupportedType("<redacted>")),
+            (minimalVV(extra: "delete-this-file=\(secret)"), .invalidBoolean("<redacted>")),
+            (minimalVV(extra: "toggle-fullscreen=Ctrl+Shift"), .invalidHotKey("<redacted>"))
+        ] {
+            try Data(input.utf8).write(to: url)
+            XCTAssertThrowsError(try VVFileImporter().importFile(at: url)) {
+                XCTAssertEqual($0 as? SessionError, expected)
+                XCTAssertFalse(String(reflecting: $0).contains(secret))
+            }
+        }
+        XCTAssertEqual(SessionError.missingField(secret).sanitizedForRetention, .missingField("unknown"))
+        XCTAssertEqual(SessionError.unknown(code: secret).sanitizedForRetention, .unknown(code: "<redacted>"))
+        XCTAssertFalse(SessionError.duplicateField(secret).userMessage.contains(secret))
+        try Data(minimalVV().utf8).write(to: url)
+        XCTAssertEqual(try VVFileImporter().importFile(at: url).ticket.value, "example-ticket-not-secret")
+    }
+
+    func testDescriptorReadExactSizesAndIdentity() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".vv")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let files = FoundationFileAccessor()
+        for count in [0, 1, 65537, VVParser.maxFileBytes] {
+            let payload = Data(repeating: 0x41, count: count)
+            try payload.write(to: url)
+            let (data, identity) = try files.readIdentified(from: url)
+            XCTAssertEqual(data, payload)
+            XCTAssertEqual(identity?.size, UInt64(count))
+        }
+    }
+
     func testImporterRejectsOversizedRegularFile() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".vv")
         defer { try? FileManager.default.removeItem(at: url) }

@@ -94,11 +94,23 @@ public enum SessionError: Error, Equatable, Sendable {
         }
     }
 
-    /// 只允許已知欄位名稱進入 UI，避免把任意檔案內容當欄位名顯示。
+    /// Remove arbitrary associated strings before errors cross the importer
+    /// boundary into long-lived UI state. Preserve the diagnostic category.
+    var sanitizedForRetention: SessionError {
+        switch self {
+        case .unsupportedType(let type): return .unsupportedType(type == "vnc" ? "vnc" : "<redacted>")
+        case .missingField(let name): return .missingField(Self.safeFieldName(name))
+        case .duplicateField(let name): return .duplicateField(Self.safeFieldName(name))
+        case .invalidPort(let name): return .invalidPort(Self.safeFieldName(name))
+        case .invalidBoolean: return .invalidBoolean("<redacted>")
+        case .invalidHotKey: return .invalidHotKey("<redacted>")
+        case .unknown: return .unknown(code: "<redacted>")
+        default: return self
+        }
+    }
+
+    /// Only schema-defined names, not arbitrary alphanumeric input.
     private static func safeFieldName(_ name: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let filtered = name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
-        let result = String(filtered)
-        return result.isEmpty ? "unknown" : String(result.prefix(64))
+        VVParser.criticalFields.contains(name) ? name : "unknown"
     }
 }

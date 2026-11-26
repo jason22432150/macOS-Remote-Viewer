@@ -41,8 +41,7 @@ public struct FoundationFileAccessor: FileAccessing {
         // No-follow + nonblocking prevents symlink substitution or blocking on a FIFO.
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { throw SessionError.sourceFileUnavailable }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        defer { try? handle.close() }
+        defer { Darwin.close(fd) }
         var before = stat()
         guard fstat(fd, &before) == 0, Self.isRegular(before), before.st_size >= 0 else {
             throw SessionError.sourceFileUnavailable
@@ -50,15 +49,32 @@ public struct FoundationFileAccessor: FileAccessing {
         guard before.st_size <= VVParser.maxFileBytes else {
             throw SessionError.fileTooLarge(maxBytes: VVParser.maxFileBytes)
         }
-        var data = Data()
-        while data.count <= VVParser.maxFileBytes {
-            let remaining = VVParser.maxFileBytes + 1 - data.count
-            guard let chunk = try handle.read(upToCount: min(remaining, 64 * 1024)), !chunk.isEmpty else { break }
-            data.append(chunk)
+        // Read into one bounded mutable buffer. Reserve an extra byte to
+        // detect growth instead of accumulating independent Data chunks.
+        let expectedBytes = Int(before.st_size)
+        var data = Data(count: expectedBytes + 1)
+        var transferred = 0
+        var returned = false
+        defer {
+            if !returned { data.resetBytes(in: 0..<data.count) }
         }
-        guard data.count <= VVParser.maxFileBytes else {
+        try data.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) in
+            guard let base = buffer.baseAddress else { throw SessionError.sourceFileUnavailable }
+            while transferred < buffer.count {
+                let amount = Darwin.read(fd, base.advanced(by: transferred), buffer.count - transferred)
+                if amount < 0 {
+                    if errno == EINTR { continue }
+                    throw SessionError.sourceFileUnavailable
+                }
+                if amount == 0 { break }
+                transferred += amount
+            }
+        }
+        guard transferred <= VVParser.maxFileBytes else {
             throw SessionError.fileTooLarge(maxBytes: VVParser.maxFileBytes)
         }
+        guard transferred == expectedBytes else { throw SessionError.sourceFileUnavailable }
+        data.count = transferred
         var after = stat()
         guard fstat(fd, &after) == 0, Self.isRegular(after) else {
             throw SessionError.sourceFileUnavailable
@@ -73,6 +89,7 @@ public struct FoundationFileAccessor: FileAccessing {
         // The returned identity is for the actual descriptor that supplied the bytes.
         // If the path changed meanwhile, import remains usable but cleanup is disabled.
         let current = try? identity(of: url)
+        returned = true
         return (data, current == final ? final : nil)
     }
 

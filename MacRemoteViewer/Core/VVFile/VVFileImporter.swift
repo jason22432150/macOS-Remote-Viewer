@@ -17,15 +17,24 @@ public struct VVFileImporter: Sendable {
                 files.stopAccessing(url)
             }
         }
-        let data: Data
+        var data: Data
         let identity: SourceFileIdentity?
         do {
             (data, identity) = try files.readIdentified(from: url)
         } catch let error as SessionError {
-            throw error
+            throw error.sanitizedForRetention
         } catch {
             throw SessionError.sourceFileUnavailable
         }
-        return try parser.parse(data: data, sourceIdentity: identity)
+        // Best effort for this Data value only. Foundation copy-on-write,
+        // parser strings and caller-owned storage cannot be guaranteed wiped.
+        defer { data.resetBytes(in: 0..<data.count) }
+        do {
+            return try parser.parse(data: data, sourceIdentity: identity)
+        } catch let error as SessionError {
+            throw error.sanitizedForRetention
+        } catch {
+            throw SessionError.sourceFileUnavailable
+        }
     }
 }
