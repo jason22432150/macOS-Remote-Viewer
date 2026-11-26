@@ -99,6 +99,20 @@ def smoke_test(app, temp):
     startup_smoke(env)
     print("AppKit/Metal/worker startup smoke passed.")
 
+    # Exercise the actual installed GLib log handler with synthetic secrets
+    # in both the message and domain. Require the fixed severity output as
+    # well as the emission marker, so silence alone cannot pass the gate.
+    canary_env = dict(env, MRV_NATIVE_LOG_CANARY="1", SPICE_DEBUG="1", G_MESSAGES_DEBUG="all")
+    canary = subprocess.run([str(executable), "--startup-smoke-test"],
+                            cwd=temp, env=canary_env, capture_output=True, text=True, timeout=40)
+    output = canary.stdout + "\n" + canary.stderr
+    if (canary.returncode != 0 or "MRV_STARTUP_SMOKE_OK" not in canary.stdout.splitlines()
+            or canary.stdout.splitlines().count("MRV_NATIVE_LOG_CANARY_EMITTED") != 1
+            or "WARNING GLib (details suppressed)" not in output.splitlines()
+            or "mrv-test-private-domain" in output or "mrv-test-private-native-message" in output):
+        raise ValueError("native log suppression probe failed")
+    print("MRV_NATIVE_LOG_REDACTION_OK")
+
     # A second launch deliberately supplies external paths and a scanner trap.
     # The trap is a harmless local test executable; it must never run.
     poison = temp / "external-gst"

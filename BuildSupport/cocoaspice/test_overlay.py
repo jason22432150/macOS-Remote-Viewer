@@ -374,7 +374,14 @@ static void cs_channel_new(void) {}
             self.assertIn("g_main_context_release(self->_main_context)", text)
             self.assertIn("#import <pthread.h>\n#import <stdlib.h>", text)
             self.assertIn(r'ownsDefault=%d\n"', text)
-            self.assertIn("MRV_GLIB_MESSAGE", text)
+            self.assertNotIn("MRV_GLIB_MESSAGE", text)
+            handler = text[text.index("static void logHandler("):text.index("void *spice_main_loop(")]
+            self.assertIn("(void)log_domain;", handler)
+            self.assertIn("(void)message;", handler)
+            self.assertNotIn("log_domain, message", handler)
+            self.assertIn("GLib (details suppressed)", handler)
+            self.assertIn("MRV_ENABLE_INTEGRATION_PROBES", handler)
+            self.assertIn("MRV_NATIVE_LOG_CANARY_EMITTED", text)
             self.assertNotIn("backtrace_symbols_fd(", text)
 
     def test_gst_ios_init_uses_dynamic_gst_init(self) -> None:

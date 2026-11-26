@@ -53,24 +53,6 @@ def overlay_csmain(checkout: Path) -> None:
     path.write_text(text)
     _replace_once(path, [
         ('#import <pthread.h>', '#import <pthread.h>\n#import <stdlib.h>'),
-        ("""    GDateTime *now;
-    gchar *dateTimeStr;""",
-         """    // Opt-in test diagnostics: no connection properties, credentials or
-    // remote data are emitted. Capture the offending thread before returning.
-    if ((log_level & G_LOG_LEVEL_CRITICAL) && getenv("MRV_GLIB_TRACE")) {
-        uint64_t tid = 0;
-        pthread_threadid_np(NULL, &tid);
-        fprintf(stderr, "MRV_GLIB_CRITICAL tid=%llu appkit=%d ownsDefault=%d\\n",
-                (unsigned long long)tid, pthread_main_np(),
-                g_main_context_is_owner(g_main_context_default()));
-        // Do not unwind a stack created by makecontext/longjmp. The
-        // previous diagnostic itself could fault before printing the error.
-        fprintf(stderr, "MRV_GLIB_MESSAGE domain=%s message=%s\\n",
-                log_domain ? log_domain : "(none)", message ? message : "(none)");
-        fflush(stderr);
-    }
-    GDateTime *now;
-    gchar *dateTimeStr;"""),
         ("    gint _loop_quit;", "    gint _loop_quit;\n    dispatch_semaphore_t _workerReady;\n    BOOL _workerOwnsContext;"),
         ("""    gst_ios_init();
     
@@ -134,6 +116,64 @@ def overlay_csmain(checkout: Path) -> None:
     g_source_set_callback(source, callBlockInMainContext, data, cleanupBlock);
     g_source_attach(source, self.glibMainContext);
     g_source_unref(source);"""),
+    ])
+    # Replace the whole pinned upstream default handler rather than attempting
+    # to recognize secrets in arbitrary native diagnostic text.
+    text = path.read_text()
+    start = text.index("static void logHandler(")
+    end = text.index("\nvoid *spice_main_loop(", start)
+    old = text[start:end]
+    if "log_domain, message" not in old or "handler(line);" not in old:
+        # Refuse drift in the pinned upstream handler.
+        raise SystemExit("unexpected upstream CSMain log handler")
+    new = r"""static void logHandler(const gchar *log_domain, GLogLevelFlags log_level,
+                       const gchar *message, gpointer user_data)
+{
+    // Never forward arbitrary domains or formatted native messages to stdout,
+    // stderr, OSLog or the optional callback. They may contain credentials.
+    (void)log_domain;
+    (void)message;
+    if ((log_level & (G_LOG_LEVEL_INFO | G_LOG_LEVEL_DEBUG)) != 0) return;
+    const char *level = "UNKNOWN";
+    if (log_level & G_LOG_LEVEL_ERROR) level = "ERROR";
+    else if (log_level & G_LOG_LEVEL_CRITICAL) level = "CRITICAL";
+    else if (log_level & G_LOG_LEVEL_WARNING) level = "WARNING";
+    else if (log_level & G_LOG_LEVEL_MESSAGE) level = "MESSAGE";
+    if ((log_level & G_LOG_LEVEL_CRITICAL) &&
+        g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_GLIB_TRACE"), "1") == 0) {
+        uint64_t tid = 0;
+        pthread_threadid_np(NULL, &tid);
+        fprintf(stderr, "MRV_GLIB_CRITICAL tid=%llu appkit=%d ownsDefault=%d\n",
+                (unsigned long long)tid, pthread_main_np(),
+                g_main_context_is_owner(g_main_context_default()));
+        fflush(stderr);
+    }
+    @autoreleasepool {
+        LogHandler_t handler = (__bridge LogHandler_t)user_data;
+        if (handler) {
+            handler([NSString stringWithFormat:@"%s GLib (details suppressed)\n", level]);
+        } else {
+            fprintf(stdout, "%s GLib (details suppressed)\n", level);
+            fflush(stdout);
+        }
+    }
+}
+"""
+    path.write_text(text[:start] + new + text[end:])
+    _replace_once(path, [
+        ("""    gst_ios_init();
+    self->_workerOwnsContext = YES;""",
+         """    gst_ios_init();
+    // Synthetic warning only, enabled by the validated startup probe in CI.
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_NATIVE_LOG_CANARY"), "1") == 0) {
+        g_log("mrv-test-private-domain", G_LOG_LEVEL_WARNING,
+              "%s", "mrv-test-private-native-message");
+        fprintf(stdout, "MRV_NATIVE_LOG_CANARY_EMITTED\\n");
+        fflush(stdout);
+    }
+    self->_workerOwnsContext = YES;"""),
     ])
 
 
@@ -1423,7 +1463,8 @@ def overlay_connection_lifecycle(checkout: Path) -> None:
     
     switch (event) {""",
          """    NSInteger code = kCSConnectionErrorNone;
-    if (getenv("MRV_GLIB_TRACE")) {
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_GLIB_TRACE"), "1") == 0) {
         fprintf(stderr, "MRV_CONN_EVENT session=%p channel=%p event=%d\\n",
                 (void *)self.spiceSession, (void *)channel, (int)event);
         fflush(stderr);
@@ -1438,7 +1479,8 @@ def overlay_connection_lifecycle(checkout: Path) -> None:
     int chid = -1, type = -1;
     if (s != self.spiceSession || !SPICE_IS_CHANNEL(channel)) return;
     g_object_get(channel, "channel-id", &chid, "channel-type", &type, NULL);
-    if (getenv("MRV_GLIB_TRACE")) {
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_GLIB_TRACE"), "1") == 0) {
         fprintf(stderr, "MRV_CONN_NEW session=%p channel=%p type=%d id=%d\\n",
                 (void *)s, (void *)channel, type, chid);
         fflush(stderr);
@@ -1449,7 +1491,8 @@ def overlay_connection_lifecycle(checkout: Path) -> None:
          """    if (s != self.spiceSession || !SPICE_IS_CHANNEL(channel)) return;
     int type = -1;
     g_object_get(channel, "channel-id", &chid, "channel-type", &type, NULL);
-    if (getenv("MRV_GLIB_TRACE")) {
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_GLIB_TRACE"), "1") == 0) {
         fprintf(stderr, "MRV_CONN_DESTROY session=%p channel=%p type=%d id=%d\\n",
                 (void *)s, (void *)channel, type, chid);
         fflush(stderr);
@@ -1478,7 +1521,8 @@ def overlay_connection_lifecycle(checkout: Path) -> None:
     }"""),
         ("""        initiated = spice_session_connect(self.spiceSession);""",
          """        self.disconnectNotified = NO;
-        if (getenv("MRV_GLIB_TRACE")) {
+        if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_GLIB_TRACE"), "1") == 0) {
             fprintf(stderr, "MRV_CONN_CONNECT session=%p\\n", (void *)self.spiceSession);
             fflush(stderr);
         }
@@ -1488,7 +1532,8 @@ def overlay_connection_lifecycle(checkout: Path) -> None:
         spice_session_disconnect(self.spiceSession);""",
          """- (void)disconnect {
     [CSMain.sharedInstance syncWith:^{
-        if (getenv("MRV_GLIB_TRACE")) {
+        if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_GLIB_TRACE"), "1") == 0) {
             fprintf(stderr, "MRV_CONN_DISCONNECT session=%p\\n", (void *)self.spiceSession);
             fflush(stderr);
         }

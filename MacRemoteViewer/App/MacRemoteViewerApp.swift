@@ -93,7 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             portableRegistryDirectory = try preparePortableRuntime(
                 verifyRegistry: isIntegrationProbe &&
-                    ProcessInfo.processInfo.arguments.contains("--startup-smoke-test"))
+                    ProcessInfo.processInfo.arguments.contains("--startup-smoke-test"),
+                integrationProbe: isIntegrationProbe)
         } catch {
             // Do not initialize native libraries using untrusted fallback paths.
             print("MRV_PORTABLE_RUNTIME_FAILED")
@@ -1797,7 +1798,20 @@ enum AppWindowPresenter {
 /// Configure GStreamer before the worker calls gst_init(NULL, NULL).
 /// Bundled applications must not inherit host plugin paths or registry caches.
 /// A local Xcode build retains the existing Homebrew development behavior.
-private func preparePortableRuntime(verifyRegistry: Bool) throws -> URL? {
+private func preparePortableRuntime(verifyRegistry: Bool, integrationProbe: Bool) throws -> URL? {
+    // Do not inherit native diagnostic verbosity or fatal warning policy.
+    // GLib may already have initialized before the delegate, so this is not
+    // a guarantee about pre-main diagnostics or crash dumps.
+    for key in ["SPICE_DEBUG", "G_MESSAGES_DEBUG", "G_DEBUG"] {
+        guard unsetenv(key) == 0 else { throw SessionError.engineUnavailable }
+    }
+    if !integrationProbe {
+        guard unsetenv("MRV_GLIB_TRACE") == 0 else { throw SessionError.engineUnavailable }
+    }
+    // Only the explicitly opted-in startup probe may emit the fixed canary.
+    if !verifyRegistry {
+        guard unsetenv("MRV_NATIVE_LOG_CANARY") == 0 else { throw SessionError.engineUnavailable }
+    }
     let contents = Bundle.main.bundleURL.appendingPathComponent("Contents", isDirectory: true)
     let fileManager = FileManager.default
     let gstPlugins = contents.appendingPathComponent("Resources/gstreamer-1.0", isDirectory: true)
