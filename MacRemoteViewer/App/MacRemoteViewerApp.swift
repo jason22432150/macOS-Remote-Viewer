@@ -1797,11 +1797,13 @@ private func preparePortableRuntime(verifyRegistry: Bool) throws -> URL? {
     let gstPlugins = contents.appendingPathComponent("Resources/gstreamer-1.0", isDirectory: true)
     let scanner = contents.appendingPathComponent("MacOS/gst-plugin-scanner")
     let opensslModules = contents.appendingPathComponent("Resources/ossl-modules", isDirectory: true)
+    let opensslConfig = contents.appendingPathComponent("Resources/mrv-openssl.cnf")
 
     // Only the packaged runtime may enable the registry inspection.
     guard unsetenv("MRV_VERIFY_PACKAGED_GST") == 0 else { throw SessionError.engineUnavailable }
     let bundled = fileManager.fileExists(atPath: gstPlugins.path) ||
-                  fileManager.fileExists(atPath: scanner.path)
+                  fileManager.fileExists(atPath: scanner.path) ||
+                  fileManager.fileExists(atPath: opensslConfig.path)
     if bundled {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: gstPlugins.path, isDirectory: &isDirectory),
@@ -1841,12 +1843,32 @@ private func preparePortableRuntime(verifyRegistry: Bool) throws -> URL? {
                     throw SessionError.engineUnavailable
                 }
             }
-            if fileManager.fileExists(atPath: opensslModules.path) {
-                guard setenv("OPENSSL_MODULES", opensslModules.path, 1) == 0 else {
-                    throw SessionError.engineUnavailable
-                }
-            } else {
-                guard unsetenv("OPENSSL_MODULES") == 0 else { throw SessionError.engineUnavailable }
+            // PVE trust is supplied explicitly by the validated .vv CA.
+            // Do not inherit host OpenSSL configuration, providers, engines,
+            // key logging, or ambient default trust paths in the packaged app.
+            // This must run before the SPICE worker and gst_init.
+            var modulesIsDirectory: ObjCBool = false
+            let configValues = try opensslConfig.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard configValues.isRegularFile == true, configValues.isSymbolicLink != true,
+                  fileManager.fileExists(atPath: opensslModules.path, isDirectory: &modulesIsDirectory),
+                  modulesIsDirectory.boolValue else {
+                throw SessionError.engineUnavailable
+            }
+            for key in ["SSLKEYLOGFILE", "OPENSSL_TRACE", "OPENSSL_FORCE_FIPS_MODE",
+                        "OPENSSL_CONF_INCLUDE", "OPENSSL_ENGINES", "SSL_CERT_FILE",
+                        "SSL_CERT_DIR", "RANDFILE", "CTLOG_FILE"] {
+                guard unsetenv(key) == 0 else { throw SessionError.engineUnavailable }
+            }
+            let opensslSettings = [
+                "OPENSSL_CONF": opensslConfig.path,
+                "OPENSSL_MODULES": opensslModules.path,
+                "OPENSSL_CONF_INCLUDE": directory.path,
+                "OPENSSL_ENGINES": directory.path,
+                "SSL_CERT_FILE": "/dev/null",
+                "SSL_CERT_DIR": directory.path,
+            ]
+            for (key, value) in opensslSettings {
+                guard setenv(key, value, 1) == 0 else { throw SessionError.engineUnavailable }
             }
             return directory
         } catch {

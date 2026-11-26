@@ -35,6 +35,30 @@ DMG_SPEC.loader.exec_module(dmg)
 
 
 class PortablePackagingTests(unittest.TestCase):
+    def test_openssl_modules_follow_linked_crypto_keg(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            lib = root / "openssl@3" / "3.5.9" / "lib"
+            lib.mkdir(parents=True)
+            crypto = lib / "libcrypto.3.dylib"
+            crypto.touch()
+            modules = lib / "ossl-modules"
+            unrelated = root / "openssl@4" / "lib" / "ossl-modules"
+            unrelated.mkdir(parents=True)
+            linked = {"libcrypto.3.dylib": crypto}
+            self.assertIsNone(pack.find_openssl_modules(linked))
+            modules.symlink_to(unrelated, target_is_directory=True)
+            with self.assertRaisesRegex(pack.BundleError, "escapes"):
+                pack.find_openssl_modules(linked)
+            modules.unlink()
+            modules.mkdir()
+            self.assertEqual(pack.find_openssl_modules(linked), modules)
+            with self.assertRaisesRegex(pack.BundleError, "exactly one"):
+                pack.find_openssl_modules({})
+            with self.assertRaisesRegex(pack.BundleError, "exactly one"):
+                pack.find_openssl_modules({**linked, "libcrypto.4.dylib":
+                                           unrelated.parent / "libcrypto.4.dylib"})
+
     def test_mounted_dmg_rejects_bad_install_shortcut_and_changed_bom(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

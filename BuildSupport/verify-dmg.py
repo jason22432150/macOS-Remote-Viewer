@@ -44,6 +44,12 @@ def verify_mounted(mount, bom_path):
     if info["CFBundleShortVersionString"] != bom["metadata"]["component"]["version"]:
         raise ValueError("app version differs from SBOM")
     validator.verify_inventory(bom, app)
+    config = app / "Contents" / "Resources" / "mrv-openssl.cnf"
+    modules = app / "Contents" / "Resources" / "ossl-modules"
+    if (config.is_symlink() or not config.is_file()
+            or config.read_bytes() != b"# Mac Remote Viewer portable OpenSSL configuration\n"
+            or modules.is_symlink() or not modules.is_dir()):
+        raise ValueError("missing or unexpected portable OpenSSL runtime")
     run("codesign", "--verify", "--deep", "--strict", str(app))
     return app
 

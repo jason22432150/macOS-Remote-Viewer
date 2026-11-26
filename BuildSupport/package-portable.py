@@ -283,15 +283,24 @@ def find_gst_scanner() -> Path | None:
     return None
 
 
-def find_openssl_modules() -> Path | None:
-    """定位 OpenSSL provider modules。"""
-    for candidate in (
-        Path("/opt/homebrew/opt/openssl@4/lib/ossl-modules"),
-        Path("/opt/homebrew/opt/openssl@3/lib/ossl-modules"),
-        Path("/usr/local/opt/openssl@3/lib/ossl-modules"),
-    ):
-        if candidate.is_dir():
-            return candidate
+# Default provider is built in; no external includes, engines or provider activation.
+# This file is sealed by the final app code signature as a bundle resource.
+OPENSSL_CONFIG = "# Mac Remote Viewer portable OpenSSL configuration\n"
+
+
+def find_openssl_modules(bundled: dict[str, Path]) -> Path | None:
+    """Derive provider location from the actual linked libcrypto, not an opt alias."""
+    crypto = {source.resolve() for name, source in bundled.items()
+              if name.startswith("libcrypto.") and name.endswith(".dylib")}
+    if len(crypto) != 1:
+        raise BundleError("Expected exactly one linked OpenSSL libcrypto")
+    library = next(iter(crypto))
+    candidate = library.parent / "ossl-modules"
+    if candidate.is_dir():
+        # Reject symlinks that resolve outside the same physical keg.
+        if not is_inside(candidate, library.parent):
+            raise BundleError("OpenSSL modules directory escapes linked libcrypto keg")
+        return candidate
     return None
 
 
@@ -496,20 +505,29 @@ def bundle_into(app: Path) -> dict[str, dict[str, str]]:
     copy_with_origin(scanner, scanner_dest)
     seeds.append(scanner_dest)
 
-    openssl_modules = find_openssl_modules()
-    if openssl_modules is not None:
-        openssl_dest.mkdir(parents=True, exist_ok=True)
-        for module in openssl_modules.glob("*.dylib"):
-            destination = openssl_dest / module.name
-            copy_with_origin(module.resolve(), destination)
-            seeds.append(destination)
-
     bundled: dict[str, Path] = {}
-    for seed in seeds:
+
+    def collect(seed: Path) -> None:
         for name, source in collect_host_libraries(seed, executable=executable, app_root=app).items():
             if name in bundled and bundled[name] != source:
                 raise BundleError(f"Conflicting libraries with the same install name: {name}")
             bundled[name] = source
+
+    for seed in seeds:
+        collect(seed)
+    openssl_modules = find_openssl_modules(bundled)
+    openssl_dest.mkdir(parents=True, exist_ok=True)
+    if openssl_modules is not None:
+        for module in sorted(openssl_modules.glob("*.dylib")):
+            if not is_inside(module, openssl_modules):
+                raise BundleError("OpenSSL provider escapes its source directory")
+            destination = openssl_dest / module.name
+            copy_with_origin(module.resolve(), destination)
+            collect(destination)
+        if find_openssl_modules(bundled) != openssl_modules:
+            raise BundleError("OpenSSL provider changed linked crypto dependency")
+    (app / "Contents" / "Resources" / "mrv-openssl.cnf").write_text(
+        OPENSSL_CONFIG, encoding="utf-8")
 
     copied: dict[str, Path] = {}
     for name, source in bundled.items():

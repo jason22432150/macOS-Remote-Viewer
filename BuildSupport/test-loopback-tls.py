@@ -101,7 +101,7 @@ def assert_observations(name, observations, expect_link):
         raise AssertionError(f"{name}: rejected peer sent application data")
 
 
-def test_case(app, root, context, name, ca, subject, expect_link):
+def test_case(app, root, context, name, ca, subject, expect_link, injected_env=None):
     observations = dict(connections=0, handshakes=0, plaintext=False,
                         application_data=False, link_header=False)
     stop = threading.Event()
@@ -120,6 +120,8 @@ def test_case(app, root, context, name, ca, subject, expect_link):
         env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
         env["GST_REGISTRY"] = str(root / "gst-registry.bin")
         env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
+        if injected_env is not None:
+            env.update(injected_env)
         executable = app / "Contents" / "MacOS" / "Mac Remote Viewer"
         try:
             result = subprocess.run([str(executable), "--loopback-tls-probe", str(profile)],
@@ -150,6 +152,36 @@ def main():
         test_case(app, root, context, "trusted", root / "trusted.pem", SUBJECT, True)
         test_case(app, root, context, "wrong-ca", root / "untrusted.pem", SUBJECT, False)
         test_case(app, root, context, "wrong-subject", root / "trusted.pem", "CN=wrong.test", False)
+
+        # A valid but hostile config would require algorithms from a nonexistent
+        # provider. The real packaged client's TLS must still succeed, without
+        # accepting the ambient CA in place of the explicit .vv trust.
+        poison = root / "external-openssl"
+        poison.mkdir()
+        config = poison / "openssl.cnf"
+        config.write_text("config_diagnostics = 1\nopenssl_conf = init\n"
+                          "[init]\nalg_section = algorithm_properties\n"
+                          "[algorithm_properties]\n"
+                          "default_properties = provider=mrv_nonexistent\n")
+        keylog = poison / "tls-secrets.log"
+        injected = {
+            "OPENSSL_CONF": str(config),
+            "OPENSSL_CONF_INCLUDE": str(poison),
+            "OPENSSL_MODULES": str(poison),
+            "OPENSSL_ENGINES": str(poison),
+            "SSL_CERT_FILE": str(root / "trusted.pem"),
+            "SSL_CERT_DIR": str(poison),
+            "SSLKEYLOGFILE": str(keylog),
+        }
+        test_case(app, root, context, "poisoned-config-trusted", root / "trusted.pem",
+                  SUBJECT, True, injected)
+        test_case(app, root, context, "poisoned-config-wrong-ca", root / "untrusted.pem",
+                  SUBJECT, False, injected)
+        test_case(app, root, context, "poisoned-config-wrong-subject", root / "trusted.pem",
+                  "CN=wrong.test", False, injected)
+        if keylog.exists():
+            raise AssertionError("inherited SSLKEYLOGFILE was used")
+        print("MRV_OPENSSL_ENV_ISOLATION_OK", flush=True)
     print("Real SPICE TLS/link boundary checks passed (not a complete SPICE session).")
 
 
