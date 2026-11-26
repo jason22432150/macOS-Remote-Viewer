@@ -100,6 +100,7 @@ def observe(listener, client_context, server_context, backend_port, layout, decl
                             capability(reply, server_count, server_offset, mini_bit))
                     forward_auth(client, server)
                     if handler is not None:
+                        print(f"agent relay authentication complete; mini={mini}", flush=True)
                         return handler(client, server, mini, layout, declared, reject)
                     size, offset = (mini_size, mini_offset) if mini else (full_size, full_offset)
                     header = bytearray(link.read_exact(server, size))
@@ -136,7 +137,7 @@ def observe(listener, client_context, server_context, backend_port, layout, decl
 
 def test_case(root, fixture, probe, context, upstream_context, layout, name, declared, reject,
               observe_fn=observe, fixture_args=(), marker=MARKER, expected_count=None,
-              forbidden_markers=()):
+              forbidden_markers=(), required_server_markers=()):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         backend_port = reserved.getsockname()[1]
@@ -179,8 +180,11 @@ def test_case(root, fixture, probe, context, upstream_context, layout, name, dec
             if result.returncode or "MRV_NATIVE_WIRE_TERMINAL_OK" not in result.stdout.splitlines() or count != expected_count or any(m in diagnostics for m in forbidden_markers):
                 print(result.stderr[-4000:])
                 raise AssertionError("native wire result did not match policy")
-            if "MAIN_INITIALIZED tls=1" not in log.read_text(errors="replace").splitlines():
+            server_lines = log.read_text(errors="replace").splitlines()
+            if "MAIN_INITIALIZED tls=1" not in server_lines:
                 raise AssertionError("backend did not authenticate TLS main channel")
+            if any(marker not in server_lines for marker in required_server_markers):
+                raise AssertionError("backend did not complete required synthetic agent exchange")
         finally:
             if server.poll() is None:
                 server.terminate()

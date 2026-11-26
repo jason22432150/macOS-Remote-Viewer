@@ -21,6 +21,20 @@ SPEC.loader.exec_module(wire)
 DIRECT = "MRV_NATIVE_AGENT_DIRECT_LIMIT_REJECTED"
 FRAGMENT = "MRV_NATIVE_AGENT_FRAGMENT_LIMIT_REJECTED"
 REASSEMBLED = "MRV_NATIVE_AGENT_REASSEMBLED"
+DELIVERED = "MRV_NATIVE_AGENT_DIRECT_DELIVERED"
+
+
+def read_mini_frame(peer, mini_size, type_offset, size_offset, frame_index):
+    if (mini_size, type_offset, size_offset) != (6, 0, 2):
+        raise ValueError("unexpected installed packed mini-header layout")
+    header = bytearray(wire.link.read_exact(peer, mini_size))
+    kind = struct.unpack_from("<H", header, type_offset)[0]
+    size = wire.word(header, size_offset)
+    if frame_index <= 32:
+        print(f"agent relay frame={frame_index} type={kind} size={size}", flush=True)
+    if not kind or size > 65536:
+        raise ValueError(f"invalid local agent fixture framing at frame {frame_index}: type={kind}, size={size}")
+    return header, kind, wire.link.read_exact(peer, size)
 
 
 def agent_frame(client, server, mini, layout, declared, reject, agent_layout, split):
@@ -30,6 +44,7 @@ def agent_frame(client, server, mini, layout, declared, reject, agent_layout, sp
     size_offset = layout[6]
     deadline = time.monotonic() + 8
     transferred = 0
+    frame_index = 0
     while time.monotonic() < deadline:
         # Forward ordinary authenticated main-channel traffic in both directions.
         if client.pending() or select.select([client], [], [], 0)[0]:
@@ -40,15 +55,11 @@ def agent_frame(client, server, mini, layout, declared, reject, agent_layout, sp
             transferred += len(data)
         if not server.pending() and not select.select([server], [], [], 0.05)[0]:
             continue
-        header = bytearray(wire.link.read_exact(server, mini_size))
-        size = wire.word(header, size_offset)
-        if size > 65536:
-            raise ValueError("unexpected local agent fixture frame")
-        body = wire.link.read_exact(server, size)
-        transferred += size + mini_size
-        if transferred > 1024 * 1024:
+        frame_index += 1
+        header, kind, body = read_mini_frame(server, mini_size, type_offset, size_offset, frame_index)
+        transferred += len(body) + mini_size
+        if transferred > 1024 * 1024 or frame_index > 256:
             raise ValueError("unexpected local fixture traffic")
-        kind = struct.unpack_from("<H", header, type_offset)[0]
         if kind != msg_type:
             client.sendall(header + body)
             continue
@@ -115,7 +126,9 @@ def main():
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(root / "server.pem", root / "server.key")
         upstream = wire.auth.tls.strict_client_context(root / "trusted.pem")
+        print(f"wire layout={layout}; agent layout={agent_layout}", flush=True)
         for name, split, reject, marker in (
+            ("agent-valid-direct", False, False, DELIVERED),
             ("agent-valid-fragment", True, False, REASSEMBLED),
             ("agent-direct-reject", False, True, DIRECT),
             ("agent-fragment-reject", True, True, FRAGMENT),
@@ -125,7 +138,8 @@ def main():
             wire.test_case(root, fixture, probe, context, upstream, layout, name,
                            maximum + 1, reject, observe_fn=observer,
                            fixture_args=("agent-full",), marker=marker, expected_count=1,
-                           forbidden_markers=tuple(m for m in (DIRECT, FRAGMENT, REASSEMBLED) if m != marker))
+                           forbidden_markers=tuple(m for m in (DIRECT, FRAGMENT, REASSEMBLED, DELIVERED) if m != marker),
+                           required_server_markers=("AGENT_CLIENT_CAPS", "AGENT_CAPS_DELIVERED"))
     print("MRV_SPICE_CANDIDATE_AGENT_RECEIVE_BOUNDARY_OK", flush=True)
 
 

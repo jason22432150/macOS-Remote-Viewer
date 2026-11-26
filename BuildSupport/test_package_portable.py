@@ -52,7 +52,36 @@ tls_fixture = importlib.util.module_from_spec(TLS_SPEC)
 TLS_SPEC.loader.exec_module(tls_fixture)
 
 
+AGENT_SPEC = importlib.util.spec_from_file_location(
+    "agent_fixture", Path(__file__).with_name("test-spice-receive-agent.py"))
+agent_fixture = importlib.util.module_from_spec(AGENT_SPEC)
+AGENT_SPEC.loader.exec_module(agent_fixture)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_agent_relay_mini_frame_stream_boundaries(self):
+        import struct
+
+        class FragmentedStream:
+            def __init__(self, payload):
+                self.payload = bytearray(payload)
+
+            def recv(self, count):
+                count = min(count, 2, len(self.payload))
+                data = bytes(self.payload[:count])
+                del self.payload[:count]
+                return data
+
+        stream = FragmentedStream(struct.pack("<HI", 3, 0) +
+                                  struct.pack("<HI", 4, 3) + b"abc")
+        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 1)[1:], (3, b""))
+        self.assertEqual(agent_fixture.read_mini_frame(stream, 6, 0, 2, 2)[1:], (4, b"abc"))
+        self.assertFalse(stream.payload)
+        with self.assertRaises(ValueError):
+            agent_fixture.read_mini_frame(FragmentedStream(struct.pack("<HI", 4, 65537)), 6, 0, 2, 1)
+        with self.assertRaises(ValueError):
+            agent_fixture.read_mini_frame(FragmentedStream(b""), 8, 0, 2, 1)
+
     def test_fixture_certificates_pass_strict_tls_and_reject_wrong_identity(self):
         import ssl
         with tempfile.TemporaryDirectory() as raw:

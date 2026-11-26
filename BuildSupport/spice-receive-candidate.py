@@ -98,6 +98,10 @@ def patch_agent(text):
         '        }\n\n'
         '        if (msg_size == (guint)(len - sizeof(VDAgentMessage))) {')
     text = replace_once(text,
+        '            main_agent_handle_msg(channel, msg, msg->data);',
+        '            main_agent_handle_msg(channel, msg, msg->data);\n'
+        '            mrv_receive_test_trace("MRV_NATIVE_AGENT_DIRECT_DELIVERED");')
+    text = replace_once(text,
         '    data = spice_msg_in_raw(in, &len);\n'
         '    while (len > 0) {\n'
         '        main_handle_agent_data_msg(channel, &len, &data);\n'
