@@ -86,6 +86,7 @@ def observe(listener, context, stop, observations):
                     if first:
                         observations["plaintext"] = True
                     continue
+                observations["tls_started"] += 1
                 with context.wrap_socket(peer, server_side=True) as channel:
                     observations["handshakes"] += 1
                     data = bytearray()
@@ -98,8 +99,14 @@ def observe(listener, context, stop, observations):
                         observations["application_data"] = True
                     if bytes(data) == b"REDQ":
                         observations["link_header"] = True
-            except (ssl.SSLError, OSError):
-                # The client is expected to close on certificate rejection.
+            except ssl.SSLError as error:
+                # Only record fixed certificate-alert categories, not raw peer
+                # content or OpenSSL exception text.
+                if error.reason in ("TLSV1_ALERT_UNKNOWN_CA", "SSLV3_ALERT_BAD_CERTIFICATE",
+                                    "SSLV3_ALERT_CERTIFICATE_UNKNOWN", "SSLV3_ALERT_CERTIFICATE_EXPIRED"):
+                    observations["certificate_alerts"] += 1
+                continue
+            except OSError:
                 continue
 
 
@@ -127,6 +134,7 @@ def observe_proxy(listener, target, stop, observations, forward):
             observations["connections"] += 1
             if not forward:
                 continue
+            established = False
             try:
                 if address[0] != "127.0.0.1":
                     raise ValueError("non-loopback proxy peer")
@@ -143,6 +151,7 @@ def observe_proxy(listener, target, stop, observations, forward):
                 with socket.create_connection(("127.0.0.1", target), timeout=3) as upstream:
                     peer.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                     observations["tunnels"] += 1
+                    established = True
                     deadline = time.monotonic() + 8
                     transferred = 0
                     while time.monotonic() < deadline and not stop.is_set():
@@ -158,14 +167,44 @@ def observe_proxy(listener, target, stop, observations, forward):
                         else:
                             continue
                         break
+            except (ConnectionResetError, BrokenPipeError):
+                # TLS certificate rejection can close a successfully
+                # established tunnel while the relay is forwarding an alert.
+                # A reset before the 200 response is still a CONNECT failure.
+                observations["relay_resets" if established else "errors"] += 1
             except (ValueError, OSError):
                 observations["errors"] += 1
+
+
+def assert_proxy_observations(name, proxy_observations, observations, expect_link, client_markers):
+    if proxy_observations["decoy"]["connections"]:
+        raise AssertionError(f"{name}: inherited proxy received a connection")
+    if "explicit" not in proxy_observations:
+        return
+    stats = proxy_observations["explicit"]
+    if not stats["tunnels"] or stats["errors"] or stats["tunnels"] != stats["connections"]:
+        raise AssertionError(f"{name}: explicit CONNECT tunnel not established")
+    if observations["connections"] != stats["tunnels"]:
+        raise AssertionError(f"{name}: unexpected direct connection bypass")
+    if observations["tls_started"] != stats["tunnels"]:
+        raise AssertionError(f"{name}: CONNECT did not carry TLS to backend")
+    if expect_link:
+        if stats["relay_resets"]:
+            raise AssertionError(f"{name}: unexpected reset in trusted tunnel")
+    else:
+        # A reset alone is not evidence of certificate rejection. Require
+        # either the app's typed TLS failure or an actual TLS certificate
+        # alert observed by the backend, in addition to no SPICE bytes.
+        if ("MRV_TLS_PROBE_REJECTED_TLS" not in client_markers and
+                not observations["certificate_alerts"]):
+            raise AssertionError(f"{name}: no explicit certificate rejection evidence")
 
 
 def test_case(app, root, context, name, ca, subject, expect_link, injected_env=None,
               proxy_mode=None):
     observations = dict(connections=0, handshakes=0, plaintext=False,
-                        application_data=False, link_header=False)
+                        application_data=False, link_header=False,
+                        tls_started=0, certificate_alerts=0)
     stop = threading.Event()
     with ExitStack() as stack:
         listener = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
@@ -185,7 +224,7 @@ def test_case(app, root, context, name, ca, subject, expect_link, injected_env=N
                 proxy_listener.bind(("127.0.0.1", 0))
                 proxy_listener.listen(8)
                 url = f"http://127.0.0.1:{proxy_listener.getsockname()[1]}"
-                stats = dict(connections=0, tunnels=0, errors=0)
+                stats = dict(connections=0, tunnels=0, errors=0, relay_resets=0)
                 proxy_observations[role] = stats
                 proxy_thread = threading.Thread(target=observe_proxy,
                     args=(proxy_listener, target, stop, stats, role == "explicit"), daemon=True)
@@ -226,20 +265,17 @@ def test_case(app, root, context, name, ca, subject, expect_link, injected_env=N
         if thread.is_alive() or any(t.is_alive() for t in proxy_threads):
             raise AssertionError(f"{name}: fixture failed to stop")
         markers = {"MRV_TLS_PROBE_REJECTED_TLS", "MRV_TLS_PROBE_TERMINAL"}
-        if result.returncode != 0 or not markers.intersection(result.stdout.splitlines()):
+        client_markers = markers.intersection(result.stdout.splitlines())
+        # Emit bounded counters even when a gate fails; never print raw
+        # request headers, certificates, tickets or subprocess diagnostics.
+        print(f"{name}: {observations}, client_markers={sorted(client_markers)}", flush=True)
+        if proxy_mode is not None:
+            print(f"{name}: proxy observations={proxy_observations}", flush=True)
+        if result.returncode != 0 or not client_markers:
             raise AssertionError(f"{name}: client probe failed (exit={result.returncode})")
         assert_observations(name, observations, expect_link)
         if proxy_mode is not None:
-            if proxy_observations["decoy"]["connections"]:
-                raise AssertionError(f"{name}: inherited proxy received a connection")
-            if proxy_mode == "explicit":
-                stats = proxy_observations["explicit"]
-                if not stats["tunnels"] or stats["errors"] or stats["tunnels"] != stats["connections"]:
-                    raise AssertionError(f"{name}: explicit CONNECT tunnel not established")
-                if observations["connections"] != stats["tunnels"]:
-                    raise AssertionError(f"{name}: unexpected direct connection bypass")
-            print(f"{name}: proxy observations={proxy_observations}", flush=True)
-        print(f"{name}: {observations}", flush=True)
+            assert_proxy_observations(name, proxy_observations, observations, expect_link, client_markers)
 
 
 def main():

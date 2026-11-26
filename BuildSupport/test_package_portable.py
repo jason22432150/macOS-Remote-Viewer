@@ -59,6 +59,39 @@ AGENT_SPEC.loader.exec_module(agent_fixture)
 
 
 class PortablePackagingTests(unittest.TestCase):
+    def test_proxy_certificate_rejection_requires_established_tunnel_and_tls_evidence(self):
+        def stats(**overrides):
+            return {"decoy": {"connections": 0},
+                    "explicit": dict(dict(connections=1, tunnels=1, errors=0, relay_resets=1), **overrides)}
+
+        observed = dict(connections=1, handshakes=0, tls_started=1,
+                        certificate_alerts=1, plaintext=False,
+                        application_data=False, link_header=False)
+        generic = {"MRV_TLS_PROBE_TERMINAL"}
+        typed = {"MRV_TLS_PROBE_REJECTED_TLS"}
+        tls_fixture.assert_observations("wrong-ca", observed, False)
+        tls_fixture.assert_proxy_observations("wrong-ca", stats(), observed, False, generic)
+        no_alert = dict(observed, certificate_alerts=0)
+        tls_fixture.assert_proxy_observations("wrong-ca", stats(), no_alert, False, typed)
+        for bad_stats, bad_observed, markers in (
+            (stats(tunnels=0), observed, typed),
+            (stats(errors=1), observed, typed),
+            (stats(), dict(observed, tls_started=0), typed),
+            (stats(), dict(observed, connections=2), typed),
+            (stats(), no_alert, generic),
+            (dict(stats(), decoy={"connections": 1}), observed, typed),
+        ):
+            with self.assertRaises(AssertionError):
+                tls_fixture.assert_proxy_observations("wrong-ca", bad_stats, bad_observed, False, markers)
+        with self.assertRaises(AssertionError):
+            tls_fixture.assert_observations("wrong-ca", dict(observed, application_data=True), False)
+        trusted = dict(observed, handshakes=1, certificate_alerts=0,
+                       application_data=True, link_header=True)
+        tls_fixture.assert_observations("trusted", trusted, True)
+        tls_fixture.assert_proxy_observations("trusted", stats(relay_resets=0), trusted, True, generic)
+        with self.assertRaises(AssertionError):
+            tls_fixture.assert_proxy_observations("trusted", stats(), trusted, True, generic)
+
     def test_agent_relay_mini_frame_stream_boundaries(self):
         import struct
 
