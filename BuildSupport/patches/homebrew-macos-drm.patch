@@ -1,0 +1,31 @@
+diff --git a/src/channel-display.c b/src/channel-display.c
+index ae0a459a99df4aa1e92e5787e0a2a9e60417e9e7..22c875615421e5781bb03404594cc35e6dddda9c 100644
+--- a/src/channel-display.c
++++ b/src/channel-display.c
+@@ -21,7 +21,7 @@
+ #endif
+ #include <glib/gi18n-lib.h>
+ 
+-#ifdef G_OS_UNIX
++#if defined(G_OS_UNIX) && !__APPLE__
+ #include <drm/drm_fourcc.h>
+ #endif
+ 
+@@ -2109,7 +2109,7 @@ static void display_handle_monitors_config(SpiceChannel *channel, SpiceMsgIn *in
+ }
+ 
+ 
+-#ifdef G_OS_UNIX
++#if defined(G_OS_UNIX) && !__APPLE__
+ /* coroutine context */
+ static void display_handle_gl_scanout_unix(SpiceChannel *channel, SpiceMsgIn *in)
+ {
+@@ -2275,7 +2275,7 @@ static void channel_set_handlers(SpiceChannelClass *klass)
+         [ SPICE_MSG_DISPLAY_SURFACE_DESTROY ]    = display_handle_surface_destroy,
+ 
+         [ SPICE_MSG_DISPLAY_MONITORS_CONFIG ]    = display_handle_monitors_config,
+-#ifdef G_OS_UNIX
++#if defined(G_OS_UNIX) && !__APPLE__
+         [ SPICE_MSG_DISPLAY_GL_SCANOUT_UNIX ]    = display_handle_gl_scanout_unix,
+         [ SPICE_MSG_DISPLAY_GL_SCANOUT2_UNIX ]   = display_handle_gl_scanout2_unix,
+ #endif

@@ -12,9 +12,7 @@ import shutil
 import subprocess
 import tarfile
 import tomllib
-import urllib.request
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 SPICE_CLIENT_DYLIB = "libspice-client-glib-2.0.8.dylib"
@@ -36,23 +34,11 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def fetch_patch(url, digest):
-    def check(value):
-        parts = urlsplit(value)
-        if (parts.scheme != "https" or parts.hostname != "gitlab.freedesktop.org"
-                or parts.username or parts.password or parts.port not in (None, 443)):
-            raise ValueError("unexpected downstream patch URL")
-
-    class RestrictedRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            check(newurl)
-            return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-    check(url)
-    with urllib.request.build_opener(RestrictedRedirect()).open(url, timeout=30) as response:
-        check(response.geturl())
-        data = response.read(2 * 1024 * 1024 + 1)
-    if len(data) > 2 * 1024 * 1024 or sha(data) != digest:
+def read_locked_patch(path, digest):
+    """Read the exact audited downstream patch; never trust mutable network content."""
+    with path.open("rb") as handle:
+        data = handle.read(2 * 1024 * 1024 + 1)
+    if len(data) > 2 * 1024 * 1024 or not re.fullmatch(r"[0-9a-f]{64}", digest) or sha(data) != digest:
         raise ValueError("downstream patch checksum/size mismatch")
     return data
 
@@ -162,7 +148,8 @@ def main():
             or "-#!/usr/bin/python3" not in formula_text
             or "+#!/usr/bin/env python3" not in formula_text):
         raise ValueError("installed formula downstream patch evidence differs")
-    downstream = fetch_patch(lock["macos_patch_url"], lock["macos_patch_sha256"])
+    downstream = read_locked_patch(HERE / "patches" / "homebrew-macos-drm.patch", lock["macos_patch_sha256"])
+    print("Verified vendored Homebrew macOS DRM patch:", lock["macos_patch_sha256"], flush=True)
     (evidence / "homebrew-macos-drm.patch").write_bytes(downstream)
     candidate = evidence / "receive-limits-candidate.patch"
     run("/usr/bin/patch", "-p1", "-F", "0", "-i", candidate, cwd=source)
