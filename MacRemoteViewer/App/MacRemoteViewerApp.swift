@@ -206,6 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackSpiceWorkspaceProbe(files: arguments[(index + 1)...].map {
                 URL(fileURLWithPath: $0)
             })
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-handshake-stall-probe") {
+            guard arguments.count == index + 3 else { Darwin.exit(2) }
+            runLoopbackHandshakeStallProbe(files: arguments[(index + 1)...].map {
+                URL(fileURLWithPath: $0)
+            })
         } else if let index = arguments.firstIndex(of: "--loopback-spice-network-fault-probe") {
             guard arguments.count == index + 5 else { Darwin.exit(2) }
             runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
@@ -1736,6 +1741,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 resizeCanvas?.prepareForRemoval()
                 resizeWindow?.orderOut(nil)
                 print("MRV_SPICE_AGENT_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
+    private func runLoopbackHandshakeStallProbe(files: [URL]) {
+        Task { @MainActor in
+            let engine = SpiceEngineAdapter()
+            let controller = SessionController(engine: engine,
+                connectionTimeout: .seconds(8), displayTimeout: .zero)
+            controller.setClipboardSharingEnabled(false)
+            do {
+                let profiles = try files.map { file in
+                    let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                    let profile = try VVParser().parse(data: data)
+                    guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                          profile.ticket.value == "mrv-ci-synthetic-ticket",
+                          !profile.deleteSourceFile else { throw SessionError.cancelled }
+                    return profile
+                }
+                guard profiles.count == 2, profiles[0].tlsPort != profiles[1].tlsPort,
+                      model.sessions.isEmpty else { throw SessionError.cancelled }
+                let start = ContinuousClock.now
+                controller.open(profiles[0])
+                let deadline = start + .seconds(12)
+                while controller.state == .connecting && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                let duration = start.duration(to: ContinuousClock.now)
+                guard case .failed(.network) = controller.state,
+                      duration >= .milliseconds(7500), duration < .seconds(12),
+                      controller.displaySize == nil, !controller.hasRenderedFrame,
+                      !controller.agent.isConnected,
+                      engine.lastNativeCredentialCleanupSucceeded == true else {
+                    throw SessionError.cancelled
+                }
+                let elapsed = duration.components
+                let ms = Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
+                print("MRV_HANDSHAKE_STALL_TIMEOUT_OK elapsed-ms=\(ms)")
+                fflush(nil)
+                // Reuse the same controller/adapter: old callbacks must not
+                // alter the new authenticated connection.
+                controller.open(profiles[1])
+                let recoveryDeadline = ContinuousClock.now + .seconds(10)
+                while controller.state == .connecting && ContinuousClock.now < recoveryDeadline {
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                guard controller.state == .connected else { throw SessionError.network }
+                // Cross the old connection's timeout window while the new
+                // main channel stays authenticated, with no display required.
+                let stableUntil = ContinuousClock.now + .seconds(9)
+                while ContinuousClock.now < stableUntil {
+                    guard controller.state == .connected else { throw SessionError.network }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                controller.cancel()
+                guard controller.state == .disconnected,
+                      engine.lastNativeCredentialCleanupSucceeded == true,
+                      model.sessions.isEmpty else { throw SessionError.cancelled }
+                print("MRV_HANDSHAKE_STALL_RECONNECT_OK stable-seconds=9")
+                print("MRV_HANDSHAKE_STALL_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                controller.cancel()
+                print("MRV_HANDSHAKE_STALL_FAILED")
                 fflush(nil)
                 Darwin.exit(1)
             }

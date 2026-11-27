@@ -552,6 +552,96 @@ def run_network_fault_client(command, root, env, victim):
                                        stderr_path.read_text(errors="replace"))
 
 
+def test_handshake_stall(app, root, fixture):
+    """Accept TCP and a TLS ClientHello, but never send a response or FIN."""
+    log = root / "handshake-stall-healthy.log"
+    with socket.socket() as silent, socket.socket() as reservation, log.open("wb") as output:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(4)
+        silent.settimeout(12)
+        reservation.bind(("127.0.0.1", 0))
+        healthy_port = reservation.getsockname()[1]
+        reservation.close()
+        healthy = subprocess.Popen([
+            str(fixture), str(healthy_port), str(root / "trusted.pem"),
+            str(root / "server.pem"), str(root / "server.key"), tls.TICKET,
+        ], stdout=output, stderr=subprocess.STDOUT)
+        client = None
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if healthy.poll() is not None:
+                    raise AssertionError("handshake stall: healthy fixture exited")
+                if "READY" in log.read_text(errors="replace").splitlines():
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("handshake stall: healthy fixture not ready")
+            profiles = []
+            for name, port in (("silent", silent.getsockname()[1]), ("healthy", healthy_port)):
+                path = root / f"handshake-stall-{name}.vv"
+                path.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
+                profiles.append(path)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
+            for key in list(env):
+                if key.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "spice_proxy"):
+                    env.pop(key)
+            env["NO_PROXY"] = "127.0.0.1"
+            env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+            env["GST_REGISTRY"] = str(root / "gst-registry.bin")
+            env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
+            exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+            client = subprocess.Popen([str(exe), "--loopback-spice-handshake-stall-probe", *map(str, profiles)],
+                                      cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True)
+            peer, address = silent.accept()
+            with peer:
+                peer.settimeout(4)
+                first = peer.recv(1)
+                if address[0] != "127.0.0.1" or first != b"\x16":
+                    raise AssertionError("handshake stall: missing TLS record")
+                # Keep the accepted socket open without replying until the
+                # client's deadline and healthy reconnect have both elapsed.
+                print("MRV_HANDSHAKE_STALL_TLS_SILENCE", flush=True)
+                stdout, stderr = client.communicate(timeout=35)
+                print(stdout[-6000:], flush=True)
+                print(stderr[-6000:], flush=True)
+                lines = stdout.splitlines()
+                markers = [line for line in lines if line.startswith("MRV_HANDSHAKE_STALL_")]
+                if client.returncode or len(markers) != 3:
+                    raise AssertionError("handshake stall: failed timeout/reconnect")
+                timing = re.fullmatch(r"MRV_HANDSHAKE_STALL_TIMEOUT_OK elapsed-ms=(\d+)", markers[0])
+                if not timing or not 7500 <= int(timing.group(1)) < 12000 or markers[1:] != [
+                        "MRV_HANDSHAKE_STALL_RECONNECT_OK stable-seconds=9", "MRV_HANDSHAKE_STALL_OK"]:
+                    raise AssertionError("handshake stall: incorrect timeout or recovery markers")
+                # Drain only bounded handshake bytes; require the client-side
+                # close instead of closing the silent peer ourselves first.
+                total = 1
+                while total <= 65536:
+                    chunk = peer.recv(4096)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                else:
+                    raise AssertionError("handshake stall: excessive TLS data")
+                print("MRV_HANDSHAKE_STALL_PEER_CLOSED", flush=True)
+        finally:
+            if client is not None and client.poll() is None:
+                client.kill()
+                client.communicate(timeout=5)
+            if healthy.poll() is None:
+                healthy.terminate()
+            try:
+                healthy.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                healthy.kill()
+                healthy.wait(timeout=5)
+            print(log.read_text(errors="replace")[-4000:], flush=True)
+        lines = log.read_text(errors="replace").splitlines()
+        if healthy.returncode != 0 or lines.count("MAIN_INITIALIZED tls=1") != 1:
+            raise AssertionError("handshake stall: no authenticated healthy reconnect")
+
+
 def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False, network_fault=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
@@ -979,6 +1069,11 @@ def main():
         except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             failures.append(f"network-fault: {exc}")
             print(f"MRV_NETWORK_FAULT_FAILURE {exc}", flush=True)
+        try:
+            test_handshake_stall(args.app.resolve(), root, fixture)
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"handshake-stall: {exc}")
+            print(f"MRV_HANDSHAKE_STALL_FAILURE {exc}", flush=True)
         # The 4K fixture has a deliberately larger QXL memslot. Do not
         # change ordinary server memory/worker release behavior or run it
         # ahead of the existing multi-session regressions.
