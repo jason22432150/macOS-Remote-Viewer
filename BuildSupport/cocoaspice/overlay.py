@@ -2167,6 +2167,159 @@ def overlay_canvas_upload_recovery(checkout: Path) -> None:
     ])
 
 
+def overlay_metal_publication_mailbox(checkout: Path) -> None:
+    """Coalesce callback-free source snapshots; preserve completion barriers."""
+    root = checkout / "Sources" / "CocoaSpiceRenderer"
+    _replace_once(root / "include" / "CSMetalRenderer.h", [
+        ("/// Modify upscaler and downscaler settings",
+         "/// Integration-only mailbox burst test on an isolated renderer.\n"
+         "- (BOOL)mrvVerifyPublicationMailbox NS_SWIFT_NAME(mrvVerifyPublicationMailbox());\n\n"
+         "/// Modify upscaler and downscaler settings"),
+    ])
+    _replace_once(root / "CSMetalRenderer.m", [
+        ("@interface CSMetalRenderer ()",
+         """// Access batch fields only under the publication lock.
+@interface _MRVPublication : NSObject
+@property (nonatomic, strong, nullable) const _CSRendererSourceData *source;
+@property (nonatomic) BOOL clearPending;
+@end
+@implementation _MRVPublication @end
+
+// Isolated fixture: never used as a live display or submitted for rendering.
+@interface _MRVPublicationFixture : NSObject<CSRenderSource>
+@property (nonatomic, strong) id<MTLTexture> texture;
+@property (nonatomic, strong) id<MTLBuffer> vertices;
+@end
+@implementation _MRVPublicationFixture
+- (BOOL)isVisible { return YES; }
+- (CGPoint)offset { return CGPointZero; }
+- (NSUInteger)numVertices { return 6; }
+- (BOOL)hasAlpha { return NO; }
+- (BOOL)isInverted { return NO; }
+- (id<CSRenderSource>)cursorSource { return nil; }
+@end
+
+@interface CSMetalRenderer ()
+@property (nonatomic, strong) NSLock *mrvPublicationLock;
+@property (nonatomic, strong, nullable) _MRVPublication *mrvPendingPublication;
+- (void)mrvPublishSource:(nullable const _CSRendererSourceData *)source
+                   clear:(BOOL)clear;"""),
+        ("""        _renderCompletions = [NSMutableArray array];""",
+         """        _renderCompletions = [NSMutableArray array];
+        _mrvPublicationLock = [[NSLock alloc] init];"""),
+        ("""    dispatch_async(dispatch_get_main_queue(), ^{
+        self.renderSourceData = sourceData;
+        self.renderNeedsUpdate = YES;
+    });
+}
+
+- (void)invalidateRenderSource:""",
+         """    [self mrvPublishSource:sourceData clear:NO];
+}
+
+- (void)invalidateRenderSource:"""),
+        ("""    dispatch_async(dispatch_get_main_queue(), ^{
+        if (completion) {
+            [self _addDrawCompletion:completion];
+        }
+        self.renderSourceData = sourceData;
+        self.renderNeedsUpdate = YES;
+    });
+}
+
+- (void)disableRender {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // 先放掉等待中的 copyBuffer completion，再清畫面狀態。
+        [self _completeDraw];
+        self.renderSourceData = nil;
+        self.renderNeedsUpdate = NO;
+    });
+}""",
+         """    if (!completion) {
+        [self mrvPublishSource:sourceData clear:NO];
+        return;
+    }
+    // Legacy completion-bearing updates are explicit ordering barriers:
+    // seal the preceding batch, then enqueue the original callback.
+    [self.mrvPublicationLock lock];
+    self.mrvPendingPublication = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self _addDrawCompletion:completion];
+        self.renderSourceData = sourceData;
+        self.renderNeedsUpdate = YES;
+    });
+    [self.mrvPublicationLock unlock];
+}
+
+- (void)mrvPublishSource:(const _CSRendererSourceData *)source clear:(BOOL)clear {
+    [self.mrvPublicationLock lock];
+    _MRVPublication *batch = self.mrvPendingPublication;
+    if (batch) {
+        batch.source = source;
+        batch.clearPending |= clear;
+        [self.mrvPublicationLock unlock];
+        return;
+    }
+    batch = [_MRVPublication new];
+    batch.source = source;
+    batch.clearPending = clear;
+    self.mrvPendingPublication = batch;
+    // Schedule while locked so a completion-bearing barrier cannot overtake
+    // this batch. The dispatched block never calls user code under the lock.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.mrvPublicationLock lock];
+        const _CSRendererSourceData *latest = batch.source;
+        BOOL needsClear = batch.clearPending;
+        batch.source = nil;
+        if (self.mrvPendingPublication == batch) self.mrvPendingPublication = nil;
+        [self.mrvPublicationLock unlock];
+        if (needsClear) [self _completeDraw];
+        self.renderSourceData = latest;
+        self.renderNeedsUpdate = latest != nil;
+    });
+    [self.mrvPublicationLock unlock];
+}
+
+- (void)disableRender {
+    [self mrvPublishSource:nil clear:YES];
+}
+
+- (BOOL)mrvVerifyPublicationMailbox {
+    if (![NSThread isMainThread] ||
+        ![[[NSProcessInfo processInfo] environment][@"MRV_ENABLE_INTEGRATION_PROBES"] isEqualToString:@"1"] ||
+        self.mrvPendingPublication || self.renderSourceData) return NO;
+    _MRVPublicationFixture *fixture = [_MRVPublicationFixture new];
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                  width:2 height:2 mipmapped:NO];
+    fixture.texture = [self.device newTextureWithDescriptor:desc];
+    fixture.vertices = [self.device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    if (!fixture.texture || !fixture.vertices) return NO;
+    __weak const _CSRendererSourceData *first;
+    @autoreleasepool {
+        [self invalidateRenderSource:fixture withCompletion:nil];
+        first = self.mrvPendingPublication.source;
+    }
+    _MRVPublication *batch = self.mrvPendingPublication;
+    if (!batch || !first) return NO;
+    // No yield of the main thread: the queued drain cannot run yet.
+    for (NSUInteger index = 0; index < 512; index++) {
+        @autoreleasepool {
+            [self invalidateRenderSource:fixture withCompletion:nil];
+            if (self.mrvPendingPublication != batch || !batch.source) return NO;
+        }
+    }
+    if (first != nil) return NO;
+    [self disableRender];
+    if (self.mrvPendingPublication != batch || batch.source || !batch.clearPending) return NO;
+    [self invalidateRenderSource:fixture withCompletion:nil];
+    if (self.mrvPendingPublication != batch || !batch.source || !batch.clearPending) return NO;
+    // Leave the isolated renderer cleared before starting the scanout test.
+    [self disableRender];
+    return self.mrvPendingPublication == batch && !batch.source && batch.clearPending;
+}"""),
+    ])
+
+
 def overlay_metal_draw_failure_recovery(checkout: Path) -> None:
     """Do not present an unencoded draw; retry failed current presentations."""
     root = checkout / "Sources" / "CocoaSpiceRenderer"
@@ -2784,6 +2937,7 @@ def main() -> None:
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
     overlay_metal_draw_failure_recovery(checkout)
+    overlay_metal_publication_mailbox(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)

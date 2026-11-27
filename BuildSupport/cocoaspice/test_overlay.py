@@ -23,6 +23,7 @@ from overlay import (
     overlay_metal_frame_observation,
     overlay_metal_pixel_probe,
     overlay_metal_draw_failure_recovery,
+    overlay_metal_publication_mailbox,
     overlay_canvas_upload_recovery,
     overlay_cursor_texture_ownership,
     overlay_package_swift,
@@ -676,6 +677,51 @@ static void cs_channel_new(void) {}
             self.assertIn("[CSMain.sharedInstance asyncWith:^{ finish(success); }];", result)
             self.assertIn("self.canvasUploadValid = YES;\n        self.canvasRetryAvailable = YES;\n        [self invalidate];", result)
             self.assertNotIn("[self copyBuffer:submittedBuffer", result)
+
+    def test_publication_mailbox_coalesces_and_preserves_barriers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpiceRenderer"
+            header = source / "include" / "CSMetalRenderer.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("/// Modify upscaler and downscaler settings")
+            impl = source / "CSMetalRenderer.m"
+            impl.write_text("""@interface CSMetalRenderer ()
+        _renderCompletions = [NSMutableArray array];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.renderSourceData = sourceData;
+        self.renderNeedsUpdate = YES;
+    });
+}
+
+- (void)invalidateRenderSource:
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (completion) {
+            [self _addDrawCompletion:completion];
+        }
+        self.renderSourceData = sourceData;
+        self.renderNeedsUpdate = YES;
+    });
+}
+
+- (void)disableRender {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // 先放掉等待中的 copyBuffer completion，再清畫面狀態。
+        [self _completeDraw];
+        self.renderSourceData = nil;
+        self.renderNeedsUpdate = NO;
+    });
+}
+""")
+            overlay_metal_publication_mailbox(root)
+            result = impl.read_text()
+            self.assertIn("batch.source = source;", result)
+            self.assertIn("batch.clearPending |= clear;", result)
+            self.assertIn("if (self.mrvPendingPublication == batch) self.mrvPendingPublication = nil;", result)
+            self.assertIn("if (needsClear) [self _completeDraw];", result)
+            self.assertIn("self.mrvPendingPublication = nil;\n    dispatch_async", result)
+            self.assertIn("if (first != nil) return NO;", result)
+            self.assertIn("mrvVerifyPublicationMailbox()", header.read_text())
 
     def test_metal_draw_failure_does_not_present_or_resurrect_source(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

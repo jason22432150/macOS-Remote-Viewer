@@ -893,6 +893,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let replacementView = MTKView(frame: view.frame, device: device)
                 replacementView.isPaused = true
                 let replacement = CSMetalRenderer(metalKitView: replacementView)
+                guard replacement.mrvVerifyPublicationMailbox() else { throw SessionError.cancelled }
+                // Drain the isolated mailbox before it is used by scanout.
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.main.async { continuation.resume() }
+                }
+                print("MRV_RENDER_PUBLICATION_MAILBOX_OK updates=512")
                 var window: NSWindow?
                 if presentDrawable {
                     let frame = CGRect(x: 0, y: 0, width: 256, height: 256)

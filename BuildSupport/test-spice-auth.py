@@ -747,6 +747,8 @@ def test_scanout_runtime(app, root, drawable=False):
                                  "MRV_SCANOUT_DRAWABLE_PARTIAL_PRIVATE_OK",
                                  "MRV_SCANOUT_DRAWABLE_REFRESH_OK"]
     actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_SCANOUT_")]
+    if result.stdout.splitlines().count("MRV_RENDER_PUBLICATION_MAILBOX_OK updates=512") != 1:
+        raise AssertionError("scanout runtime: missing publication mailbox gate")
     if result.stdout.splitlines().count("MRV_CURSOR_TEXTURE_LIFETIME_OK") != 1:
         raise AssertionError("scanout runtime: missing cursor texture ownership gate")
     if result.returncode != 0 or actual != expected:
