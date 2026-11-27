@@ -8,6 +8,7 @@ import re
 import shlex
 import socket
 import select
+import signal
 import threading
 import subprocess
 import tempfile
@@ -554,6 +555,93 @@ def run_network_fault_client(command, root, env, victim):
     return subprocess.CompletedProcess(command, client.returncode,
                                        stdout_path.read_text(errors="replace"),
                                        stderr_path.read_text(errors="replace"))
+
+
+def test_ticket_expiry(app, root, fixture):
+    """Expire a matching ticket, rotate the same server, explicitly reopen."""
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    old = root / "expiry-old.vv"
+    fresh = root / "expiry-fresh.vv"
+    old.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
+    log = root / "ticket-expiry-server.log"
+    out = root / "ticket-expiry-client.out"
+    err = root / "ticket-expiry-client.err"
+    with log.open("wb") as output, out.open("wb") as stdout, err.open("wb") as stderr:
+        server = subprocess.Popen([str(fixture), str(port), str(root / "trusted.pem"),
+                                   str(root / "server.pem"), str(root / "server.key"),
+                                   tls.TICKET, "ticket-expiry"], stdout=output, stderr=subprocess.STDOUT)
+        client = None
+
+        def wait_marker(path, marker, seconds):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                if server.poll() is not None or (client is not None and client.poll() is not None):
+                    raise AssertionError("ticket expiry: premature process exit")
+                if marker in path.read_text(errors="replace").splitlines():
+                    return
+                time.sleep(0.05)
+            raise AssertionError(f"ticket expiry: missing {marker}")
+
+        try:
+            wait_marker(log, "READY", 10)
+            if "TICKET_EXPIRY_ARMED ttl=2" not in log.read_text().splitlines():
+                raise AssertionError("ticket expiry: fixture did not arm expiry")
+            # Beyond actual expiry, including wall-clock granularity.
+            time.sleep(4)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
+            for key in list(env):
+                if key.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "spice_proxy"):
+                    env.pop(key)
+            env.update(NO_PROXY="127.0.0.1", PATH="/usr/bin:/bin:/usr/sbin:/sbin",
+                       GST_REGISTRY=str(root / "gst-registry.bin"), MRV_ENABLE_INTEGRATION_PROBES="1",
+                       MRV_GLIB_TRACE="1")
+            exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+            client = subprocess.Popen([str(exe), "--loopback-spice-ticket-expiry-probe", str(old), str(fresh)],
+                                      cwd=root, env=env, stdout=stdout, stderr=stderr)
+            wait_marker(out, "MRV_TICKET_EXPIRY_REJECTED", 15)
+            wait_marker(out, "MRV_TICKET_EXPIRY_NO_RETRY seconds=3", 8)
+            if "MAIN_INITIALIZED tls=1" in log.read_text().splitlines():
+                raise AssertionError("ticket expiry: expired ticket authenticated")
+            before = [line for line in err.read_text(errors="replace").splitlines()
+                      if line.startswith("MRV_CONN_CONNECT session=")]
+            if len(before) != 1:
+                raise AssertionError("ticket expiry: unexpected automatic retry")
+            server.send_signal(signal.SIGUSR1)
+            wait_marker(log, "TICKET_ROTATED ok=1", 5)
+            staging = root / "expiry-fresh.tmp"
+            staging.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT).replace(
+                "password=" + tls.TICKET + "\n", "password=mrv-ci-fresh-ticket\n"))
+            staging.replace(fresh)
+            client.wait(timeout=20)
+        finally:
+            if client is not None and client.poll() is None:
+                client.kill()
+                client.wait(timeout=5)
+            if server.poll() is None:
+                server.terminate()
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=5)
+            for path in (out, err, log):
+                contents = path.read_text(errors="replace")
+                if any(ticket in contents for ticket in (tls.TICKET, "mrv-ci-fresh-ticket")):
+                    raise AssertionError("ticket expiry: credential in diagnostic output")
+                print(contents[-6000:], flush=True)
+        markers = [line for line in out.read_text().splitlines() if line.startswith("MRV_TICKET_EXPIRY_")]
+        if client.returncode or markers != ["MRV_TICKET_EXPIRY_REJECTED",
+                "MRV_TICKET_EXPIRY_NO_RETRY seconds=3", "MRV_TICKET_EXPIRY_FRESH_OK",
+                "MRV_TICKET_EXPIRY_OK"]:
+            raise AssertionError("ticket expiry: incomplete client recovery")
+        lines = log.read_text().splitlines()
+        connects = [line for line in err.read_text().splitlines() if line.startswith("MRV_CONN_CONNECT session=")]
+        if (server.returncode != 0 or len(connects) != 2 or
+                lines.count("TICKET_ROTATED ok=1") != 1 or lines.count("MAIN_INITIALIZED tls=1") != 1 or
+                lines.index("TICKET_ROTATED ok=1") >= lines.index("MAIN_INITIALIZED tls=1")):
+            raise AssertionError("ticket expiry: unexpected connection or rotation evidence")
 
 
 def test_handshake_stall(app, root, fixture):
@@ -1241,6 +1329,7 @@ def main():
                   require_credential_wipe=args.require_credential_wipe)
         test_case(args.app.resolve(), root, fixture, "wrong-ticket", "mrv-ci-other-ticket", False,
                   require_credential_wipe=args.require_credential_wipe)
+        test_ticket_expiry(args.app.resolve(), root, fixture)
         test_case(args.app.resolve(), root, fixture, "display", tls.TICKET, True, display=True)
         test_case(args.app.resolve(), root, fixture, "partial", tls.TICKET, True, display=True, partial=True)
         test_case(args.app.resolve(), root, fixture, "agent-full", tls.TICKET, True, agent="full")

@@ -125,6 +125,14 @@ static gboolean quit_loop(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 
+/* Explicit test-only ticket rotation on the fixture's GLib owner thread. */
+static gboolean rotate_test_ticket(gpointer data) {
+    int result = spice_server_set_ticket(data, "mrv-ci-fresh-ticket", 180, 0, 0);
+    printf("TICKET_ROTATED ok=%d\n", result == 0);
+    fflush(stdout);
+    return G_SOURCE_CONTINUE;
+}
+
 /* Fixed test-only CPU framebuffer. Never expose guest or host desktop memory. */
 enum { WIDTH = 640, HEIGHT = 480, RESIZE_W = 1024, RESIZE_H = 768, DRAW_SLOTS = 16, PATCH_W = 160, PATCH_H = 120 };
 #ifdef MRV_4K_STRESS_FIXTURE
@@ -770,6 +778,7 @@ static int setup_agent(SpiceServer *server) {
 
 int main(int argc, char **argv) {
     if (argc < 6 || argc > 9) return 2;
+    gboolean ticket_expiry = argc == 7 && strcmp(argv[6], "ticket-expiry") == 0;
     partial_updates = argc == 7 && strcmp(argv[6], "partial") == 0;
     gboolean workspace = argc == 8 && strcmp(argv[6], "workspace") == 0;
     agent_late = argc == 9 && strcmp(argv[6], "agent-clipboard-late") == 0;
@@ -821,7 +830,7 @@ int main(int argc, char **argv) {
         agent_stress ||
 #endif
         agent_resize || strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
-    if (argc >= 7 && !with_display && !with_agent) return 2;
+    if (argc >= 7 && !with_display && !with_agent && !ticket_expiry) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;
         palette_index = (unsigned)(argv[7][0] - '0');
@@ -832,7 +841,7 @@ int main(int argc, char **argv) {
     if (!server) return 1;
     spice_server_set_addr(server, "127.0.0.1", SPICE_ADDR_FLAG_IPV4_ONLY);
     if (spice_server_set_tls(server, port, argv[2], argv[3], argv[4], NULL, NULL, NULL) ||
-        spice_server_set_ticket(server, argv[5], workspace ? 600 : 180, 0, 0) ||
+        spice_server_set_ticket(server, argv[5], ticket_expiry ? 2 : workspace ? 600 : 180, 0, 0) ||
         spice_server_set_channel_security(server, NULL, SPICE_CHANNEL_SECURITY_SSL) ||
         spice_server_init(server, &core)) {
         fprintf(stderr, "SPICE fixture initialization failed\n");
@@ -850,6 +859,11 @@ int main(int argc, char **argv) {
     if (with_agent && !with_display) spice_server_vm_start(server);
     GMainLoop *loop = g_main_loop_new(NULL, FALSE);
     guint signal_source = g_unix_signal_add(SIGTERM, quit_loop, loop);
+    guint rotate_source = ticket_expiry ? g_unix_signal_add(SIGUSR1, rotate_test_ticket, server) : 0;
+    if (ticket_expiry) {
+        if (!rotate_source) return 1;
+        puts("TICKET_EXPIRY_ARMED ttl=2");
+    }
     guint update_source = with_display ? g_timeout_add(250, update_color, NULL) : 0;
     guint agent_source = with_agent ? g_timeout_add(50, agent_tick, NULL) : 0;
     printf("FIXTURE_QXL_BYTES %zu\n", sizeof(framebuffer));
@@ -857,6 +871,7 @@ int main(int argc, char **argv) {
     fflush(stdout);
     g_main_loop_run(loop);
     g_source_remove(signal_source);
+    if (rotate_source) g_source_remove(rotate_source);
     if (update_source) g_source_remove(update_source);
     if (with_display) {
         // Destroy while running so the worker can flush pending commands.

@@ -206,6 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackSpiceWorkspaceProbe(files: arguments[(index + 1)...].map {
                 URL(fileURLWithPath: $0)
             })
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-ticket-expiry-probe") {
+            guard arguments.count == index + 3 else { Darwin.exit(2) }
+            runLoopbackTicketExpiryProbe(files: arguments[(index + 1)...].map {
+                URL(fileURLWithPath: $0)
+            })
         } else if let index = arguments.firstIndex(of: "--loopback-spice-handshake-stall-probe") {
             guard arguments.count == index + 3 else { Darwin.exit(2) }
             runLoopbackHandshakeStallProbe(files: arguments[(index + 1)...].map {
@@ -1833,6 +1838,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 resizeCanvas?.prepareForRemoval()
                 resizeWindow?.orderOut(nil)
                 print("MRV_SPICE_AGENT_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
+    private func runLoopbackTicketExpiryProbe(files: [URL]) {
+        Task { @MainActor in
+            let engine = SpiceEngineAdapter()
+            let controller = SessionController(engine: engine,
+                connectionTimeout: .seconds(8), displayTimeout: .zero)
+            controller.setClipboardSharingEnabled(false)
+            do {
+                guard files.count == 2, files[0] != files[1], model.sessions.isEmpty,
+                      !FileManager.default.fileExists(atPath: files[1].path) else {
+                    throw SessionError.cancelled
+                }
+                let port = try { () -> UInt16 in
+                    let (data, _) = try FoundationFileAccessor().readIdentified(from: files[0])
+                    let profile = try VVParser().parse(data: data)
+                    guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                          profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile else {
+                        throw SessionError.cancelled
+                    }
+                    controller.open(profile)
+                    return profile.tlsPort
+                }()
+                let deadline = ContinuousClock.now + .seconds(10)
+                while controller.state == .connecting && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                guard case .failed(.authenticationRejected) = controller.state,
+                      engine.lastNativeCredentialCleanupSucceeded == true,
+                      controller.displaySize == nil, !controller.hasRenderedFrame,
+                      !controller.agent.isConnected else { throw SessionError.cancelled }
+                print("MRV_TICKET_EXPIRY_REJECTED")
+                fflush(nil)
+                let quiet = ContinuousClock.now + .seconds(3)
+                while ContinuousClock.now < quiet {
+                    guard case .failed(.authenticationRejected) = controller.state else {
+                        throw SessionError.cancelled
+                    }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                print("MRV_TICKET_EXPIRY_NO_RETRY seconds=3")
+                fflush(nil)
+                let freshDeadline = ContinuousClock.now + .seconds(12)
+                while !FileManager.default.fileExists(atPath: files[1].path) {
+                    guard ContinuousClock.now < freshDeadline else { throw SessionError.cancelled }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                do {
+                    let (data, _) = try FoundationFileAccessor().readIdentified(from: files[1])
+                    let fresh = try VVParser().parse(data: data)
+                    guard fresh.host == "127.0.0.1", fresh.tlsPort == port,
+                          fresh.proxyURL == nil, fresh.ticket.value == "mrv-ci-fresh-ticket",
+                          !fresh.deleteSourceFile else { throw SessionError.cancelled }
+                    controller.open(fresh)
+                }
+                let recover = ContinuousClock.now + .seconds(10)
+                while controller.state == .connecting && ContinuousClock.now < recover {
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                guard controller.state == .connected else { throw SessionError.network }
+                try await Task.sleep(for: .seconds(1))
+                guard controller.state == .connected else { throw SessionError.network }
+                controller.cancel()
+                guard controller.state == .disconnected,
+                      engine.lastNativeCredentialCleanupSucceeded == true,
+                      model.sessions.isEmpty else { throw SessionError.cancelled }
+                print("MRV_TICKET_EXPIRY_FRESH_OK")
+                print("MRV_TICKET_EXPIRY_OK")
+                fflush(nil)
+                Darwin.exit(0)
+            } catch {
+                controller.cancel()
+                print("MRV_TICKET_EXPIRY_FAILED")
                 fflush(nil)
                 Darwin.exit(1)
             }

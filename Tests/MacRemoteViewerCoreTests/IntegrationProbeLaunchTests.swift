@@ -30,6 +30,7 @@ final class IntegrationProbeLaunchTests: XCTestCase {
             ("--loopback-spice-network-fault-probe", ["a.vv", "b.vv", "c.vv", "d.vv"]),
             ("--loopback-spice-relay-stall-probe", ["a.vv", "b.vv", "c.vv", "d.vv"]),
             ("--loopback-spice-handshake-stall-probe", ["a.vv", "b.vv"]),
+            ("--loopback-spice-ticket-expiry-probe", ["a.vv", "b.vv"]),
             ("--loopback-spice-workspace-probe", ["a.vv", "b.vv", "c.vv", "d.vv"]),
         ]
         for (mode, operands) in cases {
