@@ -1649,9 +1649,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try await Task.sleep(for: .milliseconds(100))
                 }
-                // Join the worker so gst_init and the actual registry inspection
-                // finish before this short-lived probe reports success.
-                CSMain.shared.spiceStop()
+                // No live sessions or GPU work in this startup-only probe.
+                // Verify the actual native admission/drain/restart mechanism.
+                guard CSMain.shared.mrvVerifyWorkerLifecycle() else {
+                    throw SessionError.engineUnavailable
+                }
+                print("MRV_WORKER_LIFECYCLE_OK rounds=3 drained=384")
                 if let directory = portableRegistryDirectory {
                     let registry = directory.appendingPathComponent("registry.bin")
                     let attributes = try FileManager.default.attributesOfItem(atPath: registry.path)

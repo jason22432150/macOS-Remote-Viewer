@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from overlay import (
     overlay_csmain,
+    overlay_worker_lifecycle,
     overlay_connection_pve_api,
     overlay_connection_lifecycle,
     overlay_display_initial_frame,
@@ -383,6 +384,24 @@ static void cs_channel_new(void) {}
             self.assertIn("MRV_ENABLE_INTEGRATION_PROBES", handler)
             self.assertIn("MRV_NATIVE_LOG_CANARY_EMITTED", text)
             self.assertNotIn("backtrace_symbols_fd(", text)
+
+    def test_worker_lifecycle_closes_admission_before_draining(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "Sources" / "CocoaSpice" / "CSMain.m"
+            path.parent.mkdir(parents=True)
+            path.write_text(CSMAIN_FIXTURE)
+            overlay_csmain(root)
+            overlay_worker_lifecycle(root)
+            text = path.read_text()
+            stop = text[text.index("- (void)spiceStop {"):text.index("static gboolean callBlockInMainContext")]
+            self.assertLess(stop.index("_acceptingWork = NO"), stop.index("dispatch_group_wait(_acceptedWork"))
+            self.assertLess(stop.index("dispatch_group_wait(_acceptedWork"), stop.index("g_atomic_int_set(&_loop_quit"))
+            self.assertIn("if (g_main_context_is_owner(_main_context)) return;", stop)
+            self.assertIn("dispatch_group_leave(block.admissionGroup);", text)
+            self.assertIn("if (!_acceptingWork)", text)
+            self.assertIn("dispatch_group_enter(_acceptedWork);", text)
+            self.assertIn("mrvVerifyWorkerLifecycle", text)
 
     def test_gst_ios_init_uses_dynamic_gst_init(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -94,6 +94,7 @@ def smoke_test(app, temp):
         if (completed.returncode != 0 or lines.count("MRV_STARTUP_SMOKE_OK") != 1
                 or lines.count("MRV_GST_REGISTRY_OK") != 1
                 or lines.count("MRV_CORE_DUMP_LIMIT_OK") != 1
+                or lines.count("MRV_WORKER_LIFECYCLE_OK rounds=3 drained=384") != 1
                 or "MRV_GST_REGISTRY_FAILED" in lines):
             print(completed.stdout[-4000:])
             print(completed.stderr[-4000:])

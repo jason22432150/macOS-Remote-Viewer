@@ -177,6 +177,150 @@ def overlay_csmain(checkout: Path) -> None:
     ])
 
 
+def overlay_worker_lifecycle(checkout: Path) -> None:
+    path = checkout / "Sources" / "CocoaSpice" / "CSMain.m"
+    _replace_once(path, [
+        ("""@property (nonatomic, nullable, strong) dispatch_group_t group;""",
+         """@property (nonatomic, nullable, strong) dispatch_group_t group;
+@property (nonatomic, nullable, strong) dispatch_group_t admissionGroup;"""),
+        ("""    BOOL _workerOwnsContext;""",
+         """    BOOL _workerOwnsContext;
+    NSLock *_submissionLock;
+    dispatch_group_t _acceptedWork;
+    BOOL _acceptingWork;"""),
+        ("""        g_log_set_default_handler(logHandler, NULL);
+    }
+    return self;""",
+         """        _submissionLock = [[NSLock alloc] init];
+        _acceptedWork = dispatch_group_create();
+        _acceptingWork = NO;
+        g_log_set_default_handler(logHandler, NULL);
+    }
+    return self;"""),
+        ("""- (BOOL)spiceStart {
+    @synchronized (self) {""",
+         """- (BOOL)spiceStart {
+    // Lifecycle operations belong to the external owner, never a worker
+    // callback which could be waiting for the owner to complete a join.
+    if (g_main_context_is_owner(_main_context)) return NO;
+    @synchronized (self) {"""),
+        ("""            self.running = YES;
+            self.spiceThread = spiceThread;""",
+         """            self.running = YES;
+            self.spiceThread = spiceThread;
+            [_submissionLock lock];
+            _acceptingWork = YES;
+            [_submissionLock unlock];"""),
+        ("""- (void)spiceStop {
+    @synchronized (self) {
+        if (self.running) {
+            void *status;
+            g_atomic_int_set(&_loop_quit, TRUE);""",
+         """- (void)spiceStop {
+    // Never join the current worker or wait on its own admission group.
+    if (g_main_context_is_owner(_main_context)) return;
+    @synchronized (self) {
+        if (self.running) {
+            void *status;
+            // Callers must first retire sessions and GPU work. This is a
+            // drain of CSMain submissions, not of every GLib/GStreamer source.
+            [_submissionLock lock];
+            _acceptingWork = NO;
+            [_submissionLock unlock];
+            dispatch_group_wait(_acceptedWork, DISPATCH_TIME_FOREVER);
+            g_atomic_int_set(&_loop_quit, TRUE);"""),
+        ("""        dispatch_group_leave(block.group);
+    }
+}""",
+         """        dispatch_group_leave(block.group);
+    }
+    if (block.admissionGroup) {
+        dispatch_group_leave(block.admissionGroup);
+    }
+}"""),
+        ("""    // invoke_full may acquire an idle default context and execute inline on
+    // the caller. Explicit attachment preserves worker-only dispatch.
+    GSource *source = g_idle_source_new();
+    g_source_set_priority(source, G_PRIORITY_DEFAULT);
+    g_source_set_callback(source, callBlockInMainContext, data, cleanupBlock);
+    g_source_attach(source, self.glibMainContext);
+    g_source_unref(source);""",
+         """    // External submissions are admitted atomically with attachment.
+    // The lifecycle lock is separate: stop can wait for admitted work
+    // without preventing nested submissions from the current worker.
+    [_submissionLock lock];
+    if (!_acceptingWork) {
+        [_submissionLock unlock];
+        // The upstream void API cannot report rejection. Drop the block
+        // without executing native operations off-worker or stranding a
+        // syncWith caller's dispatch group.
+        cleanupBlock(data);
+        return;
+    }
+    block.admissionGroup = _acceptedWork;
+    dispatch_group_enter(_acceptedWork);
+    GSource *source = g_idle_source_new();
+    g_source_set_priority(source, G_PRIORITY_DEFAULT);
+    g_source_set_callback(source, callBlockInMainContext, data, cleanupBlock);
+    g_source_attach(source, self.glibMainContext);
+    [_submissionLock unlock];
+    g_source_unref(source);"""),
+        ("""    // Synthetic warning only, enabled by the validated startup probe in CI.
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_NATIVE_LOG_CANARY"), "1") == 0) {""",
+         """    // Synthetic warning only, once per process even across restarts.
+    static gint canaryEmitted = 0;
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_NATIVE_LOG_CANARY"), "1") == 0 &&
+        g_atomic_int_compare_and_exchange(&canaryEmitted, 0, 1)) {"""),
+        ("""- (BOOL)isCurrentContextMain {
+    return g_main_context_is_owner(self.glibMainContext);
+}""",
+         """- (BOOL)isCurrentContextMain {
+    return g_main_context_is_owner(self.glibMainContext);
+}
+
+// Idle worker only. No live SPICE sessions, channels, renderer or GPU
+// operations are allowed during this startup integration probe.
+- (BOOL)mrvVerifyWorkerLifecycle {
+    if (!pthread_main_np() || !self.running ||
+        g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") != 0) return NO;
+    for (NSUInteger round = 0; round < 3; round++) {
+        __block NSUInteger completed = 0;
+        __block BOOL valid = YES;
+        for (NSUInteger index = 0; index < 128; index++) {
+            [self asyncWith:^{
+                if (pthread_main_np() || !self.isCurrentContextMain) valid = NO;
+                if (index == 0) {
+                    // Reentrant sync executes on the owning worker.
+                    [self syncWith:^{
+                        if (!self.isCurrentContextMain) valid = NO;
+                    }];
+                    // A worker cannot stop/join itself.
+                    [self spiceStop];
+                }
+                completed++;
+            }];
+        }
+        [self spiceStop];
+        if (!valid || completed != 128 || self.running) return NO;
+
+        // Both APIs must reject external work when stopped, and the
+        // synchronous caller must return rather than hang.
+        [self asyncWith:^{ completed++; }];
+        [self syncWith:^{ completed++; }];
+        if (completed != 128 || ![self spiceStart]) return NO;
+        [self syncWith:^{
+            if (!self.isCurrentContextMain || pthread_main_np()) valid = NO;
+        }];
+        if (!valid || completed != 128) return NO;
+    }
+    [self spiceStop];
+    return !self.running;
+}"""),
+    ])
+
+
 def overlay_display_initial_frame(checkout: Path) -> None:
     """第一次掛 renderer 時把完整 framebuffer 拷到 Metal，避免畫面留下黑色區塊。
 
@@ -2117,6 +2261,12 @@ def main() -> None:
         raise SystemExit(f"CocoaSpice checkout 不存在：{checkout}")
     overlay_gst_ios_init(checkout)
     overlay_csmain(checkout)
+    overlay_worker_lifecycle(checkout)
+    _replace_once(checkout / "Sources" / "CocoaSpice" / "include" / "CSMain.h", [
+        ("- (void)spiceStop;", "- (void)spiceStop;\n"
+         "/// Integration-only idle worker lifecycle validation.\n"
+         "- (BOOL)mrvVerifyWorkerLifecycle NS_SWIFT_NAME(mrvVerifyWorkerLifecycle());")
+    ])
     overlay_package_swift(checkout)
     overlay_display_initial_frame(checkout)
     overlay_renderer_protected_category(checkout)
