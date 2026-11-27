@@ -18,10 +18,11 @@ tls = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tls)
 
 
-def compile_fixture(destination):
+def compile_fixture(destination, stress=False):
     flags = shlex.split(subprocess.check_output(
         ["pkg-config", "--cflags", "--libs", "spice-server", "glib-2.0"], text=True))
-    subprocess.run(["xcrun", "clang", "-std=c11", str(HERE / "spice-auth-fixture.c"),
+    defines = ["-DMRV_4K_STRESS_FIXTURE=1"] if stress else []
+    subprocess.run(["xcrun", "clang", "-std=c11", *defines, str(HERE / "spice-auth-fixture.c"),
                     "-o", str(destination), *flags], check=True, timeout=60)
 
 
@@ -193,6 +194,16 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
         lines = log.read_text(errors="replace").splitlines()
         if server.returncode != 0:
             raise AssertionError(f"{name}: fixture exited abnormally")
+        sizes = [re.fullmatch(r"FIXTURE_QXL_BYTES (\d+)", line)
+                 for line in lines if line.startswith("FIXTURE_QXL_BYTES ")]
+        if len(sizes) != 1 or sizes[0] is None:
+            raise AssertionError(f"{name}: missing QXL memslot size")
+        qxl_bytes = int(sizes[0].group(1))
+        if agent == "monitor-stress-full":
+            if qxl_bytes < 3 * 3840 * 2160 * 4:
+                raise AssertionError("4K fixture: wrong memslot variant")
+        elif not 0 < qxl_bytes < 16 * 1024 * 1024:
+            raise AssertionError("standard fixture: unexpected large memslot")
         initialized = [line for line in lines if line.startswith("MAIN_INITIALIZED ")]
         if display:
             display_channels = [line for line in lines if line.startswith("DISPLAY_INITIALIZED ")]
@@ -644,6 +655,10 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
             lines = log.read_text(errors="replace").splitlines()
             if server.returncode != 0:
                 raise AssertionError(f"{log.stem}: abnormal exit")
+            sizes = [re.fullmatch(r"FIXTURE_QXL_BYTES (\d+)", line)
+                     for line in lines if line.startswith("FIXTURE_QXL_BYTES ")]
+            if len(sizes) != 1 or sizes[0] is None or not 0 < int(sizes[0].group(1)) < 16 * 1024 * 1024:
+                raise AssertionError(f"{log.stem}: unexpected standard QXL memslot size")
             for channel in ("MAIN", "DISPLAY"):
                 initialized = [line for line in lines if line.startswith(f"{channel}_INITIALIZED ")]
                 if initialized != [f"{channel}_INITIALIZED tls=1"] * (6 if workspace else 1):
@@ -871,7 +886,6 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-monitor-full", tls.TICKET, True, agent="monitor-full")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-limited", tls.TICKET, True, agent="monitor-limited")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
-        test_case(args.app.resolve(), root, fixture, "agent-monitor-stress-full", tls.TICKET, True, agent="monitor-stress-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-full", tls.TICKET, True, agent="clipboard-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-invalid-full", tls.TICKET, True, agent="clipboard-invalid-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-bulk-full", tls.TICKET, True, agent="clipboard-bulk-full")
@@ -906,6 +920,17 @@ def main():
         except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             failures.append(f"workspace: {exc}")
             print(f"MRV_WORKSPACE_FAILURE {exc}", flush=True)
+        # The 4K fixture has a deliberately larger QXL memslot. Do not
+        # change ordinary server memory/worker release behavior or run it
+        # ahead of the existing multi-session regressions.
+        try:
+            stress_fixture = root / "spice-auth-fixture-4k"
+            compile_fixture(stress_fixture, stress=True)
+            test_case(args.app.resolve(), root, stress_fixture, "agent-monitor-stress-full",
+                      tls.TICKET, True, agent="monitor-stress-full")
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"4k: {exc}")
+            print(f"MRV_4K_FAILURE {exc}", flush=True)
         if failures:
             raise AssertionError("; ".join(failures))
     print("Real SPICE ticket authentication and reconnect checks passed.")
