@@ -26,6 +26,7 @@ from overlay import (
     overlay_metal_publication_mailbox,
     overlay_metal_presentation_backpressure,
     overlay_canvas_upload_recovery,
+    overlay_graphics_allocation_budget,
     overlay_cursor_texture_ownership,
     overlay_package_swift,
     overlay_renderer_protected_category,
@@ -678,6 +679,45 @@ static void cs_channel_new(void) {}
             self.assertIn("[CSMain.sharedInstance asyncWith:^{ finish(success); }];", result)
             self.assertIn("self.canvasUploadValid = YES;\n        self.canvasRetryAvailable = YES;\n        [self invalidate];", result)
             self.assertNotIn("[self copyBuffer:submittedBuffer", result)
+
+    def test_graphics_budget_charges_resources_and_rejects_before_allocation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpice"
+            source.mkdir(parents=True)
+            display = source / "CSDisplay.m"
+            display.write_text("""#import <stdio.h>
+@implementation CSDisplay
+    id<MTLTexture> texture = [self.device newTextureWithDescriptor:textureDescriptor];
+    id<MTLBuffer> buffer = [self.device newBufferWithLength:canvasSize
+                                                   options:MTLResourceStorageModeShared];
+    self.shadowTexture = [self.device newTextureWithDescriptor:textureDescriptor];
+    self.vertices = [self.device newBufferWithBytes:quadVertices
+                                             length:sizeof(quadVertices)
+                                            options:MTLResourceCPUCacheModeWriteCombined];
+        // An isolated, unconnected cursor channel exercises the same worker
+""")
+            cursor = source / "CSCursor.m"
+            cursor.write_text("""#import <stdio.h>
+id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
+    id<MTLBuffer> vertices = [device newBufferWithBytes:quadVertices
+                                                length:sizeof(quadVertices)
+                                               options:MTLResourceStorageModeShared];
+""")
+            overlay_graphics_allocation_budget(root)
+            result = display.read_text()
+            self.assertIn("mrvGraphicsLimit - bytes", result)
+            self.assertIn("atomic_compare_exchange_weak_explicit", result)
+            self.assertIn("atomic_fetch_sub_explicit", result)
+            self.assertIn("objc_setAssociatedObject(texture, &mrvGraphicsReservationKey", result)
+            self.assertIn("if (!reservation) return nil;", result)
+            self.assertIn("MRVNewTexture(self.device, textureDescriptor)", result)
+            self.assertIn("MRVNewBuffer(self.device, canvasSize", result)
+            self.assertIn("MRVNewBufferWithBytes(self.device, quadVertices", result)
+            self.assertIn("MRVNewTexture(device, textureDescriptor)", cursor.read_text())
+            self.assertIn("MRVNewBufferWithBytes(device, quadVertices", cursor.read_text())
+            self.assertIn("MRV_GRAPHICS_BUDGET_OK limit=1073741824", result)
+            self.assertIn("NS_RETURNS_RETAINED", (source / "MRVGraphicsBudget.h").read_text())
 
     def test_presentation_backpressure_precedes_drawable_and_releases_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

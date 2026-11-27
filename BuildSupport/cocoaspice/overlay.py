@@ -2408,6 +2408,152 @@ def overlay_metal_presentation_backpressure(checkout: Path) -> None:
     ])
 
 
+def overlay_graphics_allocation_budget(checkout: Path) -> None:
+    """Charge owned display/cursor resources until their Objective-C lifetime ends."""
+    root = checkout / "Sources" / "CocoaSpice"
+    (root / "MRVGraphicsBudget.h").write_text("""#import <Foundation/Foundation.h>
+@import Metal;
+
+NS_ASSUME_NONNULL_BEGIN
+// Conservative logical payload budget, NOT measured GPU residency.
+id<MTLTexture> _Nullable MRVNewTexture(id<MTLDevice> device, MTLTextureDescriptor *desc) NS_RETURNS_RETAINED;
+id<MTLBuffer> _Nullable MRVNewBuffer(id<MTLDevice> device, NSUInteger length, MTLResourceOptions options) NS_RETURNS_RETAINED;
+id<MTLBuffer> _Nullable MRVNewBufferWithBytes(id<MTLDevice> device, const void *bytes, NSUInteger length, MTLResourceOptions options) NS_RETURNS_RETAINED;
+NS_ASSUME_NONNULL_END
+""")
+    display = root / "CSDisplay.m"
+    _replace_once(display, [
+        ("#import <stdio.h>", '#import <stdio.h>\n#import "MRVGraphicsBudget.h"\n#import <objc/runtime.h>\n#import <stdatomic.h>'),
+        ("@implementation CSDisplay",
+         """// One process-wide budget, shared by all display and cursor channels.
+static const uint64_t mrvGraphicsLimit = 1024ull * 1024ull * 1024ull;
+static atomic_uint_fast64_t mrvGraphicsBytes = 0;
+static char mrvGraphicsReservationKey;
+
+@interface _MRVGraphicsReservation : NSObject
+@property (nonatomic) uint64_t bytes;
+@end
+
+@implementation _MRVGraphicsReservation
+- (void)dealloc {
+    if (_bytes) atomic_fetch_sub_explicit(&mrvGraphicsBytes, _bytes, memory_order_relaxed);
+}
+@end
+
+static _MRVGraphicsReservation * _Nullable mrv_reserve_graphics(uint64_t bytes) NS_RETURNS_RETAINED;
+static _MRVGraphicsReservation * _Nullable mrv_reserve_graphics(uint64_t bytes) {
+    if (!bytes || bytes > mrvGraphicsLimit) return nil;
+    uint_fast64_t used = atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);
+    do {
+        if (used > mrvGraphicsLimit - bytes) return nil;
+    } while (!atomic_compare_exchange_weak_explicit(&mrvGraphicsBytes, &used, used + bytes,
+                                                     memory_order_relaxed, memory_order_relaxed));
+    _MRVGraphicsReservation *reservation = [_MRVGraphicsReservation new];
+    reservation.bytes = bytes;
+    return reservation;
+}
+
+id<MTLTexture> MRVNewTexture(id<MTLDevice> device, MTLTextureDescriptor *desc) {
+    // All selected textures are 2D, nonmipmapped, one sample, at most
+    // four bytes per pixel. Charge 4 even for the 16-bit canvas format.
+    if (!device || !desc.width || !desc.height || desc.width > 16384 || desc.height > 16384 ||
+        desc.textureType != MTLTextureType2D || desc.mipmapLevelCount != 1 ||
+        desc.sampleCount != 1 || desc.arrayLength != 1 ||
+        desc.width > mrvGraphicsLimit / 4 / desc.height) return nil;
+    _MRVGraphicsReservation *reservation = mrv_reserve_graphics((uint64_t)desc.width * desc.height * 4);
+    if (!reservation) return nil;
+    id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+    if (texture) objc_setAssociatedObject(texture, &mrvGraphicsReservationKey, reservation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Failed allocation releases the reservation. Successful allocation
+    // keeps it alive with the actual resource, not with the session wrapper.
+    return texture;
+}
+
+id<MTLBuffer> MRVNewBuffer(id<MTLDevice> device, NSUInteger length, MTLResourceOptions options) {
+    if (!device) return nil;
+    _MRVGraphicsReservation *reservation = mrv_reserve_graphics(length);
+    if (!reservation) return nil;
+    id<MTLBuffer> buffer = [device newBufferWithLength:length options:options];
+    if (buffer) objc_setAssociatedObject(buffer, &mrvGraphicsReservationKey, reservation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return buffer;
+}
+
+id<MTLBuffer> MRVNewBufferWithBytes(id<MTLDevice> device, const void *bytes, NSUInteger length, MTLResourceOptions options) {
+    if (!device || !bytes) return nil;
+    _MRVGraphicsReservation *reservation = mrv_reserve_graphics(length);
+    if (!reservation) return nil;
+    id<MTLBuffer> buffer = [device newBufferWithBytes:bytes length:length options:options];
+    if (buffer) objc_setAssociatedObject(buffer, &mrvGraphicsReservationKey, reservation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return buffer;
+}
+
+static BOOL mrv_verify_graphics_budget(id<MTLDevice> device) {
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") != 0) return NO;
+    uint64_t baseline = atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);
+    if (baseline != 0) return NO; // isolated process before display allocations
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                  width:16 height:16 mipmapped:NO];
+    __weak id<MTLTexture> old;
+    @autoreleasepool {
+        // Two independent owners charge the same process-wide ledger.
+        __attribute__((objc_precise_lifetime)) id<MTLTexture> texture = MRVNewTexture(device, desc);
+        __attribute__((objc_precise_lifetime)) id<MTLBuffer> staging = MRVNewBuffer(device, 4096, MTLResourceStorageModeShared);
+        if (!texture || !staging) return NO;
+        old = texture;
+        if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != 5120) return NO;
+        @autoreleasepool {
+            // Fill the rest with an accounting-only reservation; never
+            // allocate a GiB on the CI runner to exercise rejection.
+            __attribute__((objc_precise_lifetime)) _MRVGraphicsReservation *full = mrv_reserve_graphics(mrvGraphicsLimit - 5120);
+            if (!full || mrv_reserve_graphics(1) || MRVNewTexture(device, desc) ||
+                MRVNewBuffer(device, 1, MTLResourceStorageModeShared)) return NO;
+            if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != mrvGraphicsLimit) return NO;
+        }
+        if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != 5120 || !old) return NO;
+        @autoreleasepool {
+            __attribute__((objc_precise_lifetime)) id<MTLTexture> recovered = MRVNewTexture(device, desc);
+            if (!recovered || atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != 6144) return NO;
+        }
+        if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != 5120) return NO;
+    }
+    return !old && atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) == baseline;
+}
+
+@implementation CSDisplay"""),
+        ("""    id<MTLTexture> texture = [self.device newTextureWithDescriptor:textureDescriptor];
+    id<MTLBuffer> buffer = [self.device newBufferWithLength:canvasSize
+                                                   options:MTLResourceStorageModeShared];""",
+         """    id<MTLTexture> texture = MRVNewTexture(self.device, textureDescriptor);
+    id<MTLBuffer> buffer = texture ? MRVNewBuffer(self.device, canvasSize, MTLResourceStorageModeShared) : nil;"""),
+        ("""    self.shadowTexture = [self.device newTextureWithDescriptor:textureDescriptor];""",
+         """    self.shadowTexture = MRVNewTexture(self.device, textureDescriptor);"""),
+        ("""    self.vertices = [self.device newBufferWithBytes:quadVertices
+                                             length:sizeof(quadVertices)
+                                            options:MTLResourceCPUCacheModeWriteCombined];""",
+         """    self.vertices = MRVNewBufferWithBytes(self.device, quadVertices, sizeof(quadVertices),
+                                         MTLResourceCPUCacheModeWriteCombined);"""),
+        ("""        // An isolated, unconnected cursor channel exercises the same worker""",
+         """        if (!mrv_verify_graphics_budget(renderer.device)) {
+            display = nil;
+            g_object_unref(session);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
+            return;
+        }
+        puts("MRV_GRAPHICS_BUDGET_OK limit=1073741824"); fflush(stdout);
+        // An isolated, unconnected cursor channel exercises the same worker"""),
+    ])
+    _replace_once(root / "CSCursor.m", [
+        ("#import <stdio.h>", '#import <stdio.h>\n#import "MRVGraphicsBudget.h"'),
+        ("id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];",
+         "id<MTLTexture> texture = MRVNewTexture(device, textureDescriptor);"),
+        ("""    id<MTLBuffer> vertices = [device newBufferWithBytes:quadVertices
+                                                length:sizeof(quadVertices)
+                                               options:MTLResourceStorageModeShared];""",
+         """    id<MTLBuffer> vertices = texture ? MRVNewBufferWithBytes(device, quadVertices, sizeof(quadVertices),
+                                                             MTLResourceStorageModeShared) : nil;"""),
+    ])
+
+
 def overlay_metal_draw_failure_recovery(checkout: Path) -> None:
     """Do not present an unencoded draw; retry failed current presentations."""
     root = checkout / "Sources" / "CocoaSpiceRenderer"
@@ -3022,6 +3168,7 @@ def main() -> None:
     overlay_scanout_runtime_probe(checkout)
     overlay_cursor_texture_ownership(checkout)
     overlay_canvas_upload_recovery(checkout)
+    overlay_graphics_allocation_budget(checkout)
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
     overlay_metal_draw_failure_recovery(checkout)
