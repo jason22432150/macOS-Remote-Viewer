@@ -748,7 +748,13 @@ id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
 """)
             overlay_graphics_allocation_budget(root)
             result = display.read_text()
-            self.assertIn("mrvGraphicsLimit - bytes", result)
+            self.assertIn("limit - bytes", result)
+            self.assertIn("physical / 16", result)
+            self.assertIn("workingSet / 4", result)
+            self.assertIn("device.recommendedMaxWorkingSetSize", result)
+            self.assertIn("MIN(MIN(ramCap, gpuCap), 2048 * mrvGraphicsMiB)", result)
+            self.assertIn("mrv_graphics_policy(15, 3) != 0", result)
+            self.assertIn("mrv_reserve_graphics(1, 4096)", result)
             self.assertIn("atomic_compare_exchange_weak_explicit", result)
             self.assertIn("atomic_fetch_sub_explicit", result)
             self.assertIn("objc_setAssociatedObject(texture, &mrvGraphicsReservationKey", result)
@@ -758,7 +764,7 @@ id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
             self.assertIn("MRVNewBufferWithBytes(self.device, quadVertices", result)
             self.assertIn("MRVNewTexture(device, textureDescriptor)", cursor.read_text())
             self.assertIn("MRVNewBufferWithBytes(device, quadVertices", cursor.read_text())
-            self.assertIn("MRV_GRAPHICS_BUDGET_OK limit=1073741824", result)
+            self.assertIn("MRV_GRAPHICS_BUDGET_OK limit=%llu vectors=9", result)
             self.assertIn("NS_RETURNS_RETAINED", (source / "MRVGraphicsBudget.h").read_text())
 
     def test_presentation_backpressure_precedes_drawable_and_releases_on_error(self) -> None:

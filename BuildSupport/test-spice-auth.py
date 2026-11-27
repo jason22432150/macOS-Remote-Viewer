@@ -757,8 +757,14 @@ def test_scanout_runtime(app, root, drawable=False):
                                  "MRV_SCANOUT_DRAWABLE_PARTIAL_PRIVATE_OK",
                                  "MRV_SCANOUT_DRAWABLE_REFRESH_OK"]
     actual = [line for line in result.stdout.splitlines() if line.startswith("MRV_SCANOUT_")]
-    if result.stdout.splitlines().count("MRV_GRAPHICS_BUDGET_OK limit=1073741824") != 1:
-        raise AssertionError("scanout runtime: missing graphics allocation budget gate")
+    budget_lines = [line for line in result.stdout.splitlines()
+                    if line.startswith("MRV_GRAPHICS_BUDGET_OK ")]
+    if len(budget_lines) != 1:
+        raise AssertionError("scanout runtime: missing or repeated graphics allocation budget gate")
+    budget = re.fullmatch(r"MRV_GRAPHICS_BUDGET_OK limit=([0-9]+) vectors=9", budget_lines[0])
+    if not budget or not 6144 <= int(budget.group(1)) <= 2 * 1024 * 1024 * 1024:
+        raise AssertionError("scanout runtime: invalid adaptive graphics budget")
+    print(budget_lines[0], flush=True)
     if result.stdout.splitlines().count("MRV_RENDER_PUBLICATION_MAILBOX_OK updates=512") != 1:
         raise AssertionError("scanout runtime: missing publication mailbox gate")
     if result.stdout.splitlines().count("MRV_CURSOR_TEXTURE_LIFETIME_OK") != 1:

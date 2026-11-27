@@ -2426,8 +2426,23 @@ NS_ASSUME_NONNULL_END
         ("#import <stdio.h>", '#import <stdio.h>\n#import "MRVGraphicsBudget.h"\n#import <objc/runtime.h>\n#import <stdatomic.h>'),
         ("@implementation CSDisplay",
          """// One process-wide budget, shared by all display and cursor channels.
-static const uint64_t mrvGraphicsLimit = 1024ull * 1024ull * 1024ull;
+static const uint64_t mrvGraphicsMiB = 1024ull * 1024ull;
 static atomic_uint_fast64_t mrvGraphicsBytes = 0;
+
+// Hardware-adaptive admission policy; not a claim of actual GPU residency.
+// Unknown RAM or working-set information uses a conservative 512 MiB input.
+// Never raise a small nonzero recommendation to an artificial minimum.
+static uint64_t mrv_graphics_policy(uint64_t physical, uint64_t workingSet) {
+    uint64_t ramCap = physical ? physical / 16 : 512 * mrvGraphicsMiB;
+    uint64_t gpuCap = workingSet ? workingSet / 4 : 512 * mrvGraphicsMiB;
+    return MIN(MIN(ramCap, gpuCap), 2048 * mrvGraphicsMiB);
+}
+
+static uint64_t mrv_graphics_limit(id<MTLDevice> device) {
+    if (!device) return 0;
+    return mrv_graphics_policy(NSProcessInfo.processInfo.physicalMemory,
+                               device.recommendedMaxWorkingSetSize);
+}
 static char mrvGraphicsReservationKey;
 
 @interface _MRVGraphicsReservation : NSObject
@@ -2440,12 +2455,12 @@ static char mrvGraphicsReservationKey;
 }
 @end
 
-static _MRVGraphicsReservation * _Nullable mrv_reserve_graphics(uint64_t bytes) NS_RETURNS_RETAINED;
-static _MRVGraphicsReservation * _Nullable mrv_reserve_graphics(uint64_t bytes) {
-    if (!bytes || bytes > mrvGraphicsLimit) return nil;
+static _MRVGraphicsReservation * _Nullable mrv_reserve_graphics(uint64_t bytes, uint64_t limit) NS_RETURNS_RETAINED;
+static _MRVGraphicsReservation * _Nullable mrv_reserve_graphics(uint64_t bytes, uint64_t limit) {
+    if (!bytes || bytes > limit || limit > 2048 * mrvGraphicsMiB) return nil;
     uint_fast64_t used = atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);
     do {
-        if (used > mrvGraphicsLimit - bytes) return nil;
+        if (used > limit - bytes) return nil;
     } while (!atomic_compare_exchange_weak_explicit(&mrvGraphicsBytes, &used, used + bytes,
                                                      memory_order_relaxed, memory_order_relaxed));
     _MRVGraphicsReservation *reservation = [_MRVGraphicsReservation new];
@@ -2459,8 +2474,9 @@ id<MTLTexture> MRVNewTexture(id<MTLDevice> device, MTLTextureDescriptor *desc) {
     if (!device || !desc.width || !desc.height || desc.width > 16384 || desc.height > 16384 ||
         desc.textureType != MTLTextureType2D || desc.mipmapLevelCount != 1 ||
         desc.sampleCount != 1 || desc.arrayLength != 1 ||
-        desc.width > mrvGraphicsLimit / 4 / desc.height) return nil;
-    _MRVGraphicsReservation *reservation = mrv_reserve_graphics((uint64_t)desc.width * desc.height * 4);
+        desc.width > mrv_graphics_limit(device) / 4 / desc.height) return nil;
+    _MRVGraphicsReservation *reservation = mrv_reserve_graphics((uint64_t)desc.width * desc.height * 4,
+                                                              mrv_graphics_limit(device));
     if (!reservation) return nil;
     id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
     if (texture) objc_setAssociatedObject(texture, &mrvGraphicsReservationKey, reservation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2471,7 +2487,7 @@ id<MTLTexture> MRVNewTexture(id<MTLDevice> device, MTLTextureDescriptor *desc) {
 
 id<MTLBuffer> MRVNewBuffer(id<MTLDevice> device, NSUInteger length, MTLResourceOptions options) {
     if (!device) return nil;
-    _MRVGraphicsReservation *reservation = mrv_reserve_graphics(length);
+    _MRVGraphicsReservation *reservation = mrv_reserve_graphics(length, mrv_graphics_limit(device));
     if (!reservation) return nil;
     id<MTLBuffer> buffer = [device newBufferWithLength:length options:options];
     if (buffer) objc_setAssociatedObject(buffer, &mrvGraphicsReservationKey, reservation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2480,7 +2496,7 @@ id<MTLBuffer> MRVNewBuffer(id<MTLDevice> device, NSUInteger length, MTLResourceO
 
 id<MTLBuffer> MRVNewBufferWithBytes(id<MTLDevice> device, const void *bytes, NSUInteger length, MTLResourceOptions options) {
     if (!device || !bytes) return nil;
-    _MRVGraphicsReservation *reservation = mrv_reserve_graphics(length);
+    _MRVGraphicsReservation *reservation = mrv_reserve_graphics(length, mrv_graphics_limit(device));
     if (!reservation) return nil;
     id<MTLBuffer> buffer = [device newBufferWithBytes:bytes length:length options:options];
     if (buffer) objc_setAssociatedObject(buffer, &mrvGraphicsReservationKey, reservation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2489,6 +2505,19 @@ id<MTLBuffer> MRVNewBufferWithBytes(id<MTLDevice> device, const void *bytes, NSU
 
 static BOOL mrv_verify_graphics_budget(id<MTLDevice> device) {
     if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") != 0) return NO;
+    const uint64_t MiB = mrvGraphicsMiB;
+    // Synthetic Intel/integrated, discrete, unified and unknown input vectors.
+    if (mrv_graphics_policy(8192 * MiB, 4096 * MiB) != 512 * MiB ||
+        mrv_graphics_policy(16384 * MiB, 2048 * MiB) != 512 * MiB ||
+        mrv_graphics_policy(32768 * MiB, 24576 * MiB) != 2048 * MiB ||
+        mrv_graphics_policy(65536 * MiB, 65536 * MiB) != 2048 * MiB ||
+        mrv_graphics_policy(0, 0) != 512 * MiB ||
+        mrv_graphics_policy(4096 * MiB, 0) != 256 * MiB ||
+        mrv_graphics_policy(0, 64 * MiB) != 16 * MiB ||
+        mrv_graphics_policy(UINT64_MAX, UINT64_MAX) != 2048 * MiB ||
+        mrv_graphics_policy(15, 3) != 0) return NO;
+    uint64_t limit = mrv_graphics_limit(device);
+    if (limit < 6144 || limit > 2048 * MiB) return NO;
     uint64_t baseline = atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);
     if (baseline != 0) return NO; // isolated process before display allocations
     MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -2504,12 +2533,13 @@ static BOOL mrv_verify_graphics_budget(id<MTLDevice> device) {
         @autoreleasepool {
             // Fill the rest with an accounting-only reservation; never
             // allocate a GiB on the CI runner to exercise rejection.
-            __attribute__((objc_precise_lifetime)) _MRVGraphicsReservation *full = mrv_reserve_graphics(mrvGraphicsLimit - 5120);
-            if (!full || mrv_reserve_graphics(1) || MRVNewTexture(device, desc) ||
+            __attribute__((objc_precise_lifetime)) _MRVGraphicsReservation *full = mrv_reserve_graphics(limit - 5120, limit);
+            if (!full || mrv_reserve_graphics(1, limit) || MRVNewTexture(device, desc) ||
                 MRVNewBuffer(device, 1, MTLResourceStorageModeShared)) return NO;
-            if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != mrvGraphicsLimit) return NO;
+            if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != limit) return NO;
         }
-        if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != 5120 || !old) return NO;
+        if (atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != 5120 || !old ||
+            mrv_reserve_graphics(1, 5120) || mrv_reserve_graphics(1, 4096)) return NO;
         @autoreleasepool {
             __attribute__((objc_precise_lifetime)) id<MTLTexture> recovered = MRVNewTexture(device, desc);
             if (!recovered || atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed) != 6144) return NO;
@@ -2539,7 +2569,8 @@ static BOOL mrv_verify_graphics_budget(id<MTLDevice> device) {
             dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
             return;
         }
-        puts("MRV_GRAPHICS_BUDGET_OK limit=1073741824"); fflush(stdout);
+        printf("MRV_GRAPHICS_BUDGET_OK limit=%llu vectors=9\\n",
+               (unsigned long long)mrv_graphics_limit(renderer.device)); fflush(stdout);
         // An isolated, unconnected cursor channel exercises the same worker"""),
     ])
     _replace_once(root / "CSCursor.m", [
@@ -2628,8 +2659,9 @@ def overlay_canvas_allocation_retry(checkout: Path) -> None:
         g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
         g_strcmp0(g_getenv("MRV_CANVAS_BUDGET_FAULT"), "1") == 0) {
         uint64_t used = atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);
-        if (used < mrvGraphicsLimit) {
-            self.mrvBudgetTestHold = mrv_reserve_graphics(mrvGraphicsLimit - used);
+        uint64_t limit = mrv_graphics_limit(self.device);
+        if (used < limit) {
+            self.mrvBudgetTestHold = mrv_reserve_graphics(limit - used, limit);
             if (self.mrvBudgetTestHold) self.mrvBudgetRecoveryStage = 1;
         }
     }
