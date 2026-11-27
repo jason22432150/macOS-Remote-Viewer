@@ -1825,6 +1825,106 @@ def overlay_drawable_demand(checkout: Path) -> None:
     ])
 
 
+def overlay_metal_draw_failure_recovery(checkout: Path) -> None:
+    """Do not present an unencoded draw; retry failed current presentations."""
+    root = checkout / "Sources" / "CocoaSpiceRenderer"
+    _replace_once(root / "include" / "CSMetalRenderer.h", [
+        ("/// Modify upscaler and downscaler settings",
+         "/// Integration-only one-shot encoder rejection and completion failure simulation.\n"
+         "- (BOOL)mrvArmDrawFailureProbe NS_SWIFT_NAME(mrvArmDrawFailureProbe());\n"
+         "- (BOOL)mrvDrawFailureProbePassed NS_SWIFT_NAME(mrvDrawFailureProbePassed());\n\n"
+         "/// Modify upscaler and downscaler settings"),
+    ])
+    _replace_once(root / "CSMetalRenderer.m", [
+        ("@property (nonatomic) BOOL renderNeedsUpdate;",
+         "@property (nonatomic) BOOL renderNeedsUpdate;\n"
+         "@property (nonatomic) BOOL mrvRejectNextEncode;\n"
+         "@property (nonatomic) BOOL mrvRejectNextCompletion;\n"
+         "@property (nonatomic) BOOL mrvSawEncodeRejection;\n"
+         "@property (nonatomic) BOOL mrvSawCompletionRejection;\n"
+         "@property (nonatomic) BOOL mrvSawRecovery;"),
+        ("""    [self _renderCommand:commandBuffer
+              drawSource:sourceData
+          viewportOrigin:self.renderViewportOrigin
+           viewportScale:self.renderViewportScale
+            viewportSize:self.renderViewportSize
+                 sampler:self.renderSampler
+    renderPassDescriptor:renderPassDescriptor];""",
+         """    BOOL rejectEncode = self.mrvRejectNextEncode;
+    if (rejectEncode) {
+        self.mrvRejectNextEncode = NO;
+        self.mrvSawEncodeRejection = YES;
+    }
+    if (rejectEncode || ![self _renderCommand:commandBuffer
+              drawSource:sourceData
+          viewportOrigin:self.renderViewportOrigin
+           viewportScale:self.renderViewportScale
+            viewportSize:self.renderViewportSize
+                 sampler:self.renderSampler
+    renderPassDescriptor:renderPassDescriptor]) {
+        // No encoded frame: do not present or report successful rendering.
+        self.renderNeedsUpdate = YES;
+        [self _completeDraw];
+        return;
+    }"""),
+        ("""    [self.renderCompletions removeAllObjects];
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        BOOL rendered = commandBuffer.status == MTLCommandBufferStatusCompleted;""",
+         """    [self.renderCompletions removeAllObjects];
+    BOOL rejectCompletion = self.mrvRejectNextCompletion;
+    self.mrvRejectNextCompletion = NO;
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        BOOL rendered = !rejectCompletion && commandBuffer.status == MTLCommandBufferStatusCompleted;"""),
+        ("""            if (rendered && frameHandler) {
+                frameHandler();
+            }""",
+         """            if (!rendered && self.renderSourceData == sourceData) {
+                // Never resurrect a disabled or superseded source. Retry a
+                // retained current frame on the next regular draw tick.
+                self.renderNeedsUpdate = YES;
+            }
+            if (rejectCompletion) self.mrvSawCompletionRejection = YES;
+            if (rendered && self.mrvSawCompletionRejection) self.mrvSawRecovery = YES;
+            if (rendered && frameHandler) {
+                frameHandler();
+            }"""),
+        ("""    renderEncoder.label = @"View Presentation";""",
+         """    if (!renderEncoder) return NO;
+    renderEncoder.label = @"View Presentation";"""),
+        ("""    [renderEncoder endEncoding];
+}
+
+- (void)_renderEncoder:""",
+         """    [renderEncoder endEncoding];
+    return YES;
+}
+
+- (void)_renderEncoder:"""),
+        ("""- (void)requestPresentationRefresh {""",
+         """- (BOOL)mrvArmDrawFailureProbe {
+    if (![NSThread isMainThread] ||
+        ![[[NSProcessInfo processInfo] environment][@"MRV_ENABLE_INTEGRATION_PROBES"] isEqualToString:@"1"])
+        return NO;
+    self.mrvSawEncodeRejection = NO;
+    self.mrvSawCompletionRejection = NO;
+    self.mrvSawRecovery = NO;
+    self.mrvRejectNextEncode = YES;
+    self.mrvRejectNextCompletion = YES;
+    return YES;
+}
+
+- (BOOL)mrvDrawFailureProbePassed {
+    if (![NSThread isMainThread] ||
+        ![[[NSProcessInfo processInfo] environment][@"MRV_ENABLE_INTEGRATION_PROBES"] isEqualToString:@"1"])
+        return NO;
+    return !self.mrvRejectNextEncode && !self.mrvRejectNextCompletion &&
+           self.mrvSawEncodeRejection && self.mrvSawCompletionRejection && self.mrvSawRecovery;
+}
+
+- (void)requestPresentationRefresh {"""),
+    ])
+
+
 def overlay_clipboard_input_guards(checkout: Path) -> None:
     """Reject malformed or oversized remote data before bridging into Swift."""
     path = checkout / "Sources" / "CocoaSpice" / "CSSession.m"
@@ -2339,6 +2439,7 @@ def main() -> None:
     overlay_scanout_runtime_probe(checkout)
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
+    overlay_metal_draw_failure_recovery(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)

@@ -1011,6 +1011,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                     }
+                    if !partial && round == 0 {
+                        guard canvas.armDrawFailureProbe() else { throw SessionError.cancelled }
+                    }
                     controller.open(profile)
                     let deadline = ContinuousClock.now + .seconds(15)
                     while ContinuousClock.now < deadline {
@@ -1022,7 +1025,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if controller.state == .connected,
                            controller.displaySize == RemoteFrame(width: 640, height: 480),
                            controller.hasRenderedFrame, colors.contains(0x00ff0000),
-                           colors.contains(0x0000ff00) { break }
+                           colors.contains(0x0000ff00),
+                           partial || round != 0 || canvas.drawFailureProbePassed() { break }
                         try await Task.sleep(for: .milliseconds(50))
                     }
                     guard controller.state == .connected,
@@ -1032,6 +1036,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           !regionMismatch, !partial || model.sessions.isEmpty else {
                         print("MRV_DISPLAY_DIAGNOSTIC connected=\(controller.state == .connected) display=\(controller.displaySize != nil) rendered=\(controller.hasRenderedFrame) samples=\(colors.count)")
                         throw SessionError.displayTimeout
+                    }
+                    if !partial && round == 0 {
+                        guard canvas.drawFailureProbePassed() else { throw SessionError.cancelled }
+                        print("MRV_METAL_DRAW_FAILURE_RECOVERY_OK")
                     }
                     if partial {
                         print("MRV_SPICE_PARTIAL_ROUND_OK \(round + 1) 640x480 center=red,green exterior=blue,blue,blue,blue")

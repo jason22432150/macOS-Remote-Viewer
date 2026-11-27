@@ -124,6 +124,14 @@ final class RemoteCanvasView: MTKView {
         metalRenderer?.smokePixelHandler = handler
     }
 
+    func armDrawFailureProbe() -> Bool {
+        metalRenderer?.mrvArmDrawFailureProbe() == true
+    }
+
+    func drawFailureProbePassed() -> Bool {
+        metalRenderer?.mrvDrawFailureProbePassed() == true
+    }
+
     /// Test-only same-frame spatial readback, never enabled in normal use.
     func setSmokeRegionHandler(_ handler: ((UInt32, UInt32, UInt32, UInt32, UInt32) -> Void)?) {
         metalRenderer?.smokeRegionHandler = handler

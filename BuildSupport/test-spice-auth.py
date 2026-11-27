@@ -82,6 +82,8 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
+            if display and not partial and lines.count("MRV_METAL_DRAW_FAILURE_RECOVERY_OK") != 1:
+                raise AssertionError(f"{name}: missing draw failure recovery gate")
             if require_credential_wipe:
                 markers = result.stderr.splitlines()
                 required = ("MRV_NATIVE_AUTH_TICKET_WIPED", "MRV_NATIVE_SESSION_SECRET_WIPED",

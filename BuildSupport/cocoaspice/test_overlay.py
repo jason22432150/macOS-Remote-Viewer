@@ -22,6 +22,7 @@ from overlay import (
     overlay_metal_renderer_diagnostics,
     overlay_metal_frame_observation,
     overlay_metal_pixel_probe,
+    overlay_metal_draw_failure_recovery,
     overlay_package_swift,
     overlay_renderer_protected_category,
     overlay_session_sharing_category,
@@ -603,6 +604,48 @@ static void cs_channel_new(void) {}
             self.assertIn("MTLCommandBufferStatusCompleted", text)
             self.assertIn("if (rendered && frameHandler)", text)
             self.assertIn("[self _completeDraw];", text)
+
+    def test_metal_draw_failure_does_not_present_or_resurrect_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpiceRenderer"
+            header = source / "include" / "CSMetalRenderer.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("/// Modify upscaler and downscaler settings")
+            impl = source / "CSMetalRenderer.m"
+            impl.write_text("""@property (nonatomic) BOOL renderNeedsUpdate;
+    [self _renderCommand:commandBuffer
+              drawSource:sourceData
+          viewportOrigin:self.renderViewportOrigin
+           viewportScale:self.renderViewportScale
+            viewportSize:self.renderViewportSize
+                 sampler:self.renderSampler
+    renderPassDescriptor:renderPassDescriptor];
+    [commandBuffer presentDrawable:currentDrawable];
+    [self.renderCompletions removeAllObjects];
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        BOOL rendered = commandBuffer.status == MTLCommandBufferStatusCompleted;
+            if (rendered && frameHandler) {
+                frameHandler();
+            }
+    }];
+    renderEncoder.label = @"View Presentation";
+    [renderEncoder endEncoding];
+}
+
+- (void)_renderEncoder:
+- (void)requestPresentationRefresh {
+""")
+            overlay_metal_draw_failure_recovery(root)
+            result = impl.read_text()
+            self.assertIn("if (!renderEncoder) return NO;", result)
+            self.assertIn("[renderEncoder endEncoding];\n    return YES;", result)
+            self.assertLess(result.index("if (rejectEncode ||"), result.index("presentDrawable"))
+            self.assertIn("self.renderNeedsUpdate = YES;\n        [self _completeDraw];\n        return;", result)
+            self.assertIn("!rendered && self.renderSourceData == sourceData", result)
+            self.assertIn("!rejectCompletion && commandBuffer.status == MTLCommandBufferStatusCompleted", result)
+            self.assertIn("MRV_ENABLE_INTEGRATION_PROBES", result)
+            self.assertIn("mrvArmDrawFailureProbe()", header.read_text())
 
     def test_pixel_probe_measures_gpu_interval_after_completion(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
