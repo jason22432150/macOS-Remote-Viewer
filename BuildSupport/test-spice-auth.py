@@ -325,9 +325,9 @@ def compile_native_probe(app, destination, source="spice-native-multi.c"):
             raise RuntimeError(f"native probe: missing packaged dependency {name}")
 
 
-def validate_multi_metrics(lines):
+def validate_multi_metrics(lines, network_fault=False):
     """Require one sustained, measurable window per phase; no CI speed threshold."""
-    expected = {(i, 4): set(range(4)) for i in range(4)}
+    expected = {(0, 4): set(range(4))} if network_fault else {(i, 4): set(range(4)) for i in range(4)}
     expected[(2, 3)] = {0, 2, 3}
     resources = {}
     samples = {}
@@ -517,7 +517,42 @@ def validate_workspace_graphics(lines):
     print(final[0], flush=True)
 
 
-def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False):
+def run_network_fault_client(command, root, env, victim):
+    """Wait for an explicit live-display barrier before killing a test-owned peer."""
+    stdout_path = root / "network-fault-client.out"
+    stderr_path = root / "network-fault-client.err"
+    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        client = subprocess.Popen(command, cwd=root, env=env, stdout=stdout, stderr=stderr)
+        try:
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                if client.poll() is not None:
+                    raise AssertionError("network fault: client exited before live barrier")
+                if "MRV_NETWORK_FAULT_READY victim=1 live=4" in stdout_path.read_text(errors="replace").splitlines():
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("network fault: missing live barrier")
+            if victim.poll() is not None:
+                raise AssertionError("network fault: victim exited before injection")
+            # Real socket loss, not an app cancellation or a fabricated callback.
+            victim.kill()
+            if victim.wait(timeout=5) != -9:
+                raise AssertionError("network fault: expected SIGKILL")
+            print("MRV_NETWORK_FAULT_INJECTED victim=1 signal=9", flush=True)
+            client.wait(timeout=35)
+        finally:
+            if client.poll() is None:
+                client.kill()
+                client.wait(timeout=5)
+            print(stdout_path.read_text(errors="replace")[-12000:], flush=True)
+            print(stderr_path.read_text(errors="replace")[-16000:], flush=True)
+    return subprocess.CompletedProcess(command, client.returncode,
+                                       stdout_path.read_text(errors="replace"),
+                                       stderr_path.read_text(errors="replace"))
+
+
+def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False, network_fault=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
     profiles = []
@@ -533,7 +568,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
         try:
             for i, port in enumerate(ports):
                 prefix = ("native" if native_probe is not None else "wrapper" if wrapper_only
-                          else "workspace" if workspace else "multi")
+                          else "workspace" if workspace else "network-fault" if network_fault else "multi")
                 profile = root / f"{prefix}-{i}.vv"
                 profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
                 profiles.append(profile)
@@ -578,13 +613,17 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 command = [str(native_probe), str(root / "trusted.pem"), *map(str, ports)]
             else:
                 mode = ("--loopback-spice-wrapper-probe" if wrapper_only else
-                        "--loopback-spice-workspace-probe" if workspace else "--loopback-spice-multi-probe")
+                        "--loopback-spice-workspace-probe" if workspace else
+                        "--loopback-spice-network-fault-probe" if network_fault else "--loopback-spice-multi-probe")
                 command = [str(exe), mode, *map(str, profiles)]
-            result = subprocess.run(command, cwd=root, env=env,
-                                    capture_output=True, text=True, timeout=540 if workspace else 110)
-            print(result.stdout[-12000:])
-            if result.stderr:
-                print(result.stderr[-16000:])
+            if network_fault:
+                result = run_network_fault_client(command, root, env, servers[1])
+            else:
+                result = subprocess.run(command, cwd=root, env=env,
+                                        capture_output=True, text=True, timeout=540 if workspace else 110)
+                print(result.stdout[-12000:])
+                if result.stderr:
+                    print(result.stderr[-16000:])
             if result.returncode:
                 raise AssertionError(f"multi: client failed (exit={result.returncode})")
             if "MRV_GLIB_CRITICAL" in result.stderr or "CRITICAL GLib" in result.stdout:
@@ -627,6 +666,16 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                                "MRV_WORKSPACE_OK"):
                     if lines.count(marker) != 1:
                         raise AssertionError(f"workspace: missing {marker}")
+            elif network_fault:
+                markers = [line for line in lines if line.startswith("MRV_NETWORK_FAULT_")]
+                if (len(markers) != 4 or markers[0] != "MRV_NETWORK_FAULT_READY victim=1 live=4" or
+                        markers[2:] != ["MRV_NETWORK_FAULT_ISOLATION_OK victim=1 survivors=3",
+                                        "MRV_NETWORK_FAULT_OK"]):
+                    raise AssertionError("network fault: incomplete ordered isolation markers")
+                terminal = re.fullmatch(r"MRV_NETWORK_FAULT_TERMINAL victim=1 elapsed-ms=(\d+)", markers[1])
+                if not terminal or int(terminal.group(1)) > 10000:
+                    raise AssertionError("network fault: missing bounded terminal transition")
+                validate_multi_metrics(lines, network_fault=True)
             else:
                 phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
                 if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:
@@ -651,10 +700,11 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                     server.wait(timeout=5)
                 print(f"{log.stem}: exit={server.returncode}")
                 print(log.read_text(errors="replace")[-4000:])
-        for server, log in zip(servers, logs):
+        for index, (server, log) in enumerate(zip(servers, logs)):
             lines = log.read_text(errors="replace").splitlines()
-            if server.returncode != 0:
-                raise AssertionError(f"{log.stem}: abnormal exit")
+            killed = network_fault and index == 1
+            if server.returncode != (-9 if killed else 0):
+                raise AssertionError(f"{log.stem}: unexpected exit")
             sizes = [re.fullmatch(r"FIXTURE_QXL_BYTES (\d+)", line)
                      for line in lines if line.startswith("FIXTURE_QXL_BYTES ")]
             if len(sizes) != 1 or sizes[0] is None or not 0 < int(sizes[0].group(1)) < 16 * 1024 * 1024:
@@ -663,6 +713,10 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 initialized = [line for line in lines if line.startswith(f"{channel}_INITIALIZED ")]
                 if initialized != [f"{channel}_INITIALIZED tls=1"] * (6 if workspace else 1):
                     raise AssertionError(f"{log.stem}: unexpected channels: {initialized}")
+            if killed:
+                # SIGKILL cannot emit orderly teardown counters. TLS channel
+                # initialization and real client pixel samples were required.
+                continue
             counts = [re.fullmatch(r"DRAW_COUNTS submitted=(\d+) consumed=(\d+) released=(\d+)", line)
                       for line in lines if line.startswith("DRAW_COUNTS ")]
             if len(counts) != 1 or counts[0] is None:
@@ -920,6 +974,11 @@ def main():
         except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             failures.append(f"workspace: {exc}")
             print(f"MRV_WORKSPACE_FAILURE {exc}", flush=True)
+        try:
+            test_multi(args.app.resolve(), root, fixture, network_fault=True)
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"network-fault: {exc}")
+            print(f"MRV_NETWORK_FAULT_FAILURE {exc}", flush=True)
         # The 4K fixture has a deliberately larger QXL memslot. Do not
         # change ordinary server memory/worker release behavior or run it
         # ahead of the existing multi-session regressions.

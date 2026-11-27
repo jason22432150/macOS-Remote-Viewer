@@ -206,6 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackSpiceWorkspaceProbe(files: arguments[(index + 1)...].map {
                 URL(fileURLWithPath: $0)
             })
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-network-fault-probe") {
+            guard arguments.count == index + 5 else { Darwin.exit(2) }
+            runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
+                URL(fileURLWithPath: $0)
+            }, networkFault: true)
         } else if let index = arguments.firstIndex(of: "--loopback-spice-multi-probe") {
             guard arguments.count == index + 5 else { Darwin.exit(2) }
             runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
@@ -651,7 +656,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Four simultaneous real connections, one shared GPU device, four isolated canvases.
     /// All canvases remain visible in a test-only grid so a headless/occluded view
     /// cannot prevent the background rendering checks. No clipboard or guest input.
-    private func runLoopbackSpiceMultiProbe(files: [URL]) {
+    private func runLoopbackSpiceMultiProbe(files: [URL], networkFault: Bool = false) {
         Task { @MainActor in
             let expected: [Set<UInt32>] = [
                 [0xff0000, 0x00ff00], [0x0000ff, 0xffff00],
@@ -810,6 +815,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         print("MRV_MULTI_DIAGNOSTIC session=\(i) connected=\(controllers[i].state == .connected) rendered=\(controllers[i].hasRenderedFrame) samples=\(observed[i].count)")
                     }
                     throw SessionError.displayTimeout
+                }
+
+                if networkFault {
+                    // Require all four actual TLS displays before requesting
+                    // external fault injection. The harness kills only peer 1.
+                    try await validatePhase(active: 0)
+                    print("MRV_NETWORK_FAULT_READY victim=1 live=4")
+                    fflush(nil)
+                    let deadline = ContinuousClock.now + .seconds(10)
+                    let start = ContinuousClock.now
+                    var terminal = false
+                    while ContinuousClock.now < deadline {
+                        guard [0, 2, 3].allSatisfy({ controllers[$0].state == .connected }),
+                              foreign.isEmpty else { throw SessionError.network }
+                        switch controllers[1].state {
+                        case .disconnected, .failed:
+                            terminal = true
+                        default:
+                            break
+                        }
+                        if terminal { break }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    // Do not cancel the victim to manufacture a terminal state.
+                    guard terminal, controllers[1].displaySize == nil,
+                          !controllers[1].hasRenderedFrame,
+                          !controllers[1].agent.isConnected,
+                          !controllers[1].agent.supportsMonitorsConfig,
+                          !controllers[1].agent.supportsClipboard,
+                          adapters[1].nativeRendererCountForProbe() == nil else {
+                        throw SessionError.cancelled
+                    }
+                    let elapsed = start.duration(to: ContinuousClock.now).components
+                    let ms = Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
+                    print("MRV_NETWORK_FAULT_TERMINAL victim=1 elapsed-ms=\(ms)")
+                    canvases[1].setSmokePixelHandler(nil)
+                    canvases[1].prepareForRemoval()
+                    canvases[1].removeFromSuperview()
+                    live.remove(1)
+                    // Fresh color pairs and GPU completions, not just a stale
+                    // connected flag, must survive the peer's abrupt exit.
+                    try await validatePhase(active: 2)
+                    guard model.sessions.isEmpty, foreign.isEmpty,
+                          !adapters[1].rendererRegistrationForProbe(),
+                          controllers[1].displaySize == nil,
+                          !controllers[1].hasRenderedFrame else { throw SessionError.cancelled }
+                    switch controllers[1].state {
+                    case .disconnected, .failed: break
+                    default: throw SessionError.cancelled
+                    }
+                    print("MRV_NETWORK_FAULT_ISOLATION_OK victim=1 survivors=3")
+                    print("MRV_PROBE_WORKSPACE_EMPTY")
+                    cleanUp()
+                    print("MRV_NETWORK_FAULT_OK")
+                    fflush(nil)
+                    Darwin.exit(0)
                 }
 
                 for active in 0..<4 {

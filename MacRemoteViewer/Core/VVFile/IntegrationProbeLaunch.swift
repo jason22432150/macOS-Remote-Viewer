@@ -17,6 +17,7 @@ public enum IntegrationProbeLaunch: Equatable, Sendable {
         "--loopback-spice-display-probe": 1,
         "--loopback-spice-wrapper-probe": 4,
         "--loopback-spice-multi-probe": 4,
+        "--loopback-spice-network-fault-probe": 4,
         "--loopback-spice-partial-probe": 1,
         "--loopback-spice-workspace-probe": 4,
         "--loopback-spice-agent-probe": 2,

@@ -27,6 +27,7 @@ final class IntegrationProbeLaunchTests: XCTestCase {
             ("--loopback-spice-clipboard-reactivate-probe", ["a.vv", "b.vv", "request", "delivered"]),
             ("--loopback-spice-wrapper-probe", ["a.vv", "b.vv", "c.vv", "d.vv"]),
             ("--loopback-spice-multi-probe", ["a.vv", "b.vv", "c.vv", "d.vv"]),
+            ("--loopback-spice-network-fault-probe", ["a.vv", "b.vv", "c.vv", "d.vv"]),
             ("--loopback-spice-workspace-probe", ["a.vv", "b.vv", "c.vv", "d.vv"]),
         ]
         for (mode, operands) in cases {
