@@ -1459,6 +1459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var window: NSWindow?
             var canvas: RemoteCanvasView?
             var colors = Set<UInt32>()
+            var stage = 0
             do {
                 let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
                 let profile = try VVParser().parse(data: data)
@@ -1485,7 +1486,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 controller.open(profile)
                 let small = RemoteFrame(width: 640, height: 480)
                 let large = RemoteFrame(width: 3840, height: 2160)
-                for stage in 0...4 {
+                for nextStage in 0...4 {
+                    stage = nextStage
                     let size = stage % 2 == 0 ? small : large
                     let expected: Set<UInt32> = stage % 2 == 0 ? [0xff0000, 0x00ff00] : [0x00ffff, 0xff00ff]
                     if stage > 0 {
@@ -1495,6 +1497,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let deadline = ContinuousClock.now + .seconds(14)
                     var passed = false
                     while ContinuousClock.now < deadline {
+                        // This probe hosts a bare NSView, not the SwiftUI
+                        // representable that normally reconciles display changes.
+                        // Match the established agent-resize/display probes.
+                        view.attachRendererIfNeeded()
+                        view.updateViewport()
                         if case .failed = controller.state { throw SessionError.network }
                         if controller.state == .disconnected { throw SessionError.disconnected }
                         if controller.state == .connected && controller.agent.isConnected &&
@@ -1510,7 +1517,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         try await Task.sleep(for: .milliseconds(50))
                     }
-                    guard passed else { throw SessionError.displayTimeout }
+                    guard passed else {
+                        let actual = controller.displaySize
+                        let stateReady = controller.state == .connected
+                        let agentReady = controller.agent.isConnected && controller.agent.supportsMonitorsConfig
+                        print("MRV_RESIZE_STRESS_TIMEOUT stage=\(stage) connected=\(stateReady ? 1 : 0) agent=\(agentReady ? 1 : 0) actual=\(actual?.width ?? 0)x\(actual?.height ?? 0) rendered=\(controller.hasRenderedFrame ? 1 : 0) expected-colors=\(expected.intersection(colors).count) mapping=\(view.smokeMappingMatches(size) ? 1 : 0) unapplied=\(controller.guestDidNotApplyResolution ? 1 : 0) bytes=\(CSDisplay.mrvGraphicsBytesForProbe())")
+                        throw SessionError.displayTimeout
+                    }
                 }
                 view.setSmokePixelHandler(nil)
                 view.prepareForRemoval()
@@ -1532,7 +1545,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 canvas?.prepareForRemoval()
                 controller.cancel()
                 window?.orderOut(nil)
-                print("MRV_RESIZE_STRESS_FAILED")
+                let category = (error as? SessionError)?.description ?? "external-error"
+                print("MRV_RESIZE_STRESS_FAILED stage=\(stage) category=\(category)")
                 fflush(nil)
                 Darwin.exit(1)
             }
