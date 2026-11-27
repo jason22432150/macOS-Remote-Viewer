@@ -2554,6 +2554,125 @@ static BOOL mrv_verify_graphics_budget(id<MTLDevice> device) {
     ])
 
 
+def overlay_canvas_allocation_retry(checkout: Path) -> None:
+    """Retry failed owned canvas allocations with one weak delayed wakeup."""
+    path = checkout / "Sources" / "CocoaSpice" / "CSDisplay.m"
+    _replace_once(path, [
+        ("@property (nonatomic) NSUInteger mrvCanvasFaultStage;",
+         "@property (nonatomic) NSUInteger mrvCanvasFaultStage;\n"
+         "@property (nonatomic) BOOL mrvAllocationRetryPending;\n"
+         "@property (nonatomic) NSUInteger mrvAllocationRetryDelayMs;\n"
+         "@property (nonatomic) NSUInteger mrvBudgetRecoveryStage;\n"
+         "@property (nonatomic, strong, nullable) id mrvBudgetTestHold;\n"
+         "- (void)mrvScheduleCanvasAllocationRetry;"),
+        ("""    self.canvasData = NULL;
+    self.canvasBuffer = NULL; // no more new draws""",
+         """    self.canvasData = NULL;
+    self.mrvBudgetTestHold = nil;
+    self.mrvAllocationRetryDelayMs = 0;
+    self.canvasBuffer = NULL; // no more new draws"""),
+        ("""    [self rebuildDisplayVertices];
+    if (!CGRectIsEmpty(self.visibleArea) && self.canvasData && self.canvasBuffer && self.vertices) {""",
+         """    if (self.canvasData && !CGRectIsEmpty(self.visibleArea) &&
+        (!self.canvasBuffer || !self.canvasTexture || !self.vertices)) {
+        // Reattach must recover allocations previously denied while unhosted.
+        [self mrvScheduleCanvasAllocationRetry];
+        return;
+    }
+    [self rebuildDisplayVertices];
+    if (!CGRectIsEmpty(self.visibleArea) && self.canvasData && self.canvasBuffer && self.vertices) {"""),
+        ("""- (void)rebuildCanvasTexture {
+    // Invalidate old publication even when allocation or validation fails.""",
+         """- (void)mrvScheduleCanvasAllocationRetry {
+    NSAssert(CSMain.sharedInstance.isCurrentContextMain, @"Canvas allocation retry belongs to worker");
+    if (self.mrvAllocationRetryPending || !self.canvasData || self.isGLEnabled ||
+        !self.device || !self.renderers.count || CGRectIsEmpty(self.visibleArea)) return;
+    self.mrvAllocationRetryPending = YES;
+    NSUInteger delay = self.mrvAllocationRetryDelayMs ?: 500;
+    self.mrvAllocationRetryDelayMs = MIN(delay * 2, 4000);
+    // The timer owns neither the display nor a raw framebuffer pointer.
+    // Recheck current state after admission on the worker; no stale surface
+    // data is captured, and a destroyed/unhosted canvas stops this chain.
+    __weak CSDisplay *weakDisplay = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_MSEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [CSMain.sharedInstance asyncWith:^{
+            CSDisplay *display = weakDisplay;
+            if (!display) return;
+            display.mrvAllocationRetryPending = NO;
+            if (!display.canvasData || display.isGLEnabled || !display.device ||
+                !display.renderers.count || CGRectIsEmpty(display.visibleArea)) {
+                display.mrvBudgetTestHold = nil;
+                display.mrvAllocationRetryDelayMs = 0;
+                return;
+            }
+            if (display.mrvBudgetRecoveryStage == 1 && display.mrvBudgetTestHold) {
+                display.mrvBudgetTestHold = nil;
+                display.mrvBudgetRecoveryStage = 2;
+            }
+            if (!display.canvasBuffer || !display.canvasTexture || !display.vertices)
+                [display rebuildCanvasTexture];
+            else
+                display.mrvAllocationRetryDelayMs = 0;
+        }];
+    });
+}
+
+- (void)rebuildCanvasTexture {
+    // Invalidate old publication even when allocation or validation fails."""),
+        ("""    id<MTLTexture> texture = MRVNewTexture(self.device, textureDescriptor);
+    id<MTLBuffer> buffer = texture ? MRVNewBuffer(self.device, canvasSize, MTLResourceStorageModeShared) : nil;""",
+         """    if (!self.renderers.count) return;
+    // Integration-only shared-ledger exhaustion; no actual large allocation.
+    if (!self.mrvBudgetRecoveryStage &&
+        g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+        g_strcmp0(g_getenv("MRV_CANVAS_BUDGET_FAULT"), "1") == 0) {
+        uint64_t used = atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);
+        if (used < mrvGraphicsLimit) {
+            self.mrvBudgetTestHold = mrv_reserve_graphics(mrvGraphicsLimit - used);
+            if (self.mrvBudgetTestHold) self.mrvBudgetRecoveryStage = 1;
+        }
+    }
+    id<MTLTexture> texture = MRVNewTexture(self.device, textureDescriptor);
+    id<MTLBuffer> buffer = texture ? MRVNewBuffer(self.device, canvasSize, MTLResourceStorageModeShared) : nil;"""),
+        ("""        self.canvasDirtyRect = CGRectZero;
+        return;
+    }
+    // A new staging generation""",
+         """        self.canvasDirtyRect = CGRectZero;
+        [self mrvScheduleCanvasAllocationRetry];
+        return;
+    }
+    // A new staging generation"""),
+        ("""    [self rebuildDisplayVertices];
+    if (self.vertices) {
+        self.ready = YES;
+    }
+    [self drawRegion:visibleArea];""",
+         """    [self rebuildDisplayVertices];
+    if (!self.vertices) {
+        self.ready = NO;
+        self.canvasBuffer = nil;
+        self.canvasTexture = nil;
+        [self mrvScheduleCanvasAllocationRetry];
+        return;
+    }
+    self.ready = YES;
+    self.mrvAllocationRetryDelayMs = 0;
+    [self drawRegion:visibleArea];"""),
+        ("""        self.canvasUploadValid = YES;
+        self.canvasRetryAvailable = YES;
+        [self invalidate];""",
+         """        self.canvasUploadValid = YES;
+        self.canvasRetryAvailable = YES;
+        [self invalidate];
+        if (self.mrvBudgetRecoveryStage == 2 && full) {
+            self.mrvBudgetRecoveryStage = 3;
+            puts("MRV_CANVAS_BUDGET_RECOVERY_OK"); fflush(stdout);
+        }"""),
+    ])
+
+
 def overlay_metal_draw_failure_recovery(checkout: Path) -> None:
     """Do not present an unencoded draw; retry failed current presentations."""
     root = checkout / "Sources" / "CocoaSpiceRenderer"
@@ -3169,6 +3288,7 @@ def main() -> None:
     overlay_cursor_texture_ownership(checkout)
     overlay_canvas_upload_recovery(checkout)
     overlay_graphics_allocation_budget(checkout)
+    overlay_canvas_allocation_retry(checkout)
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
     overlay_metal_draw_failure_recovery(checkout)

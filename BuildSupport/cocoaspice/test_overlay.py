@@ -27,6 +27,7 @@ from overlay import (
     overlay_metal_presentation_backpressure,
     overlay_canvas_upload_recovery,
     overlay_graphics_allocation_budget,
+    overlay_canvas_allocation_retry,
     overlay_cursor_texture_ownership,
     overlay_package_swift,
     overlay_renderer_protected_category,
@@ -679,6 +680,47 @@ static void cs_channel_new(void) {}
             self.assertIn("[CSMain.sharedInstance asyncWith:^{ finish(success); }];", result)
             self.assertIn("self.canvasUploadValid = YES;\n        self.canvasRetryAvailable = YES;\n        [self invalidate];", result)
             self.assertNotIn("[self copyBuffer:submittedBuffer", result)
+
+    def test_canvas_allocation_retry_is_weak_bounded_and_full_upload_gated(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpice"
+            source.mkdir(parents=True)
+            display = source / "CSDisplay.m"
+            display.write_text("""@property (nonatomic) NSUInteger mrvCanvasFaultStage;
+    self.canvasData = NULL;
+    self.canvasBuffer = NULL; // no more new draws
+    [self rebuildDisplayVertices];
+    if (!CGRectIsEmpty(self.visibleArea) && self.canvasData && self.canvasBuffer && self.vertices) {
+- (void)rebuildCanvasTexture {
+    // Invalidate old publication even when allocation or validation fails.
+    id<MTLTexture> texture = MRVNewTexture(self.device, textureDescriptor);
+    id<MTLBuffer> buffer = texture ? MRVNewBuffer(self.device, canvasSize, MTLResourceStorageModeShared) : nil;
+        self.canvasDirtyRect = CGRectZero;
+        return;
+    }
+    // A new staging generation
+    [self rebuildDisplayVertices];
+    if (self.vertices) {
+        self.ready = YES;
+    }
+    [self drawRegion:visibleArea];
+        self.canvasUploadValid = YES;
+        self.canvasRetryAvailable = YES;
+        [self invalidate];
+""")
+            overlay_canvas_allocation_retry(root)
+            result = display.read_text()
+            self.assertIn("self.mrvAllocationRetryPending || !self.canvasData", result)
+            self.assertIn("MIN(delay * 2, 4000)", result)
+            self.assertIn("__weak CSDisplay *weakDisplay = self;", result)
+            self.assertIn("CSDisplay *display = weakDisplay;", result)
+            self.assertIn("!display.renderers.count", result)
+            self.assertIn("display.mrvAllocationRetryPending = NO;", result)
+            self.assertIn("display.mrvBudgetRecoveryStage = 2;", result)
+            self.assertIn("self.mrvBudgetRecoveryStage == 2 && full", result)
+            self.assertIn("MRV_CANVAS_BUDGET_RECOVERY_OK", result)
+            self.assertIn("MRV_CANVAS_BUDGET_FAULT", result)
 
     def test_graphics_budget_charges_resources_and_rejects_before_allocation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

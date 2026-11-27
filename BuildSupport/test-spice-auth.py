@@ -61,6 +61,9 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
             env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
             env.pop("MRV_CANVAS_UPLOAD_FAULT", None)
+            env.pop("MRV_CANVAS_BUDGET_FAULT", None)
+            if display and not partial:
+                env["MRV_CANVAS_BUDGET_FAULT"] = "1"
             if partial:
                 env["MRV_CANVAS_UPLOAD_FAULT"] = "1"
             if require_credential_wipe:
@@ -86,6 +89,9 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
             if display and not partial:
+                if lines.count("MRV_CANVAS_BUDGET_RECOVERY_OK") != 2:
+                    raise AssertionError(f"{name}: missing allocation recovery in both connection rounds")
+                print("MRV_CANVAS_BUDGET_RECOVERY_OK rounds=2", flush=True)
                 for marker in ("MRV_METAL_DRAW_FAILURE_RECOVERY_OK",
                                "MRV_METAL_PRESENTATION_BACKPRESSURE_OK limit=1 blocked=128"):
                     if lines.count(marker) != 1:
