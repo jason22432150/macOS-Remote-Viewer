@@ -14,6 +14,7 @@ from overlay import (
     overlay_connection_pve_api,
     overlay_connection_lifecycle,
     overlay_display_initial_frame,
+    overlay_renderer_worker_registration,
     overlay_gst_ios_init,
     overlay_horizontal_scroll_compatibility,
     overlay_input_release_and_secure_attention,
@@ -481,6 +482,41 @@ static void cs_channel_new(void) {}
             )
             self.assertIn("self.cursor.display = self;", display_text)
             self.assertNotIn("possibly retrigger cursor rebuild", display_text)
+
+    def test_renderer_membership_and_source_capture_are_worker_serialized(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpice"
+            header = source / "include" / "CSDisplay+Renderer.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("- (void)removeRenderer:(id<CSRenderer>)renderer NS_SWIFT_NAME(removeRenderer(_:));")
+            path = source / "CSDisplay+Renderer.m"
+            path.write_text("""- (void)addRenderer:(id<CSRenderer>)renderer {
+    NSArray<id<CSRenderer>> *renderers = self.renderers;
+    BOOL isNewRenderer = ![renderers containsObject:renderer];
+    if (isNewRenderer) {
+        self.renderers = [renderers arrayByAddingObject:renderer];
+    } else {
+        [renderer invalidateRenderSource:self withCompletion:nil];
+    }
+}
+
+- (void)removeRenderer:(id<CSRenderer>)renderer {
+    NSMutableArray<id<CSRenderer>> *renderers = [self.renderers mutableCopy];
+    [renderers removeObject:renderer];
+    self.renderers = renderers;
+    [renderer disableRender];
+}
+""")
+            overlay_renderer_worker_registration(root)
+            result = path.read_text()
+            add, remove = result.split("- (void)removeRenderer:")
+            self.assertLess(add.index("syncWith:"), add.index("self.renderers"))
+            self.assertLess(remove.index("syncWith:"), remove.index("self.renderers"))
+            self.assertLess(remove.index("if (![renderers containsObject:renderer]) return;"),
+                            remove.index("[renderer disableRender];"))
+            self.assertIn("mrvRendererCount()", header.read_text())
+            self.assertIn("NSUIntegerMax", result)
 
     def test_renderer_protected_category_is_renamed_to_avoid_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

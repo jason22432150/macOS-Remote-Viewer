@@ -633,6 +633,64 @@ def overlay_display_initial_frame(checkout: Path) -> None:
     )
 
 
+def overlay_renderer_worker_registration(checkout: Path) -> None:
+    """Serialize renderer membership and source capture with native display updates."""
+    root = checkout / "Sources" / "CocoaSpice"
+    path = root / "CSDisplay+Renderer.m"
+    _replace_once(path, [
+        ("""- (void)addRenderer:(id<CSRenderer>)renderer {
+    NSArray<id<CSRenderer>> *renderers = self.renderers;
+    BOOL isNewRenderer""",
+         """- (void)addRenderer:(id<CSRenderer>)renderer {
+    // Do not capture worker-owned texture/vertex fields on AppKit.
+    [CSMain.sharedInstance syncWith:^{
+    NSArray<id<CSRenderer>> *renderers = self.renderers;
+    BOOL isNewRenderer"""),
+        ("""        [renderer invalidateRenderSource:self withCompletion:nil];
+    }
+}
+
+- (void)removeRenderer:(id<CSRenderer>)renderer {
+    NSMutableArray<id<CSRenderer>> *renderers = [self.renderers mutableCopy];
+    [renderers removeObject:renderer];
+    self.renderers = renderers;
+    [renderer disableRender];
+}""",
+         """        [renderer invalidateRenderSource:self withCompletion:nil];
+    }
+    }];
+}
+
+- (void)removeRenderer:(id<CSRenderer>)renderer {
+    [CSMain.sharedInstance syncWith:^{
+        NSMutableArray<id<CSRenderer>> *renderers = [self.renderers mutableCopy];
+        // A repeated removal must not disable a renderer now used elsewhere.
+        if (![renderers containsObject:renderer]) return;
+        [renderers removeObject:renderer];
+        self.renderers = renderers;
+        // The worker submits all older source snapshots before this clear;
+        // no later invalidation can find this renderer in the old list.
+        [renderer disableRender];
+    }];
+}
+
+- (NSUInteger)mrvRendererCount {
+    // Probe only; return a sentinel if the worker did not admit the query.
+    if (![[[NSProcessInfo processInfo] environment][@"MRV_ENABLE_INTEGRATION_PROBES"] isEqualToString:@"1"])
+        return NSUIntegerMax;
+    __block NSUInteger count = NSUIntegerMax;
+    [CSMain.sharedInstance syncWith:^{ count = self.renderers.count; }];
+    return count;
+}"""),
+    ])
+    _replace_once(root / "include" / "CSDisplay+Renderer.h", [
+        ("- (void)removeRenderer:(id<CSRenderer>)renderer NS_SWIFT_NAME(removeRenderer(_:));",
+         "- (void)removeRenderer:(id<CSRenderer>)renderer NS_SWIFT_NAME(removeRenderer(_:));\n"
+         "/// Integration-only count on the owning worker.\n"
+         "- (NSUInteger)mrvRendererCount NS_SWIFT_NAME(mrvRendererCount());"),
+    ])
+
+
 def pkgconfig_tokens(*args: str) -> list[str]:
     output = subprocess.check_output(["pkg-config", *args], text=True)
     return [token for token in output.split() if token]
@@ -2269,6 +2327,7 @@ def main() -> None:
     ])
     overlay_package_swift(checkout)
     overlay_display_initial_frame(checkout)
+    overlay_renderer_worker_registration(checkout)
     overlay_renderer_protected_category(checkout)
     overlay_metal_renderer_diagnostics(checkout)
     overlay_metal_renderer_complete_pending_draws(

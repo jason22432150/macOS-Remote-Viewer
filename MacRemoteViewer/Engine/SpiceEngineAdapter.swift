@@ -239,6 +239,11 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         return pendingRenderer != nil || attachedRenderer != nil
     }
 
+    func nativeRendererCountForProbe() -> UInt? {
+        guard ProcessInfo.processInfo.environment["MRV_ENABLE_INTEGRATION_PROBES"] == "1" else { return nil }
+        return display?.mrvRendererCount()
+    }
+
     private func clearFrameObserver() {
         frameGeneration = UUID()
         (pendingRenderer as? CSMetalRenderer)?.frameRenderedHandler = nil
@@ -341,6 +346,7 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         hopToMain(from: connection) { adapter in
             if adapter.display === display {
                 adapter.clearFrameObserver()
+                if let attached = adapter.attachedRenderer { display.removeRenderer(attached) }
                 adapter.attachedRenderer = nil
                 adapter.display = nil
                 adapter.delegate?.engineDidLoseDisplay()

@@ -813,19 +813,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Temporarily unhost a live canvas without disconnecting its
                 // session. Exercise AppKit window callbacks and explicit retries.
                 let canvas = canvases[1]
-                guard adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                guard adapters[1].rendererRegistrationForProbe(),
+                      adapters[1].nativeRendererCountForProbe() == 1 else { throw SessionError.cancelled }
                 canvas.removeFromSuperview()
                 canvas.attachRendererIfNeeded()
                 guard canvas.window == nil, canvas.isPaused,
-                      !adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                      !adapters[1].rendererRegistrationForProbe(),
+                      adapters[1].nativeRendererCountForProbe() == 0 else { throw SessionError.cancelled }
                 try await Task.sleep(for: .milliseconds(100))
                 guard !adapters[1].rendererRegistrationForProbe(),
+                      adapters[1].nativeRendererCountForProbe() == 0,
                       controllers[1].state == .connected else { throw SessionError.cancelled }
                 // Require fresh GPU samples after mounting, not old success.
                 grid.addSubview(canvas)
                 canvas.attachRendererIfNeeded()
                 guard canvas.window === window, !canvas.isPaused,
-                      adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                      adapters[1].rendererRegistrationForProbe(),
+                      adapters[1].nativeRendererCountForProbe() == 1 else { throw SessionError.cancelled }
                 // Drain old GPU callbacks before resetting observations. The
                 // two distinct fixture colors must subsequently appear.
                 try await Task.sleep(for: .milliseconds(300))
@@ -839,11 +843,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // to register the retired view must remain harmless.
                 canvas.prepareForRemoval()
                 canvas.attachRendererIfNeeded()
-                guard canvas.isPaused, !adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                guard canvas.isPaused, !adapters[1].rendererRegistrationForProbe(),
+                      adapters[1].nativeRendererCountForProbe() == 0 else { throw SessionError.cancelled }
                 canvas.removeFromSuperview()
                 grid.addSubview(canvas)
                 canvas.attachRendererIfNeeded()
-                guard canvas.isPaused, !adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                guard canvas.isPaused, !adapters[1].rendererRegistrationForProbe(),
+                      adapters[1].nativeRendererCountForProbe() == 0 else { throw SessionError.cancelled }
                 canvas.removeFromSuperview()
                 print("MRV_CANVAS_RENDERER_LIFECYCLE_OK")
                 // Disconnect one renderer while the remaining three continue.
