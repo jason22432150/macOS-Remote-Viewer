@@ -40,21 +40,26 @@ static Probe probe;
  * Inspect the actual kernel values instead of assuming setsockopt succeeded. */
 static gboolean verify_keepalive(SpiceChannel *channel, unsigned index, int type, int id) {
     GSocket *sock = NULL;
-    gint enabled = -1, idle = -1, interval = -1, count = -1;
+    gint keepalive_raw = -1, idle = -1, interval = -1, count = -1;
+    gboolean keepalive_read = FALSE;
     g_object_get(channel, "socket", &sock, NULL);
     gboolean ok = FALSE;
     if (sock) {
         GSocketFamily family = g_socket_get_family(sock);
         ok = (family == G_SOCKET_FAMILY_IPV4 || family == G_SOCKET_FAMILY_IPV6) &&
-             g_socket_get_option(sock, SOL_SOCKET, SO_KEEPALIVE, &enabled, NULL) &&
+             (keepalive_read = g_socket_get_option(sock, SOL_SOCKET, SO_KEEPALIVE, &keepalive_raw, NULL)) &&
              g_socket_get_option(sock, IPPROTO_TCP, TCP_KEEPALIVE, &idle, NULL) &&
              g_socket_get_option(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, NULL) &&
              g_socket_get_option(sock, IPPROTO_TCP, TCP_KEEPCNT, &count, NULL) &&
-             enabled == 1 && idle == 30 && interval == 15 && count == 3;
+             keepalive_raw != 0 && idle == 30 && interval == 15 && count == 3;
     }
     g_clear_object(&sock);
-    printf("MRV_NATIVE_KEEPALIVE session=%u type=%d id=%d enabled=%d idle=%d interval=%d count=%d ok=%d\n",
-           index, type, id, enabled, idle, interval, count, ok ? 1 : 0);
+    // Darwin may return the SO_KEEPALIVE option bit (0x0008), not 1.
+    // A failed read must never normalize the sentinel -1 into success.
+    gboolean enabled = keepalive_read && keepalive_raw != 0;
+    printf("MRV_NATIVE_KEEPALIVE session=%u type=%d id=%d enabled=%d raw=%d read=%d idle=%d interval=%d count=%d ok=%d\n",
+           index, type, id, enabled ? 1 : 0, keepalive_raw, keepalive_read ? 1 : 0,
+           idle, interval, count, ok ? 1 : 0);
     fflush(stdout);
     return ok;
 }

@@ -734,12 +734,21 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 if "MRV_NATIVE_MULTI_OK" not in lines:
                     raise AssertionError("native multi: missing success marker")
                 keepalive = [line for line in lines if line.startswith("MRV_NATIVE_KEEPALIVE ")]
-                expected_keepalive = {
-                    f"MRV_NATIVE_KEEPALIVE session={i} type={channel} id=0 enabled=1 idle=30 interval=15 count=3 ok=1"
-                    for i in range(4) for channel in (1, 2)
-                }
-                if len(keepalive) != 8 or set(keepalive) != expected_keepalive:
-                    raise AssertionError(f"native multi: missing or incorrect socket keepalive evidence: {keepalive}")
+                expected_keepalive = {(i, channel) for i in range(4) for channel in (1, 2)}
+                seen_keepalive = set()
+                for line in keepalive:
+                    match = re.fullmatch(
+                        r"MRV_NATIVE_KEEPALIVE session=(\d+) type=(\d+) id=0 enabled=1 raw=(-?\d+) read=1 idle=30 interval=15 count=3 ok=1",
+                        line)
+                    if not match:
+                        raise AssertionError(f"native multi: invalid keepalive record: {line}")
+                    session, channel, raw = map(int, match.groups())
+                    key = (session, channel)
+                    if raw == 0 or key not in expected_keepalive or key in seen_keepalive:
+                        raise AssertionError(f"native multi: invalid or duplicate keepalive record: {line}")
+                    seen_keepalive.add(key)
+                if len(keepalive) != 8 or seen_keepalive != expected_keepalive:
+                    raise AssertionError(f"native multi: missing socket keepalive evidence: {keepalive}")
                 print("MRV_NATIVE_KEEPALIVE_OK sessions=4 channels=8 idle=30 interval=15 count=3", flush=True)
             elif wrapper_only:
                 for marker in ("MRV_CALLBACK_FIFO_OK sessions=4 events=512",
