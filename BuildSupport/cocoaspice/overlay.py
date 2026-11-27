@@ -1825,6 +1825,198 @@ def overlay_drawable_demand(checkout: Path) -> None:
     ])
 
 
+def overlay_cursor_texture_ownership(checkout: Path) -> None:
+    """Never modify cursor textures retained by an older GPU draw."""
+    root = checkout / "Sources" / "CocoaSpice"
+    path = root / "CSCursor.m"
+    _replace_once(path, [
+        ('#import <spice-client.h>', '#import <spice-client.h>\n#import <math.h>\n#import <stdio.h>'),
+        ("""@property (nonatomic) CGPoint mouseGuest;""",
+         """@property (nonatomic) CGPoint mouseGuest;
+- (BOOL)updateCursorWithSize:(CGSize)size center:(CGPoint)hotspot pixels:(const void *)pixels;
+- (void)destroyCursor;"""),
+        ("""        return;
+    }
+    
+    CGPoint hotspot = CGPointMake(cursor_shape->hot_spot_x, cursor_shape->hot_spot_y);
+    CGSize newSize = CGSizeMake(cursor_shape->width, cursor_shape->height);
+    if (!CGSizeEqualToSize(newSize, self.cursorSize) || !CGPointEqualToPoint(hotspot, self.cursorHotspot)) {
+        [self rebuildCursorWithSize:newSize center:hotspot];
+    }
+    [self drawCursor:cursor_shape->data];
+    // this has to be after drawCursor: which runs in the same serial queue
+    g_boxed_free(SPICE_TYPE_CURSOR_SHAPE, cursor_shape);
+    self.cursorHidden = NO;
+    cs_cursor_invalidate(self);""",
+         """        [self destroyCursor];
+        cs_cursor_invalidate(self);
+        return;
+    }
+
+    CGPoint hotspot = CGPointMake(cursor_shape->hot_spot_x, cursor_shape->hot_spot_y);
+    CGSize newSize = CGSizeMake(cursor_shape->width, cursor_shape->height);
+    // The boxed SPICE shape owns its pixels until the synchronous upload returns.
+    BOOL updated = [self updateCursorWithSize:newSize center:hotspot pixels:cursor_shape->data];
+    g_boxed_free(SPICE_TYPE_CURSOR_SHAPE, cursor_shape);
+    if (updated) self.cursorHidden = NO;
+    cs_cursor_invalidate(self);"""),
+        ("""- (void)setDisplay:(CSDisplay *)display {
+    _display = display;
+    cs_cursor_set(self.channel, NULL, (__bridge void *)self);
+}""",
+         """- (void)setDisplay:(CSDisplay *)display {
+    // Callers in CSConnection and the display repaint/device paths are
+    // worker-owned. Avoid re-uploading an unchanged valid shape on repaint.
+    NSAssert(CSMain.sharedInstance.isCurrentContextMain, @"Cursor display must be set on worker");
+    if (_display == display && self.hasCursor && self.texture.device == display.device) return;
+    _display = display;
+    if (!display) {
+        [self destroyCursor];
+        return;
+    }
+    cs_cursor_set(self.channel, NULL, (__bridge void *)self);
+}"""),
+        ("""    return !self.isInhibited && self.hasCursor && !self.cursorHidden;""",
+         """    return !self.isInhibited && self.hasCursor && !self.cursorHidden &&
+           self.texture != nil && self.vertices != nil;"""),
+        ("""- (void)rebuildCursorWithSize:(CGSize)size center:(CGPoint)hotspot {
+    // hotspot is the offset in buffer for the center of the pointer
+    if (!self.device) {
+        SPICE_DEBUG("[CocoaSpice] MTL device not ready for cursor draw");
+        return;
+    }""",
+         """- (BOOL)updateCursorWithSize:(CGSize)size center:(CGPoint)hotspot pixels:(const void *)pixels {
+    NSAssert(CSMain.sharedInstance.isCurrentContextMain, @"Cursor shape must be updated on worker");
+    id<MTLDevice> device = self.device;
+    // Bound the client allocation independently of the remote shape parser.
+    // SpiceCursorShape exposes no byte length; its decoded buffer remains
+    // the responsibility of spice-gtk.
+    if (!device || !pixels || !isfinite(size.width) || !isfinite(size.height) ||
+        size.width < 1 || size.height < 1 || size.width > 1024 || size.height > 1024 ||
+        floor(size.width) != size.width || floor(size.height) != size.height ||
+        !isfinite(hotspot.x) || !isfinite(hotspot.y) ||
+        hotspot.x < 0 || hotspot.y < 0 || hotspot.x >= size.width || hotspot.y >= size.height) {
+        [self destroyCursor];
+        return NO;
+    }"""),
+        ("""    self.texture = [self.device newTextureWithDescriptor:textureDescriptor];""",
+         """    // A shape update must not write into a texture held by an earlier
+    // source snapshot, even when its size and hotspot did not change.
+    id<MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];"""),
+        ("""    self.vertices = [self.device newBufferWithBytes:quadVertices
+                                             length:sizeof(quadVertices)
+                                            options:MTLResourceStorageModeShared];
+
+    // Calculate the number of vertices by dividing the byte length by the size of each vertex""",
+         """    id<MTLBuffer> vertices = [device newBufferWithBytes:quadVertices
+                                                length:sizeof(quadVertices)
+                                               options:MTLResourceStorageModeShared];
+    if (!texture || !vertices) {
+        [self destroyCursor];
+        return NO;
+    }
+    [texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)size.width, (NSUInteger)size.height)
+                mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)size.width * 4];
+    // Publish only a complete pair on the worker. Old snapshots retain their
+    // original resources, which are never overwritten by another shape.
+    self.texture = texture;
+    self.vertices = vertices;
+
+    // Calculate the number of vertices by dividing the byte length by the size of each vertex"""),
+        ("""    self.hasCursor = YES;
+}""", """    self.hasCursor = YES;
+    return YES;
+}"""),
+        ("""- (void)drawCursor:(const void *)buffer {
+    CGSize cursorSize = self.cursorSize;
+    if (CGSizeEqualToSize(cursorSize, CGSizeZero)) {
+        return;
+    }
+    const NSInteger pixelSize = 4;
+    MTLRegion region = {
+        { 0, 0 }, // MTLOrigin
+        { cursorSize.width, cursorSize.height, 1} // MTLSize
+    };
+    [self.texture replaceRegion:region
+                    mipmapLevel:0
+                      withBytes:buffer
+                    bytesPerRow:cursorSize.width*pixelSize];
+}""",
+         """// Integration-only GPU readback. Never wait for the GPU on the normal
+// cursor path, and do not access a real guest cursor.
+static BOOL mrv_cursor_pixel(id<MTLTexture> texture, id<MTLCommandQueue> queue, uint32_t expected) {
+    if (!texture) return NO;
+    id<MTLBuffer> buffer = [queue.device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> command = [queue commandBuffer];
+    id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
+    if (!buffer || !encoder) return NO;
+    [encoder copyFromTexture:texture sourceSlice:0 sourceLevel:0
+                sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(1,1,1)
+                    toBuffer:buffer destinationOffset:0 destinationBytesPerRow:256
+           destinationBytesPerImage:256];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    return command.status == MTLCommandBufferStatusCompleted &&
+           *(const uint32_t *)buffer.contents == expected;
+}
+
+- (BOOL)mrvVerifyTextureLifetimeWithQueue:(id<MTLCommandQueue>)queue {
+    if (!CSMain.sharedInstance.isCurrentContextMain ||
+        g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") != 0 ||
+        self.device != queue.device) return NO;
+    uint32_t firstPixels[] = {0xffff0000, 0xffff0000, 0xffff0000, 0xffff0000};
+    uint32_t nextPixels[] = {0xff00ff00, 0xff00ff00, 0xff00ff00, 0xff00ff00};
+    CGSize size = CGSizeMake(2, 2);
+    if (![self updateCursorWithSize:size center:CGPointZero pixels:firstPixels]) return NO;
+    id<MTLTexture> first = self.texture;
+    id<MTLBuffer> vertices = self.vertices;
+    if (![self updateCursorWithSize:size center:CGPointZero pixels:nextPixels]) return NO;
+    id<MTLTexture> next = self.texture;
+    if (first == next || vertices == self.vertices ||
+        !mrv_cursor_pixel(first, queue, firstPixels[0]) ||
+        !mrv_cursor_pixel(next, queue, nextPixels[0])) return NO;
+    if ([self updateCursorWithSize:CGSizeMake(1025, 2) center:CGPointZero pixels:firstPixels] ||
+        self.hasCursor || self.texture || self.vertices) return NO;
+    if ([self updateCursorWithSize:size center:CGPointMake(2,0) pixels:firstPixels] ||
+        self.hasCursor || self.texture || self.vertices) return NO;
+    if (![self updateCursorWithSize:size center:CGPointZero pixels:firstPixels]) return NO;
+    [self destroyCursor];
+    return !self.hasCursor && !self.texture && !self.vertices &&
+           mrv_cursor_pixel(first, queue, firstPixels[0]) &&
+           mrv_cursor_pixel(next, queue, nextPixels[0]);
+}"""),
+    ])
+    _replace_once(root / "CSCursor+Protected.h", [
+        ("- (instancetype)initWithChannel:(SpiceCursorChannel *)channel NS_DESIGNATED_INITIALIZER;",
+         "- (instancetype)initWithChannel:(SpiceCursorChannel *)channel NS_DESIGNATED_INITIALIZER;\n"
+         "- (BOOL)mrvVerifyTextureLifetimeWithQueue:(id<MTLCommandQueue>)queue;"),
+    ])
+    _replace_once(root / "CSDisplay.m", [
+        ("""        display->_device = renderer.device;
+        NSDictionary *properties = @{""",
+         """        display->_device = renderer.device;
+        // An isolated, unconnected cursor channel exercises the same worker
+        // shape upload as production; do not attach it to a live guest.
+        SpiceChannel *cursorChannel = spice_channel_new(session, SPICE_CHANNEL_CURSOR, 0);
+        BOOL cursorOK = NO;
+        if (cursorChannel) {
+            CSCursor *cursor = [[CSCursor alloc] initWithChannel:SPICE_CURSOR_CHANNEL(cursorChannel)];
+            cursor.display = display;
+            cursorOK = [cursor mrvVerifyTextureLifetimeWithQueue:renderer.commandQueue];
+            cursor.display = nil;
+        }
+        if (!cursorOK) {
+            display = nil;
+            g_object_unref(session);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
+            return;
+        }
+        puts("MRV_CURSOR_TEXTURE_LIFETIME_OK"); fflush(stdout);
+        NSDictionary *properties = @{"""),
+    ])
+
+
 def overlay_canvas_upload_recovery(checkout: Path) -> None:
     """Publish completed canvas uploads on the owning worker, not at submit."""
     path = checkout / "Sources" / "CocoaSpice" / "CSDisplay.m"
@@ -2587,6 +2779,7 @@ def main() -> None:
     overlay_canvas_gpu_lifetime(checkout)
     overlay_scanout_ownership(checkout)
     overlay_scanout_runtime_probe(checkout)
+    overlay_cursor_texture_ownership(checkout)
     overlay_canvas_upload_recovery(checkout)
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
