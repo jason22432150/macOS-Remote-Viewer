@@ -27,6 +27,7 @@ from overlay import (
     overlay_metal_presentation_backpressure,
     overlay_canvas_upload_recovery,
     overlay_graphics_allocation_budget,
+    overlay_graphics_budget_observation,
     overlay_canvas_allocation_retry,
     overlay_cursor_texture_ownership,
     overlay_package_swift,
@@ -721,6 +722,23 @@ static void cs_channel_new(void) {}
             self.assertIn("self.mrvBudgetRecoveryStage == 2 && full", result)
             self.assertIn("MRV_CANVAS_BUDGET_RECOVERY_OK", result)
             self.assertIn("MRV_CANVAS_BUDGET_FAULT", result)
+
+    def test_graphics_budget_observation_is_gated_and_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpice"
+            header = source / "include" / "CSDisplay.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("- (void)screenshotWithCompletion:(screenshotCallback_t)completion;")
+            display = source / "CSDisplay.m"
+            display.write_text("@implementation CSDisplay")
+            overlay_graphics_budget_observation(root)
+            result = display.read_text()
+            self.assertIn("MRV_ENABLE_INTEGRATION_PROBES", result)
+            self.assertIn("return UINT64_MAX;", result)
+            self.assertIn("return atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);", result)
+            self.assertNotIn("atomic_store", result)
+            self.assertIn("mrvGraphicsBytesForProbe()", header.read_text())
 
     def test_graphics_budget_charges_resources_and_rejects_before_allocation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

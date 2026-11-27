@@ -2705,6 +2705,26 @@ def overlay_canvas_allocation_retry(checkout: Path) -> None:
     ])
 
 
+def overlay_graphics_budget_observation(checkout: Path) -> None:
+    """Expose a test-only numeric ledger reading without retaining resources."""
+    root = checkout / "Sources" / "CocoaSpice"
+    _replace_once(root / "include" / "CSDisplay.h", [
+        ("- (void)screenshotWithCompletion:(screenshotCallback_t)completion;",
+         "- (void)screenshotWithCompletion:(screenshotCallback_t)completion;\n"
+         "/// Integration-only process-wide logical resource bytes; UINT64_MAX when disabled.\n"
+         "+ (uint64_t)mrvGraphicsBytesForProbe NS_SWIFT_NAME(mrvGraphicsBytesForProbe());"),
+    ])
+    _replace_once(root / "CSDisplay.m", [
+        ("@implementation CSDisplay",
+         """@implementation CSDisplay
+
++ (uint64_t)mrvGraphicsBytesForProbe {
+    if (g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") != 0) return UINT64_MAX;
+    return atomic_load_explicit(&mrvGraphicsBytes, memory_order_relaxed);
+}"""),
+    ])
+
+
 def overlay_metal_draw_failure_recovery(checkout: Path) -> None:
     """Do not present an unencoded draw; retry failed current presentations."""
     root = checkout / "Sources" / "CocoaSpiceRenderer"
@@ -3321,6 +3341,7 @@ def main() -> None:
     overlay_canvas_upload_recovery(checkout)
     overlay_graphics_allocation_budget(checkout)
     overlay_canvas_allocation_retry(checkout)
+    overlay_graphics_budget_observation(checkout)
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
     overlay_metal_draw_failure_recovery(checkout)

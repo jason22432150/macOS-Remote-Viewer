@@ -366,14 +366,14 @@ def validate_workspace_soak(lines):
             raise AssertionError(f"workspace soak session count: {line}")
         if phase and (elapsed <= samples[-1][0] or cpu < samples[-1][3] or peak < samples[-1][2]):
             raise AssertionError("non-monotonic elapsed/CPU/peak RSS")
-        if 1 <= phase <= 6 and elapsed < phase * 10000:
+        if 1 <= phase <= 6 and elapsed < phase * 20000:
             raise AssertionError("workspace soak interval too short")
         samples.append((elapsed, rss, peak, cpu))
     if len(samples) != 8:
         raise AssertionError("missing workspace soak/cleanup measurements")
     start, end, closed = samples[0], samples[6], samples[7]
-    if end[0] - start[0] < 59900:
-        raise AssertionError("workspace soak did not sustain four sessions for 60 seconds")
+    if end[0] - start[0] < 119900:
+        raise AssertionError("workspace soak did not sustain four sessions for 120 seconds")
     print(f"METRIC workspace-soak duration-ms={end[0]-start[0]} "
           f"rss-start-MiB={start[1]/1048576:.2f} rss-end-MiB={end[1]/1048576:.2f} "
           f"rss-max-sampled-MiB={max(s[1] for s in samples[:7])/1048576:.2f} "
@@ -400,7 +400,7 @@ def validate_workspace_churn(lines):
             if not m:
                 raise AssertionError("invalid weak batch diagnostic")
             sample, batch, controllers, canvases = map(int, m.groups())
-            if not 0 <= batch <= sample <= 3 or max(controllers, canvases) > 4 or (sample, batch) in batches:
+            if not 0 <= batch <= sample <= 5 or max(controllers, canvases) > 4 or (sample, batch) in batches:
                 raise AssertionError(f"invalid weak batch: {line}")
             batches[(sample, batch)] = (controllers, canvases)
         elif line.startswith("MRV_WORKSPACE_WEAK_UNHOST "):
@@ -413,7 +413,7 @@ def validate_workspace_churn(lines):
             if not m:
                 raise AssertionError("invalid churn resource sample")
             phase, elapsed, rss, peak, cpu, live = map(int, m.groups())
-            if phase != len(samples) or phase > 3 or not rss or not peak or live:
+            if phase != len(samples) or phase > 5 or not rss or not peak or live:
                 raise AssertionError(f"invalid churn phase: {line}")
             if samples and (elapsed <= samples[-1][0] or peak < samples[-1][2] or cpu < samples[-1][3]):
                 raise AssertionError("non-monotonic churn resource samples")
@@ -423,32 +423,63 @@ def validate_workspace_churn(lines):
             if not m:
                 raise AssertionError("invalid churn weak-reference sample")
             phase, controllers, canvases = map(int, m.groups())
-            if phase != len(weak) or phase > 3 or max(controllers, canvases) > 4 * (phase + 1):
+            if phase != len(weak) or phase > 5 or max(controllers, canvases) > 4 * (phase + 1):
                 raise AssertionError(f"invalid survivor count: {line}")
             weak.append((controllers, canvases))
-    if len(samples) != 4 or len(weak) != 4:
+    if len(samples) != 6 or len(weak) != 6:
         raise AssertionError("incomplete churn metrics")
-    if set(batches) != {(sample, batch) for sample in range(4) for batch in range(sample + 1)}:
+    if set(batches) != {(sample, batch) for sample in range(6) for batch in range(sample + 1)}:
         raise AssertionError("missing per-batch weak references")
     for sample, (controllers, canvases) in enumerate(weak):
         if (controllers, canvases) != tuple(sum(batches[(sample, batch)][i] for batch in range(sample + 1))
                                           for i in range(2)):
             raise AssertionError("weak-reference totals disagree with batch counts")
-    if len(unhost) != 1 or max(unhost[0]) > 16:
+    if len(unhost) != 1 or max(unhost[0]) > 24:
         raise AssertionError("missing or invalid final host teardown diagnostic")
     before, after, canvases = unhost[0]
+    if after or canvases:
+        raise AssertionError("workspace: retained controllers or canvases after unhost")
     print(f"METRIC workspace-unhost controllers-before={before} controllers-after={after} canvases-after={canvases}")
     expected = []
-    for i in range(1, 4):
+    for i in range(1, 6):
         expected.extend([f"MRV_WORKSPACE_CHURN_OPEN_OK round={i} live=4",
                          f"MRV_WORKSPACE_CHURN_CLOSE_OK round={i} live=0 views=0"])
     markers = [line for line in lines if line.startswith(("MRV_WORKSPACE_CHURN_OPEN_OK ", "MRV_WORKSPACE_CHURN_CLOSE_OK "))]
-    if markers != expected or lines.count("MRV_WORKSPACE_CHURN_OK cycles=4 sessions=16") != 1:
+    if markers != expected or lines.count("MRV_WORKSPACE_CHURN_OK cycles=6 sessions=24") != 1:
         raise AssertionError("incomplete repeated workspace lifecycle")
     for i, ((elapsed, rss, peak, cpu), (controllers, canvases)) in enumerate(zip(samples, weak)):
         print(f"METRIC workspace-churn round={i} rss-MiB={rss/1048576:.2f} "
               f"rss-delta-MiB={(rss-samples[0][1])/1048576:.2f} "
               f"weak-controllers={controllers} weak-canvases={canvases}")
+
+
+def validate_workspace_graphics(lines):
+    """Track logical ownership independently of RSS and require final release."""
+    pattern = re.compile(r"MRV_WORKSPACE_GRAPHICS kind=(soak|churn) phase=(\d+) bytes=(\d+) live=(\d+)")
+    observed = {}
+    for line in lines:
+        if not line.startswith("MRV_WORKSPACE_GRAPHICS "):
+            continue
+        match = pattern.fullmatch(line)
+        if not match:
+            raise AssertionError("invalid workspace graphics measurement")
+        kind, phase, used, live = match.groups()
+        key = (kind, int(phase))
+        used, live = int(used), int(live)
+        if key in observed or used > 2 * 1024 * 1024 * 1024:
+            raise AssertionError("duplicate or over-limit graphics sample")
+        expected_live = 4 if kind == "soak" and key[1] < 7 else 0
+        if live != expected_live or (live and used == 0):
+            raise AssertionError("invalid graphics ownership during workspace lifecycle")
+        observed[key] = used
+    if set(observed) != ({("soak", i) for i in range(8)} | {("churn", i) for i in range(6)}):
+        raise AssertionError("incomplete workspace graphics samples")
+    final = [line for line in lines if line.startswith("MRV_WORKSPACE_GRAPHICS_FINAL ")]
+    if final != ["MRV_WORKSPACE_GRAPHICS_FINAL bytes=0"]:
+        raise AssertionError("owned graphics allocations remain after unhost")
+    for (kind, phase), used in observed.items():
+        print(f"METRIC workspace-graphics kind={kind} phase={phase} bytes={used}")
+    print(final[0], flush=True)
 
 
 def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False):
@@ -527,7 +558,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
             if native_probe is None:
                 connect_calls = [line for line in result.stderr.splitlines()
                                  if line.startswith("MRV_CONN_CONNECT session=")]
-                expected_connects = 16 if workspace else 4
+                expected_connects = 24 if workspace else 4
                 # Allocators may reuse a freed GObject address in a later cycle.
                 # Each simultaneous batch must still contain four distinct sessions.
                 if len(connect_calls) != expected_connects or any(
@@ -552,7 +583,8 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                     raise AssertionError("workspace: incomplete SwiftUI selection checks")
                 validate_workspace_soak(lines)
                 validate_workspace_churn(lines)
-                for marker in ("MRV_WORKSPACE_SOAK_OK seconds=60 checkpoints=7",
+                validate_workspace_graphics(lines)
+                for marker in ("MRV_WORKSPACE_SOAK_OK seconds=120 checkpoints=7",
                                "MRV_WORKSPACE_BACKGROUND_CLOSE_OK selected=3 live=3",
                                "MRV_WORKSPACE_ACTIVE_CLOSE_OK selected=2 live=2",
                                "MRV_WORKSPACE_CLEANUP_BEGIN",
@@ -590,7 +622,7 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 raise AssertionError(f"{log.stem}: abnormal exit")
             for channel in ("MAIN", "DISPLAY"):
                 initialized = [line for line in lines if line.startswith(f"{channel}_INITIALIZED ")]
-                if initialized != [f"{channel}_INITIALIZED tls=1"] * (4 if workspace else 1):
+                if initialized != [f"{channel}_INITIALIZED tls=1"] * (6 if workspace else 1):
                     raise AssertionError(f"{log.stem}: unexpected channels: {initialized}")
             counts = [re.fullmatch(r"DRAW_COUNTS submitted=(\d+) consumed=(\d+) released=(\d+)", line)
                       for line in lines if line.startswith("DRAW_COUNTS ")]

@@ -335,6 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             do {
+                guard CSDisplay.mrvGraphicsBytesForProbe() == 0 else { throw SessionError.cancelled }
                 window.makeKeyAndOrderFront(nil)
                 try await openAndMount()
 
@@ -419,7 +420,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
                     let cpu = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6 +
                               Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
+                    let graphicsBytes = CSDisplay.mrvGraphicsBytesForProbe()
+                    guard graphicsBytes <= 2 * 1024 * 1024 * 1024,
+                          live.isEmpty || graphicsBytes > 0 else { throw SessionError.cancelled }
                     print("\(marker) phase=\(phase) elapsed-ms=\(Int(seconds * 1000)) rss-bytes=\(info.resident_size) peak-rss-bytes=\(usage.ru_maxrss) cpu-ms=\(Int(cpu * 1000)) live=\(live.count)")
+                    print("MRV_WORKSPACE_GRAPHICS kind=\(marker == "MRV_WORKSPACE_SOAK" ? "soak" : "churn") phase=\(phase) bytes=\(graphicsBytes) live=\(live.count)")
                     fflush(nil)
                 }
                 let soakStart = ContinuousClock.now
@@ -430,7 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await validateSelection(selected)
                     // Keep the same four sessions alive through the entire
                     // interval and check state without driving renderer calls.
-                    let checkpoint = soakStart + .seconds(phase * 10)
+                    let checkpoint = soakStart + .seconds(phase * 20)
                     while ContinuousClock.now < checkpoint {
                         guard foreign.isEmpty, model.sessions.isEmpty,
                               workspaceModel.selectedSessionID == original[selected].sessionID,
@@ -446,7 +451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Restore the selection assumed by the existing close tests.
                 workspaceModel.selectSession(original[3].sessionID)
                 try await validateSelection(3)
-                print("MRV_WORKSPACE_SOAK_OK seconds=60 checkpoints=7")
+                print("MRV_WORKSPACE_SOAK_OK seconds=120 checkpoints=7")
                 // Closing a background session must retain selection and views.
                 workspaceModel.closeSession(original[1].sessionID)
                 live.remove(1)
@@ -489,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await Task.sleep(for: .seconds(1))
                 try snapshot(0, since: churnStart, marker: "MRV_WORKSPACE_CHURN")
                 reportLifetime(0)
-                for round in 1...3 {
+                for round in 1...5 {
                     try await openAndMount()
                     for selected in 0..<4 {
                         workspaceModel.selectSession(original[selected].sessionID)
@@ -514,20 +519,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     reportLifetime(round)
                     print("MRV_WORKSPACE_CHURN_CLOSE_OK round=\(round) live=0 views=0")
                 }
-                guard usedIDs.count == 16, lifetime.count == 16 else { throw SessionError.cancelled }
+                guard usedIDs.count == 24, lifetime.count == 24 else { throw SessionError.cancelled }
                 // Distinguish a retained SwiftUI view graph from a reference
                 // surviving after removal of the hosting view. No forced GC.
                 let before = lifetime.values.reduce(0) { $0 + ($1.controller == nil ? 0 : 1) }
                 window.contentView = NSView(frame: .zero)
-                let settle = ContinuousClock.now + .seconds(5)
+                let settle = ContinuousClock.now + .seconds(10)
                 while ContinuousClock.now < settle {
-                    if lifetime.values.allSatisfy({ $0.controller == nil && $0.canvas == nil }) { break }
+                    if lifetime.values.allSatisfy({ $0.controller == nil && $0.canvas == nil }),
+                       CSDisplay.mrvGraphicsBytesForProbe() == 0 { break }
                     try await Task.sleep(for: .milliseconds(100))
                 }
                 let after = lifetime.values.reduce(0) { $0 + ($1.controller == nil ? 0 : 1) }
                 let views = lifetime.values.reduce(0) { $0 + ($1.canvas == nil ? 0 : 1) }
                 print("MRV_WORKSPACE_WEAK_UNHOST before=\(before) controllers=\(after) canvases=\(views)")
-                print("MRV_WORKSPACE_CHURN_OK cycles=4 sessions=16")
+                let finalGraphics = CSDisplay.mrvGraphicsBytesForProbe()
+                print("MRV_WORKSPACE_GRAPHICS_FINAL bytes=\(finalGraphics)")
+                guard after == 0, views == 0, finalGraphics == 0 else { throw SessionError.cancelled }
+                print("MRV_WORKSPACE_CHURN_OK cycles=6 sessions=24")
                 print("MRV_PROBE_WORKSPACE_EMPTY")
                 print("MRV_WORKSPACE_OK")
                 fflush(nil)
