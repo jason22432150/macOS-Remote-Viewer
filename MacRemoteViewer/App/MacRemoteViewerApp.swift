@@ -211,6 +211,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackHandshakeStallProbe(files: arguments[(index + 1)...].map {
                 URL(fileURLWithPath: $0)
             })
+        } else if let index = arguments.firstIndex(of: "--loopback-spice-relay-stall-probe") {
+            guard arguments.count == index + 5 else { Darwin.exit(2) }
+            runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
+                URL(fileURLWithPath: $0)
+            }, relayStall: true)
         } else if let index = arguments.firstIndex(of: "--loopback-spice-network-fault-probe") {
             guard arguments.count == index + 5 else { Darwin.exit(2) }
             runLoopbackSpiceMultiProbe(files: arguments[(index + 1)...].map {
@@ -661,7 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Four simultaneous real connections, one shared GPU device, four isolated canvases.
     /// All canvases remain visible in a test-only grid so a headless/occluded view
     /// cannot prevent the background rendering checks. No clipboard or guest input.
-    private func runLoopbackSpiceMultiProbe(files: [URL], networkFault: Bool = false) {
+    private func runLoopbackSpiceMultiProbe(files: [URL], networkFault: Bool = false, relayStall: Bool = false) {
         Task { @MainActor in
             let expected: [Set<UInt32>] = [
                 [0xff0000, 0x00ff00], [0x0000ff, 0xffff00],
@@ -820,6 +825,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         print("MRV_MULTI_DIAGNOSTIC session=\(i) connected=\(controllers[i].state == .connected) rendered=\(controllers[i].hasRenderedFrame) samples=\(observed[i].count)")
                     }
                     throw SessionError.displayTimeout
+                }
+
+                if relayStall {
+                    try await validatePhase(active: 0)
+                    print("MRV_RELAY_STALL_READY victim=1 live=4")
+                    fflush(nil)
+                    // Allow pre-pause ciphertext and pending GPU work to drain.
+                    try await Task.sleep(for: .seconds(2))
+                    for i in live { observed[i].removeAll() }
+                    let until = ContinuousClock.now + .seconds(6)
+                    while ContinuousClock.now < until {
+                        guard foreign.isEmpty, live.allSatisfy({
+                            controllers[$0].state == .connected &&
+                            controllers[$0].displaySize == RemoteFrame(width: 640, height: 480)
+                        }) else { throw SessionError.network }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    guard observed[1].count <= 1, [0, 2, 3].allSatisfy({
+                        observed[$0] == expected[$0]
+                    }) else {
+                        print("MRV_RELAY_STALL_DIAGNOSTIC victim-colors=\(observed[1].count)")
+                        throw SessionError.displayTimeout
+                    }
+                    print("MRV_RELAY_STALL_OBSERVED seconds=6 connected=4 survivors=3")
+                    fflush(nil)
+                    // The harness resumes the same sockets; no reopen/cancel.
+                    // Both fresh colors on every display are required again.
+                    try await validatePhase(active: 1)
+                    guard model.sessions.isEmpty, foreign.isEmpty else { throw SessionError.cancelled }
+                    print("MRV_RELAY_STALL_RESUMED live=4")
+                    print("MRV_PROBE_WORKSPACE_EMPTY")
+                    cleanUp()
+                    print("MRV_RELAY_STALL_OK")
+                    fflush(nil)
+                    Darwin.exit(0)
                 }
 
                 if networkFault {

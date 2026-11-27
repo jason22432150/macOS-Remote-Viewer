@@ -7,6 +7,8 @@ import os
 import re
 import shlex
 import socket
+import select
+import threading
 import subprocess
 import tempfile
 import time
@@ -325,10 +327,13 @@ def compile_native_probe(app, destination, source="spice-native-multi.c"):
             raise RuntimeError(f"native probe: missing packaged dependency {name}")
 
 
-def validate_multi_metrics(lines, network_fault=False):
+def validate_multi_metrics(lines, network_fault=False, relay_stall=False):
     """Require one sustained, measurable window per phase; no CI speed threshold."""
     expected = {(0, 4): set(range(4))} if network_fault else {(i, 4): set(range(4)) for i in range(4)}
-    expected[(2, 3)] = {0, 2, 3}
+    if relay_stall:
+        expected = {(0, 4): set(range(4)), (1, 4): set(range(4))}
+    else:
+        expected[(2, 3)] = {0, 2, 3}
     resources = {}
     samples = {}
     gpu = {}
@@ -642,7 +647,157 @@ def test_handshake_stall(app, root, fixture):
             raise AssertionError("handshake stall: no authenticated healthy reconnect")
 
 
-def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False, network_fault=False):
+class PausableRelay:
+    """Loopback-only opaque TCP forwarder, bounded buffers, no TLS termination."""
+    LIMIT = 65536
+
+    def __init__(self, target):
+        self.target = target
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.listener.setblocking(False)
+        self.port = self.listener.getsockname()[1]
+        self.pause = threading.Event()
+        self.paused = threading.Event()
+        self.stop = threading.Event()
+        self.error = None
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        peers = {}
+        pending = {}
+        eof = set()
+
+        def close_pair(sock):
+            other = peers.pop(sock)
+            peers.pop(other)
+            for endpoint in (sock, other):
+                pending.pop(endpoint, None)
+                eof.discard(endpoint)
+                endpoint.close()
+
+        try:
+            while not self.stop.is_set():
+                if self.pause.is_set():
+                    self.paused.set()
+                    self.stop.wait(0.02)
+                    continue
+                self.paused.clear()
+                readers = [self.listener] + [s for s in peers if s not in eof and len(pending[peers[s]]) < self.LIMIT]
+                writers = [s for s in peers if pending[s]]
+                readable, writable, _ = select.select(readers, writers, [], 0.02)
+                if self.pause.is_set():
+                    continue
+                for s in readable:
+                    if s is self.listener:
+                        client, address = s.accept()
+                        try:
+                            if address[0] != "127.0.0.1" or len(peers) >= 16:
+                                raise RuntimeError("relay: unexpected peer")
+                            server = socket.create_connection(("127.0.0.1", self.target), timeout=2)
+                        except BaseException:
+                            client.close()
+                            raise
+                        for endpoint in (client, server):
+                            endpoint.setblocking(False)
+                            pending[endpoint] = bytearray()
+                        peers[client], peers[server] = server, client
+                    elif s in peers:
+                        try:
+                            data = s.recv(self.LIMIT - len(pending[peers[s]]))
+                        except BlockingIOError:
+                            continue
+                        except (ConnectionResetError, BrokenPipeError):
+                            close_pair(s)
+                            continue
+                        if data:
+                            pending[peers[s]].extend(data)
+                        else:
+                            eof.add(s)
+                for s in writable:
+                    if s not in peers:
+                        continue
+                    try:
+                        sent = s.send(pending[s])
+                    except BlockingIOError:
+                        continue
+                    except (ConnectionResetError, BrokenPipeError):
+                        close_pair(s)
+                        continue
+                    if not sent:
+                        close_pair(s)
+                    else:
+                        del pending[s][:sent]
+                # Once a read EOF's buffered data drains, forward FIN.
+                for s in list(eof):
+                    if s not in peers:
+                        continue
+                    other = peers[s]
+                    if not pending[other]:
+                        try:
+                            other.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass
+                        if other in eof and not pending[s]:
+                            close_pair(s)
+        except Exception as exc:
+            self.error = type(exc).__name__
+        finally:
+            for s in list(peers):
+                s.close()
+            self.listener.close()
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(timeout=4)
+        if self.thread.is_alive() or self.error:
+            raise AssertionError(f"relay: worker failed ({self.error})")
+
+
+def run_relay_stall_client(command, root, env, relay, victim):
+    stdout_path = root / "relay-stall-client.out"
+    stderr_path = root / "relay-stall-client.err"
+    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        client = subprocess.Popen(command, cwd=root, env=env, stdout=stdout, stderr=stderr)
+
+        def wait_marker(marker, seconds):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                if client.poll() is not None or victim.poll() is not None or relay.error:
+                    raise AssertionError("relay stall: premature process exit")
+                if marker in stdout_path.read_text(errors="replace").splitlines():
+                    return
+                time.sleep(0.025)
+            raise AssertionError("relay stall: missing barrier")
+
+        try:
+            wait_marker("MRV_RELAY_STALL_READY victim=1 live=4", 25)
+            relay.pause.set()
+            if not relay.paused.wait(timeout=1):
+                raise AssertionError("relay stall: pause not acknowledged")
+            start = time.monotonic()
+            print("MRV_RELAY_STALL_PAUSED", flush=True)
+            wait_marker("MRV_RELAY_STALL_OBSERVED seconds=6 connected=4 survivors=3", 15)
+            if time.monotonic() - start < 6:
+                raise AssertionError("relay stall: insufficient pause duration")
+            relay.pause.clear()
+            print("MRV_RELAY_STALL_FORWARDING_RESTORED", flush=True)
+            client.wait(timeout=25)
+        finally:
+            relay.pause.clear()
+            if client.poll() is None:
+                client.kill()
+                client.wait(timeout=5)
+            print(stdout_path.read_text(errors="replace")[-12000:], flush=True)
+            print(stderr_path.read_text(errors="replace")[-16000:], flush=True)
+    return subprocess.CompletedProcess(command, client.returncode,
+                                       stdout_path.read_text(errors="replace"),
+                                       stderr_path.read_text(errors="replace"))
+
+
+def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, workspace=False, network_fault=False, relay_stall=False):
     """Four simultaneous servers with non-overlapping color pairs."""
     servers = []
     profiles = []
@@ -658,9 +813,14 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
         try:
             for i, port in enumerate(ports):
                 prefix = ("native" if native_probe is not None else "wrapper" if wrapper_only
-                          else "workspace" if workspace else "network-fault" if network_fault else "multi")
+                          else "workspace" if workspace else "network-fault" if network_fault else
+                          "relay-stall" if relay_stall else "multi")
                 profile = root / f"{prefix}-{i}.vv"
-                profile.write_text(tls.fixture_profile(port, root / "trusted.pem", tls.SUBJECT))
+                if relay_stall and i == 1:
+                    relay = PausableRelay(port)
+                    stack.callback(relay.close)
+                client_port = relay.port if relay_stall and i == 1 else port
+                profile.write_text(tls.fixture_profile(client_port, root / "trusted.pem", tls.SUBJECT))
                 profiles.append(profile)
                 log = root / f"{prefix}-{i}.log"
                 logs.append(log)
@@ -704,10 +864,13 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
             else:
                 mode = ("--loopback-spice-wrapper-probe" if wrapper_only else
                         "--loopback-spice-workspace-probe" if workspace else
-                        "--loopback-spice-network-fault-probe" if network_fault else "--loopback-spice-multi-probe")
+                        "--loopback-spice-network-fault-probe" if network_fault else
+                        "--loopback-spice-relay-stall-probe" if relay_stall else "--loopback-spice-multi-probe")
                 command = [str(exe), mode, *map(str, profiles)]
             if network_fault:
                 result = run_network_fault_client(command, root, env, servers[1])
+            elif relay_stall:
+                result = run_relay_stall_client(command, root, env, relay, servers[1])
             else:
                 result = subprocess.run(command, cwd=root, env=env,
                                         capture_output=True, text=True, timeout=540 if workspace else 110)
@@ -773,6 +936,13 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                                "MRV_WORKSPACE_OK"):
                     if lines.count(marker) != 1:
                         raise AssertionError(f"workspace: missing {marker}")
+            elif relay_stall:
+                markers = [line for line in lines if line.startswith("MRV_RELAY_STALL_")]
+                if markers != ["MRV_RELAY_STALL_READY victim=1 live=4",
+                               "MRV_RELAY_STALL_OBSERVED seconds=6 connected=4 survivors=3",
+                               "MRV_RELAY_STALL_RESUMED live=4", "MRV_RELAY_STALL_OK"]:
+                    raise AssertionError("relay stall: incomplete ordered markers")
+                validate_multi_metrics(lines, relay_stall=True)
             elif network_fault:
                 markers = [line for line in lines if line.startswith("MRV_NETWORK_FAULT_")]
                 if (len(markers) != 4 or markers[0] != "MRV_NETWORK_FAULT_READY victim=1 live=4" or
@@ -1091,6 +1261,11 @@ def main():
         except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             failures.append(f"handshake-stall: {exc}")
             print(f"MRV_HANDSHAKE_STALL_FAILURE {exc}", flush=True)
+        try:
+            test_multi(args.app.resolve(), root, fixture, relay_stall=True)
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"relay-stall: {exc}")
+            print(f"MRV_RELAY_STALL_FAILURE {exc}", flush=True)
         # The 4K fixture has a deliberately larger QXL memslot. Do not
         # change ordinary server memory/worker release behavior or run it
         # ahead of the existing multi-session regressions.
