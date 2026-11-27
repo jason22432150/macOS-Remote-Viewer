@@ -2320,6 +2320,94 @@ def overlay_metal_publication_mailbox(checkout: Path) -> None:
     ])
 
 
+def overlay_metal_presentation_backpressure(checkout: Path) -> None:
+    """Bound submitted presentation work without waiting on the main actor."""
+    root = checkout / "Sources" / "CocoaSpiceRenderer"
+    _replace_once(root / "include" / "CSMetalRenderer.h", [
+        ("/// Modify upscaler and downscaler settings",
+         "/// Integration-only result of a real presentation saturation/recovery test.\n"
+         "- (BOOL)mrvPresentationBackpressurePassed NS_SWIFT_NAME(mrvPresentationBackpressurePassed());\n\n"
+         "/// Modify upscaler and downscaler settings"),
+    ])
+    _replace_once(root / "CSMetalRenderer.m", [
+        ("@property (nonatomic) BOOL mrvSawRecovery;",
+         "@property (nonatomic) BOOL mrvSawRecovery;\n"
+         "// Main-queue-only admission, held through main completion delivery.\n"
+         "@property (nonatomic) BOOL mrvPresentationInFlight;\n"
+         "@property (nonatomic) BOOL mrvBurstArmed;\n"
+         "@property (nonatomic) BOOL mrvBurstTesting;\n"
+         "@property (nonatomic) NSUInteger mrvBurstBlocked;\n"
+         "@property (nonatomic) BOOL mrvBurstPassed;\n"
+         "@property (nonatomic) BOOL mrvBurstRecovered;"),
+        ("""    const _CSRendererSourceData *sourceData = self.renderSourceData;
+
+    // Do not ask MetalKit for a drawable on idle ticks.""",
+         """    // Bound presentation to one outstanding command per renderer.
+    // Do not acquire another drawable, consume dirty state, or wait for GPU.
+    // Completion delivery on main reopens admission, even on GPU error.
+    if (self.mrvPresentationInFlight) {
+        if (self.mrvBurstTesting) self.mrvBurstBlocked++;
+        return;
+    }
+    const _CSRendererSourceData *sourceData = self.renderSourceData;
+
+    // Do not ask MetalKit for a drawable on idle ticks."""),
+        ("""    BOOL rejectCompletion = self.mrvRejectNextCompletion;
+    self.mrvRejectNextCompletion = NO;
+    [commandBuffer addCompletedHandler:""",
+         """    BOOL rejectCompletion = self.mrvRejectNextCompletion;
+    self.mrvRejectNextCompletion = NO;
+    BOOL probeRecovery = self.mrvBurstPassed;
+    self.mrvPresentationInFlight = YES;
+    [commandBuffer addCompletedHandler:"""),
+        ("""        BOOL rendered = !rejectCompletion && commandBuffer.status == MTLCommandBufferStatusCompleted;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (completionCallback_t completion in submittedCompletions)""",
+         """        BOOL rendered = !rejectCompletion && commandBuffer.status == MTLCommandBufferStatusCompleted;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.mrvPresentationInFlight = NO;
+            if (rendered && probeRecovery) self.mrvBurstRecovered = YES;
+            for (completionCallback_t completion in submittedCompletions)"""),
+        ("""    // Finalize rendering here & push the command buffer to the GPU
+    [commandBuffer commit];
+}""",
+         """    // Finalize rendering here & push the command buffer to the GPU
+    [commandBuffer commit];
+    if (self.mrvBurstArmed) {
+        self.mrvBurstArmed = NO;
+        self.mrvBurstTesting = YES;
+        // No main-queue yield: the actual submitted command still owns the
+        // slot, even if the GPU finishes before these attempts.
+        self.renderNeedsUpdate = YES;
+        for (NSUInteger index = 0; index < 128; index++) {
+            [self drawInMTKView:view];
+        }
+        self.mrvBurstTesting = NO;
+        self.mrvBurstPassed = self.mrvPresentationInFlight &&
+            self.mrvBurstBlocked == 128 && self.renderNeedsUpdate;
+    }
+}"""),
+        ("""    self.mrvRejectNextCompletion = YES;
+    return YES;
+}""",
+         """    self.mrvRejectNextCompletion = YES;
+    self.mrvBurstBlocked = 0;
+    self.mrvBurstPassed = NO;
+    self.mrvBurstRecovered = NO;
+    self.mrvBurstArmed = YES;
+    return YES;
+}
+
+- (BOOL)mrvPresentationBackpressurePassed {
+    if (![NSThread isMainThread] ||
+        ![[[NSProcessInfo processInfo] environment][@"MRV_ENABLE_INTEGRATION_PROBES"] isEqualToString:@"1"])
+        return NO;
+    return self.mrvBurstPassed && self.mrvBurstRecovered &&
+           self.mrvBurstBlocked == 128;
+}"""),
+    ])
+
+
 def overlay_metal_draw_failure_recovery(checkout: Path) -> None:
     """Do not present an unencoded draw; retry failed current presentations."""
     root = checkout / "Sources" / "CocoaSpiceRenderer"
@@ -2938,6 +3026,7 @@ def main() -> None:
     overlay_drawable_demand(checkout)
     overlay_metal_draw_failure_recovery(checkout)
     overlay_metal_publication_mailbox(checkout)
+    overlay_metal_presentation_backpressure(checkout)
     overlay_connection_pve_api(checkout)
     overlay_horizontal_scroll_compatibility(checkout)
     overlay_input_release_and_secure_attention(checkout)

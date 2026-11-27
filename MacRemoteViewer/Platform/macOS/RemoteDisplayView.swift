@@ -132,6 +132,10 @@ final class RemoteCanvasView: MTKView {
         metalRenderer?.mrvDrawFailureProbePassed() == true
     }
 
+    func presentationBackpressurePassed() -> Bool {
+        metalRenderer?.mrvPresentationBackpressurePassed() == true
+    }
+
     /// Test-only same-frame spatial readback, never enabled in normal use.
     func setSmokeRegionHandler(_ handler: ((UInt32, UInt32, UInt32, UInt32, UInt32) -> Void)?) {
         metalRenderer?.smokeRegionHandler = handler

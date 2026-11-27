@@ -24,6 +24,7 @@ from overlay import (
     overlay_metal_pixel_probe,
     overlay_metal_draw_failure_recovery,
     overlay_metal_publication_mailbox,
+    overlay_metal_presentation_backpressure,
     overlay_canvas_upload_recovery,
     overlay_cursor_texture_ownership,
     overlay_package_swift,
@@ -677,6 +678,47 @@ static void cs_channel_new(void) {}
             self.assertIn("[CSMain.sharedInstance asyncWith:^{ finish(success); }];", result)
             self.assertIn("self.canvasUploadValid = YES;\n        self.canvasRetryAvailable = YES;\n        [self invalidate];", result)
             self.assertNotIn("[self copyBuffer:submittedBuffer", result)
+
+    def test_presentation_backpressure_precedes_drawable_and_releases_on_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "Sources" / "CocoaSpiceRenderer"
+            header = source / "include" / "CSMetalRenderer.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("/// Modify upscaler and downscaler settings")
+            impl = source / "CSMetalRenderer.m"
+            impl.write_text("""@property (nonatomic) BOOL mrvSawRecovery;
+    const _CSRendererSourceData *sourceData = self.renderSourceData;
+
+    // Do not ask MetalKit for a drawable on idle ticks.
+    id<CAMetalDrawable> currentDrawable = view.currentDrawable;
+    BOOL rejectCompletion = self.mrvRejectNextCompletion;
+    self.mrvRejectNextCompletion = NO;
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+        BOOL rendered = !rejectCompletion && commandBuffer.status == MTLCommandBufferStatusCompleted;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (completionCallback_t completion in submittedCompletions) {
+                completion();
+            }
+        });
+    }];
+    // Finalize rendering here & push the command buffer to the GPU
+    [commandBuffer commit];
+}
+    self.mrvRejectNextCompletion = YES;
+    return YES;
+}
+""")
+            overlay_metal_presentation_backpressure(root)
+            result = impl.read_text()
+            self.assertLess(result.index("if (self.mrvPresentationInFlight)"),
+                            result.index("view.currentDrawable"))
+            self.assertLess(result.index("self.mrvPresentationInFlight = YES;"),
+                            result.index("addCompletedHandler:"))
+            self.assertIn("self.mrvPresentationInFlight = NO;\n            if (rendered && probeRecovery)", result)
+            self.assertIn("self.mrvBurstBlocked == 128 && self.renderNeedsUpdate", result)
+            self.assertIn("MRV_ENABLE_INTEGRATION_PROBES", result)
+            self.assertIn("mrvPresentationBackpressurePassed()", header.read_text())
 
     def test_publication_mailbox_coalesces_and_preserves_barriers(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

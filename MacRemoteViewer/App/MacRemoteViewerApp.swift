@@ -1032,7 +1032,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                            controller.displaySize == RemoteFrame(width: 640, height: 480),
                            controller.hasRenderedFrame, colors.contains(0x00ff0000),
                            colors.contains(0x0000ff00),
-                           partial || round != 0 || canvas.drawFailureProbePassed() { break }
+                           partial || round != 0 || (canvas.drawFailureProbePassed() &&
+                                                      canvas.presentationBackpressurePassed()) { break }
                         try await Task.sleep(for: .milliseconds(50))
                     }
                     guard controller.state == .connected,
@@ -1044,8 +1045,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         throw SessionError.displayTimeout
                     }
                     if !partial && round == 0 {
-                        guard canvas.drawFailureProbePassed() else { throw SessionError.cancelled }
+                        guard canvas.drawFailureProbePassed(),
+                              canvas.presentationBackpressurePassed() else { throw SessionError.cancelled }
                         print("MRV_METAL_DRAW_FAILURE_RECOVERY_OK")
+                        print("MRV_METAL_PRESENTATION_BACKPRESSURE_OK limit=1 blocked=128")
                     }
                     if partial {
                         print("MRV_SPICE_PARTIAL_ROUND_OK \(round + 1) 640x480 center=red,green exterior=blue,blue,blue,blue")

@@ -85,8 +85,12 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 print(result.stdout[-6000:])
                 print(result.stderr[-6000:])
                 raise AssertionError(f"{name}: missing expected auth result")
-            if display and not partial and lines.count("MRV_METAL_DRAW_FAILURE_RECOVERY_OK") != 1:
-                raise AssertionError(f"{name}: missing draw failure recovery gate")
+            if display and not partial:
+                for marker in ("MRV_METAL_DRAW_FAILURE_RECOVERY_OK",
+                               "MRV_METAL_PRESENTATION_BACKPRESSURE_OK limit=1 blocked=128"):
+                    if lines.count(marker) != 1:
+                        raise AssertionError(f"{name}: missing or repeated {marker}")
+                    print(marker, flush=True)
             if partial:
                 if lines.count("MRV_CANVAS_UPLOAD_RECOVERY_OK") != 2:
                     raise AssertionError(f"{name}: missing full-upload recovery in both connection rounds")
