@@ -127,10 +127,13 @@ static gboolean quit_loop(gpointer data) {
 
 /* Fixed test-only CPU framebuffer. Never expose guest or host desktop memory. */
 enum { WIDTH = 640, HEIGHT = 480, RESIZE_W = 1024, RESIZE_H = 768, DRAW_SLOTS = 16, PATCH_W = 160, PATCH_H = 120 };
+enum { STRESS_W = 3840, STRESS_H = 2160, STRESS_TRANSITIONS = 4 };
+static gboolean agent_stress, stress_pending;
+static unsigned stress_stage;
 static unsigned surface_width = WIDTH, surface_height = HEIGHT;
 static gboolean resize_applied;
 static struct {
-    uint32_t pixels[RESIZE_W * RESIZE_H];
+    uint32_t pixels[STRESS_W * STRESS_H];
     QXLDrawable draws[DRAW_SLOTS];
     QXLImage images[DRAW_SLOTS];
     uint32_t red[WIDTH * HEIGHT];
@@ -138,6 +141,9 @@ static struct {
     uint32_t blue[WIDTH * HEIGHT];
     uint32_t resized_a[RESIZE_W * RESIZE_H];
     uint32_t resized_b[RESIZE_W * RESIZE_H];
+    // BSS; only the stress fixture touches these immutable 4K bitmaps.
+    uint32_t stress_a[STRESS_W * STRESS_H];
+    uint32_t stress_b[STRESS_W * STRESS_H];
 } framebuffer;
 #define pixels framebuffer.pixels
 static QXLInstance qxl;
@@ -208,7 +214,9 @@ static gboolean update_color(gpointer data) {
     image->bitmap.x = width;
     image->bitmap.y = height;
     image->bitmap.stride = width * 4;
-    image->bitmap.data = (uintptr_t)(resize_applied ?
+    image->bitmap.data = (uintptr_t)(agent_stress && surface_width == STRESS_W ?
+                                     (sequence % 2 ? framebuffer.stress_a : framebuffer.stress_b) :
+                                     resize_applied ?
                                      (sequence % 2 ? framebuffer.resized_a : framebuffer.resized_b) :
                                      (partial_updates && !patch ? framebuffer.blue :
                                      (sequence % 2 ? framebuffer.green : framebuffer.red)));
@@ -453,6 +461,11 @@ static int agent_write(SpiceCharDeviceInstance *sin, const uint8_t *buf, int len
                     uint32_t height = GUINT32_FROM_LE(monitor.height);
                     printf("AGENT_MONITOR_REQUEST width=%u height=%u\n", width, height);
                     if (count == 1 && width == 1024 && height == 768) ++agent_monitor_targets;
+                    if (agent_stress && count == 1 && stress_stage < STRESS_TRANSITIONS) {
+                        unsigned target_w = stress_stage % 2 ? WIDTH : STRESS_W;
+                        unsigned target_h = stress_stage % 2 ? HEIGHT : STRESS_H;
+                        if (width == target_w && height == target_h) stress_pending = TRUE;
+                    }
                 }
                 fflush(stdout);
             }
@@ -688,6 +701,22 @@ static gboolean agent_tick(gpointer data) {
             printf("AGENT_CLIP_INVALID_GRAB stage=%u\n", invalid_stage + 1);
             fflush(stdout);
         }
+    } else if (agent_stress) {
+        // The client requests the next size only after validating both colors
+        // at the current size. No timer-based guessing of client readiness.
+        if (stress_pending && stress_stage < STRESS_TRANSITIONS) {
+            for (int i = 0; i < DRAW_SLOTS; ++i)
+                if (g_atomic_int_get(&draw_states[i]) == 1) return G_SOURCE_CONTINUE;
+            spice_qxl_destroy_primary_surface(&qxl, 0);
+            surface_width = stress_stage % 2 ? WIDTH : STRESS_W;
+            surface_height = stress_stage % 2 ? HEIGHT : STRESS_H;
+            memset(pixels, 0, (size_t)surface_width * surface_height * 4);
+            create_primary(surface_width, surface_height);
+            stress_pending = FALSE;
+            ++stress_stage;
+            printf("STRESS_PRIMARY stage=%u %ux%u\n", stress_stage, surface_width, surface_height);
+            fflush(stdout);
+        }
     } else if (agent_resize && agent_monitor_targets && !resize_applied) {
         // Main-loop producer is serialized with update_color. Wait until the
         // worker has consumed queued commands, then synchronously destroy
@@ -747,7 +776,14 @@ int main(int argc, char **argv) {
     agent_clipboard_bulk = argc == 7 && strcmp(argv[6], "agent-clipboard-bulk-full") == 0;
     agent_clipboard = agent_isolation || agent_clipboard_invalid || agent_clipboard_bulk || (argc == 7 && strcmp(argv[6], "agent-clipboard-full") == 0);
     agent_resize = argc == 7 && strcmp(argv[6], "agent-monitor-resize-full") == 0;
-    agent_monitor = agent_resize || (argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
+    agent_stress = argc == 7 && strcmp(argv[6], "agent-monitor-stress-full") == 0;
+    if (agent_stress) {
+        for (size_t i = 0; i < (size_t)STRESS_W * STRESS_H; ++i) {
+            framebuffer.stress_a[i] = 0x0000ffff;
+            framebuffer.stress_b[i] = 0x00ff00ff;
+        }
+    }
+    agent_monitor = agent_stress || agent_resize || (argc == 7 && (strcmp(argv[6], "agent-monitor-full") == 0 ||
                                   strcmp(argv[6], "agent-monitor-limited") == 0));
     if (agent_resize) {
         for (size_t i = 0; i < RESIZE_W * RESIZE_H; ++i) {
@@ -757,7 +793,7 @@ int main(int argc, char **argv) {
     }
     int with_display = argc >= 7 && (strcmp(argv[6], "display") == 0 || partial_updates || workspace || agent_monitor);
     gboolean with_agent = agent_clipboard || agent_monitor || (argc == 7 && (strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-limited") == 0));
-    agent_full = with_agent && (agent_clipboard || agent_resize || strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
+    agent_full = with_agent && (agent_clipboard || agent_stress || agent_resize || strcmp(argv[6], "agent-full") == 0 || strcmp(argv[6], "agent-monitor-full") == 0);
     if (argc >= 7 && !with_display && !with_agent) return 2;
     if (argc == 8) {
         if (strlen(argv[7]) != 1 || argv[7][0] < '0' || argv[7][0] > '3') return 2;

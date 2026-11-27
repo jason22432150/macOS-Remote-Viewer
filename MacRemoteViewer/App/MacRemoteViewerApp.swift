@@ -178,7 +178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runLoopbackSpiceClipboardProbe(file: URL(fileURLWithPath: arguments[index + 1]))
         } else if let index = arguments.firstIndex(of: "--loopback-spice-agent-probe") {
             guard arguments.count == index + 3,
-                  ["full", "limited", "monitor-full", "monitor-limited", "monitor-resize-full"].contains(arguments[index + 2]) else { Darwin.exit(2) }
+                  ["full", "limited", "monitor-full", "monitor-limited", "monitor-resize-full", "monitor-stress-full"].contains(arguments[index + 2]) else { Darwin.exit(2) }
+            if arguments[index + 2] == "monitor-stress-full" {
+                runLoopbackResizeStressProbe(file: URL(fileURLWithPath: arguments[index + 1]))
+                return
+            }
             runLoopbackSpiceAgentProbe(file: URL(fileURLWithPath: arguments[index + 1]),
                                        full: arguments[index + 2].hasSuffix("full"),
                                        monitor: arguments[index + 2].hasPrefix("monitor-"),
@@ -1440,6 +1444,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 controller.cancel()
                 board.releaseGlobally()
                 print("MRV_SPICE_CLIPBOARD_FAILED")
+                fflush(nil)
+                Darwin.exit(1)
+            }
+        }
+    }
+
+    private func runLoopbackResizeStressProbe(file: URL) {
+        Task { @MainActor in
+            let controller = SessionController(engine: SpiceEngineAdapter(),
+                resolutionDebounce: .zero, resolutionRetryDelay: .seconds(3),
+                resolutionRetryLimit: 2, resolutionPreference: .keepGuest,
+                connectionTimeout: .seconds(8), displayTimeout: .seconds(12))
+            var window: NSWindow?
+            var canvas: RemoteCanvasView?
+            var colors = Set<UInt32>()
+            do {
+                let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
+                let profile = try VVParser().parse(data: data)
+                guard profile.host == "127.0.0.1", profile.proxyURL == nil,
+                      profile.ticket.value == "mrv-ci-synthetic-ticket", !profile.deleteSourceFile,
+                      model.sessions.isEmpty, CSDisplay.mrvGraphicsBytesForProbe() == 0,
+                      let device = MTLCreateSystemDefaultDevice() else { throw SessionError.cancelled }
+                controller.setClipboardSharingEnabled(false)
+                let bounds = CGRect(x: 0, y: 0, width: 1000, height: 450)
+                let host = NSWindow(contentRect: bounds, styleMask: [.titled, .closable],
+                                    backing: .buffered, defer: false)
+                host.isReleasedWhenClosed = false
+                let view = RemoteCanvasView(frame: bounds, device: device)
+                view.controller = controller
+                view.setupMetal()
+                view.setSmokePixelHandler { pixel, _ in
+                    let rgb = pixel & 0x00ffffff
+                    if colors.count < 16 { colors.insert(rgb) }
+                }
+                host.contentView = view
+                window = host
+                canvas = view
+                host.makeKeyAndOrderFront(nil)
+                controller.open(profile)
+                let small = RemoteFrame(width: 640, height: 480)
+                let large = RemoteFrame(width: 3840, height: 2160)
+                for stage in 0...4 {
+                    let size = stage % 2 == 0 ? small : large
+                    let expected: Set<UInt32> = stage % 2 == 0 ? [0xff0000, 0x00ff00] : [0x00ffff, 0xff00ff]
+                    if stage > 0 {
+                        colors.removeAll()
+                        controller.applyResolutionPreference(.preset(size))
+                    }
+                    let deadline = ContinuousClock.now + .seconds(14)
+                    var passed = false
+                    while ContinuousClock.now < deadline {
+                        if case .failed = controller.state { throw SessionError.network }
+                        if controller.state == .disconnected { throw SessionError.disconnected }
+                        if controller.state == .connected && controller.agent.isConnected &&
+                            controller.agent.supportsMonitorsConfig && controller.displaySize == size &&
+                            controller.hasRenderedFrame && expected.isSubset(of: colors) &&
+                            view.smokeMappingMatches(size) && !controller.guestDidNotApplyResolution {
+                            let bytes = CSDisplay.mrvGraphicsBytesForProbe()
+                            guard bytes >= UInt64(size.width) * UInt64(size.height) * 8,
+                                  bytes <= 2 * 1024 * 1024 * 1024 else { throw SessionError.cancelled }
+                            print("MRV_RESIZE_STRESS_STAGE_OK stage=\(stage) size=\(size.width)x\(size.height)")
+                            passed = true
+                            break
+                        }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    guard passed else { throw SessionError.displayTimeout }
+                }
+                view.setSmokePixelHandler(nil)
+                view.prepareForRemoval()
+                controller.cancel()
+                host.contentView = NSView(frame: .zero)
+                let deadline = ContinuousClock.now + .seconds(8)
+                while CSDisplay.mrvGraphicsBytesForProbe() != 0 && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                guard controller.state == .disconnected, controller.displaySize == nil,
+                      CSDisplay.mrvGraphicsBytesForProbe() == 0 else { throw SessionError.cancelled }
+                print("MRV_RESIZE_STRESS_GRAPHICS_FINAL bytes=0")
+                print("MRV_SPICE_AGENT_OK")
+                fflush(nil)
+                host.orderOut(nil)
+                Darwin.exit(0)
+            } catch {
+                canvas?.setSmokePixelHandler(nil)
+                canvas?.prepareForRemoval()
+                controller.cancel()
+                window?.orderOut(nil)
+                print("MRV_RESIZE_STRESS_FAILED")
                 fflush(nil)
                 Darwin.exit(1)
             }

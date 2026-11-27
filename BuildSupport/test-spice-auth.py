@@ -78,7 +78,7 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 client = [str(exe), mode, str(profile)]
             elif agent is not None:
                 client = [str(exe), "--loopback-spice-agent-probe", str(profile), agent]
-            result = subprocess.run(client, cwd=root, env=env, capture_output=True, text=True, timeout=50 if agent == "clipboard-bulk-full" else 45)
+            result = subprocess.run(client, cwd=root, env=env, capture_output=True, text=True, timeout=100 if agent == "monitor-stress-full" else 50 if agent == "clipboard-bulk-full" else 45)
             lines = result.stdout.splitlines()
             expected = ("MRV_SPICE_PARTIAL_OK" if partial else "MRV_SPICE_DISPLAY_OK" if display else
                         ("MRV_SPICE_AUTH_OK" if success else "MRV_SPICE_AUTH_REJECTED"))
@@ -123,6 +123,14 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 if actual != markers:
                     raise AssertionError(f"{name}: incomplete clipboard lifecycle {actual}")
                 print("\n".join(actual))
+            elif agent == "monitor-stress-full":
+                expected_stress = [f"MRV_RESIZE_STRESS_STAGE_OK stage={i} size={size}"
+                                   for i, size in enumerate(("640x480", "3840x2160", "640x480", "3840x2160", "640x480"))]
+                actual_stress = [line for line in lines if line.startswith("MRV_RESIZE_STRESS_STAGE_OK ")]
+                if actual_stress != expected_stress or lines.count("MRV_RESIZE_STRESS_GRAPHICS_FINAL bytes=0") != 1:
+                    raise AssertionError(f"{name}: incomplete resolution/ownership stress")
+                print("\n".join(actual_stress), flush=True)
+                print("MRV_RESIZE_STRESS_GRAPHICS_FINAL bytes=0", flush=True)
             elif agent is not None:
                 capability = int(agent.endswith("full"))
                 markers = [f"MRV_AGENT_CAPS_OK monitors={capability} clipboard={capability}",
@@ -203,7 +211,23 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                        for line in lines if line.startswith("PARTIAL_COUNTS ")]
             if len(patches) != 1 or patches[0] is None or int(patches[0].group(1)) < 4:
                 raise AssertionError("missing actual partial QXL draw commands")
-        if agent is not None:
+        if agent == "monitor-stress-full":
+            expected_surfaces = [f"STRESS_PRIMARY stage={i} {size}" for i, size in enumerate(
+                ("3840x2160", "640x480", "3840x2160", "640x480"), 1)]
+            actual_surfaces = [line for line in lines if line.startswith("STRESS_PRIMARY ")]
+            if actual_surfaces != expected_surfaces or lines.count("DISPLAY_INITIALIZED tls=1") != 1:
+                raise AssertionError(f"{name}: missing actual server surface transitions")
+            if not all(lines.count(marker) == 1 for marker in (
+                "AGENT_CLIENT_CAPS", "AGENT_CAPS_SENT monitors=1 clipboard=1", "AGENT_CAPS_DELIVERED")):
+                raise AssertionError(f"{name}: missing real agent negotiation")
+            counts = [re.fullmatch(r"DRAW_COUNTS submitted=(\d+) consumed=(\d+) released=(\d+)", line)
+                      for line in lines if line.startswith("DRAW_COUNTS ")]
+            if len(counts) != 1 or counts[0] is None:
+                raise AssertionError(f"{name}: missing QXL lifecycle")
+            submitted, consumed, released = map(int, counts[0].groups())
+            if not 0 < consumed <= submitted or not 0 <= released <= consumed:
+                raise AssertionError(f"{name}: invalid QXL lifecycle")
+        elif agent is not None:
             capability = int(agent.endswith("full"))
             required = ["AGENT_CLIENT_CAPS", f"AGENT_CAPS_SENT monitors={capability} clipboard={capability}",
                         "AGENT_CAPS_DELIVERED", "AGENT_REMOVED", "AGENT_RESULT received=1 delivered=1 removed=1 error=0"]
@@ -847,6 +871,7 @@ def main():
         test_case(args.app.resolve(), root, fixture, "agent-monitor-full", tls.TICKET, True, agent="monitor-full")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-limited", tls.TICKET, True, agent="monitor-limited")
         test_case(args.app.resolve(), root, fixture, "agent-monitor-resize-full", tls.TICKET, True, agent="monitor-resize-full")
+        test_case(args.app.resolve(), root, fixture, "agent-monitor-stress-full", tls.TICKET, True, agent="monitor-stress-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-full", tls.TICKET, True, agent="clipboard-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-invalid-full", tls.TICKET, True, agent="clipboard-invalid-full")
         test_case(args.app.resolve(), root, fixture, "agent-clipboard-bulk-full", tls.TICKET, True, agent="clipboard-bulk-full")

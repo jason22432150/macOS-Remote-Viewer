@@ -42,7 +42,7 @@ public enum IntegrationProbeLaunch: Equatable, Sendable {
             return .denied
         }
         if mode == "--loopback-spice-agent-probe",
-           !["full", "limited", "monitor-full", "monitor-limited", "monitor-resize-full"].contains(args[2]) {
+           !["full", "limited", "monitor-full", "monitor-limited", "monitor-resize-full", "monitor-stress-full"].contains(args[2]) {
             return .denied
         }
         return .allowed

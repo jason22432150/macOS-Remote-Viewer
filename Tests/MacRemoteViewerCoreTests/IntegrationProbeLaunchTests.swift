@@ -21,6 +21,7 @@ final class IntegrationProbeLaunchTests: XCTestCase {
             ("--loopback-spice-clipboard-invalid-probe", ["a.vv"]),
             ("--loopback-spice-clipboard-bulk-probe", ["a.vv"]),
             ("--loopback-spice-agent-probe", ["a.vv", "full"]),
+            ("--loopback-spice-agent-probe", ["a.vv", "monitor-stress-full"]),
             ("--loopback-spice-clipboard-isolation-probe", ["a.vv", "b.vv"]),
             ("--loopback-spice-clipboard-late-probe", ["a.vv", "b.vv", "request", "delivered"]),
             ("--loopback-spice-clipboard-reactivate-probe", ["a.vv", "b.vv", "request", "delivered"]),
