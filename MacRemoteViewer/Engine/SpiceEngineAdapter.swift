@@ -362,17 +362,62 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
     nonisolated func spiceForwardedPortOpened(_ connection: CSConnection, port: CSPort) {}
     nonisolated func spiceForwardedPortClosed(_ connection: CSConnection, port: CSPort) {}
 
-    /// 把 GLib 執行緒上的事件轉回 MainActor；連線已更換則丟棄過期 callback。
+    /// Immutable handoff of a native object identity and a main-actor-only
+    /// closure. CocoaSpice handles are retained across the boundary but are
+    /// not dereferenced by the dispatching thread.
+    private struct MainCallback: @unchecked Sendable {
+        let connection: CSConnection
+        let body: @MainActor (SpiceEngineAdapter) -> Void
+    }
+
+    /// GLib callbacks from its single worker must be delivered in FIFO
+    /// submission order. Independent unstructured Tasks on MainActor do not
+    /// guarantee FIFO, particularly across channel created/updated/destroyed.
     nonisolated private func hopToMain(
         from connection: CSConnection,
         _ body: @escaping @MainActor (SpiceEngineAdapter) -> Void
     ) {
-        // A queued callback must not extend the lifetime of a closed
-        // adapter. Still retain the originating connection for identity fencing.
-        Task { @MainActor [weak self] in
-            guard let self, self.connection === connection else { return }
-            body(self)
+        let callback = MainCallback(connection: connection, body: body)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.connection === callback.connection else { return }
+            callback.body(self)
         }
+    }
+
+    // Probe records only local synthetic indices, never native payloads.
+    @MainActor final class CallbackProbeRecorder {
+        private(set) var values: [Int] = []
+        func append(_ value: Int) { values.append(value) }
+    }
+
+    /// Exercise the exact production handoff with a serial non-main producer
+    /// and a main-queue barrier. The wrapper probe uses a real TLS connection.
+    func verifyCallbackFIFOForProbe() async -> Bool {
+        guard ProcessInfo.processInfo.environment["MRV_ENABLE_INTEGRATION_PROBES"] == "1",
+              let connection else { return false }
+        let origin = MainCallback(connection: connection, body: { _ in })
+        let recorder = CallbackProbeRecorder()
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                for index in 0..<128 {
+                    self?.hopToMain(from: origin.connection) { _ in
+                        recorder.append(index)
+                    }
+                }
+                DispatchQueue.main.async {
+                    continuation.resume(returning: recorder.values == Array(0..<128))
+                }
+            }
+        }
+    }
+
+    /// Queue a marker without yielding the current MainActor turn so the
+    /// harness can disconnect first and prove the identity fence rejects it.
+    func enqueueStaleCallbackForProbe(_ recorder: CallbackProbeRecorder) -> Bool {
+        guard ProcessInfo.processInfo.environment["MRV_ENABLE_INTEGRATION_PROBES"] == "1",
+              let connection else { return false }
+        hopToMain(from: connection) { _ in recorder.append(-1) }
+        return true
     }
 
     nonisolated private static func validatedFrame(_ size: CGSize) -> RemoteFrame? {

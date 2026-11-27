@@ -520,8 +520,11 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 if "MRV_NATIVE_MULTI_OK" not in lines:
                     raise AssertionError("native multi: missing success marker")
             elif wrapper_only:
-                if "MRV_WRAPPER_MULTI_OK" not in lines:
-                    raise AssertionError("wrapper multi: missing success marker")
+                for marker in ("MRV_CALLBACK_FIFO_OK sessions=4 events=512",
+                               "MRV_CALLBACK_STALE_FENCE_OK sessions=4",
+                               "MRV_WRAPPER_MULTI_OK"):
+                    if lines.count(marker) != 1:
+                        raise AssertionError(f"wrapper multi: missing or repeated {marker}")
             elif workspace:
                 switches = [line for line in lines if line.startswith("MRV_WORKSPACE_SWITCH_OK ")]
                 expected = [f"MRV_WORKSPACE_SWITCH_OK step={step} selected={selected} live=4"

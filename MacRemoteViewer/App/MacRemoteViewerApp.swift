@@ -548,6 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func runLoopbackSpiceWrapperProbe(files: [URL]) {
         Task { @MainActor in
             var controllers: [SessionController] = []
+            var adapters: [SpiceEngineAdapter] = []
             do {
                 let profiles = try files.map { file in
                     let (data, _) = try FoundationFileAccessor().readIdentified(from: file)
@@ -562,7 +563,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     throw SessionError.cancelled
                 }
                 for _ in profiles {
-                    let controller = SessionController(engine: SpiceEngineAdapter(),
+                    let adapter = SpiceEngineAdapter()
+                    adapters.append(adapter)
+                    let controller = SessionController(engine: adapter,
                         connectionTimeout: .seconds(8), displayTimeout: .seconds(12))
                     controller.setClipboardSharingEnabled(false)
                     controllers.append(controller)
@@ -598,8 +601,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard passed, model.sessions.isEmpty else {
                     throw SessionError.displayTimeout
                 }
+                for adapter in adapters {
+                    guard await adapter.verifyCallbackFIFOForProbe() else { throw SessionError.cancelled }
+                }
+                print("MRV_CALLBACK_FIFO_OK sessions=4 events=512")
+                let stale = SpiceEngineAdapter.CallbackProbeRecorder()
+                for adapter in adapters {
+                    guard adapter.enqueueStaleCallbackForProbe(stale) else { throw SessionError.cancelled }
+                }
                 print("MRV_PROBE_WORKSPACE_EMPTY")
                 for controller in controllers { controller.cancel() }
+                // Explicitly drain the same queue that receives callbacks.
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.main.async { continuation.resume() }
+                }
+                guard stale.values.isEmpty else { throw SessionError.cancelled }
+                print("MRV_CALLBACK_STALE_FENCE_OK sessions=4")
                 try await Task.sleep(for: .milliseconds(500))
                 guard controllers.allSatisfy({ $0.state == .disconnected && $0.displaySize == nil }) else {
                     throw SessionError.cancelled
