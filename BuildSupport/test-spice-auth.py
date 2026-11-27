@@ -60,6 +60,9 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["GST_REGISTRY"] = str(root / "gst-registry.bin")
             env["MRV_ENABLE_INTEGRATION_PROBES"] = "1"
+            env.pop("MRV_CANVAS_UPLOAD_FAULT", None)
+            if partial:
+                env["MRV_CANVAS_UPLOAD_FAULT"] = "1"
             if require_credential_wipe:
                 env["MRV_RECEIVE_TEST_TRACE"] = "1"
             exe = app / "Contents" / "MacOS" / "Mac Remote Viewer"
@@ -84,6 +87,10 @@ def test_case(app, root, fixture, name, server_ticket, success, display=False, p
                 raise AssertionError(f"{name}: missing expected auth result")
             if display and not partial and lines.count("MRV_METAL_DRAW_FAILURE_RECOVERY_OK") != 1:
                 raise AssertionError(f"{name}: missing draw failure recovery gate")
+            if partial:
+                if lines.count("MRV_CANVAS_UPLOAD_RECOVERY_OK") != 2:
+                    raise AssertionError(f"{name}: missing full-upload recovery in both connection rounds")
+                print("MRV_CANVAS_UPLOAD_RECOVERY_OK rounds=2", flush=True)
             if require_credential_wipe:
                 markers = result.stderr.splitlines()
                 required = ("MRV_NATIVE_AUTH_TICKET_WIPED", "MRV_NATIVE_SESSION_SECRET_WIPED",

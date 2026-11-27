@@ -23,6 +23,7 @@ from overlay import (
     overlay_metal_frame_observation,
     overlay_metal_pixel_probe,
     overlay_metal_draw_failure_recovery,
+    overlay_canvas_upload_recovery,
     overlay_package_swift,
     overlay_renderer_protected_category,
     overlay_session_sharing_category,
@@ -604,6 +605,54 @@ static void cs_channel_new(void) {}
             self.assertIn("MTLCommandBufferStatusCompleted", text)
             self.assertIn("if (rendered && frameHandler)", text)
             self.assertIn("[self _completeDraw];", text)
+
+    def test_canvas_upload_completion_is_fenced_and_retries_full_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "Sources" / "CocoaSpice" / "CSDisplay.m"
+            path.parent.mkdir(parents=True)
+            path.write_text("""@property (nonatomic) BOOL canvasIsBusy;
+    } else {
+        return self.canvasTexture;
+    }
+}
+    self.canvasIsBusy = NO;
+    self.canvasTexture = nil;
+    [self disableScanout];
+- (void)rebuildCanvasTexture {
+    CGRect visibleArea = self.visibleArea;
+    if (!self.canvasData || !self.canvasBuffer || self.canvasStride <= 0) {
+        return; // not ready to draw yet
+    }
+    rect = [self clippedDrawRect:rect];
+    [self copyBuffer:submittedBuffer
+              region:region
+        sourceOffset:self.canvasBufferOffset + offset
+   sourceBytesPerRow:self.canvasStride
+          completion:^ {
+        [CSMain.sharedInstance asyncWith:^{
+            // A late completion must not clear the busy bit of a new surface.
+            if (self.canvasBuffer != submittedBuffer) return;
+            CGRect dirtyRect = self.canvasDirtyRect;
+            self.canvasDirtyRect = CGRectZero;
+            self.canvasIsBusy = NO;
+            if (!CGRectIsEmpty(dirtyRect)) {
+                [self drawRegion:dirtyRect];
+            }
+        }];
+    }];
+""")
+            overlay_canvas_upload_recovery(root)
+            result = path.read_text()
+            self.assertIn("return self.canvasUploadValid ? self.canvasTexture : nil;", result)
+            self.assertIn("self.canvasBuffer != submittedBuffer || self.canvasTexture != destination", result)
+            self.assertIn("completed.status == MTLCommandBufferStatusCompleted", result)
+            self.assertIn("if (!self.canvasUploadValid) rect = self.visibleArea;", result)
+            self.assertIn("self.canvasRetryAvailable = NO;", result)
+            self.assertIn("self.renderers.firstObject.commandQueue != queue", result)
+            self.assertIn("[CSMain.sharedInstance asyncWith:^{ finish(success); }];", result)
+            self.assertIn("self.canvasUploadValid = YES;\n        self.canvasRetryAvailable = YES;\n        [self invalidate];", result)
+            self.assertNotIn("[self copyBuffer:submittedBuffer", result)
 
     def test_metal_draw_failure_does_not_present_or_resurrect_source(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

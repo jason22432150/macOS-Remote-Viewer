@@ -1825,6 +1825,156 @@ def overlay_drawable_demand(checkout: Path) -> None:
     ])
 
 
+def overlay_canvas_upload_recovery(checkout: Path) -> None:
+    """Publish completed canvas uploads on the owning worker, not at submit."""
+    path = checkout / "Sources" / "CocoaSpice" / "CSDisplay.m"
+    _replace_once(path, [
+        ("@property (nonatomic) BOOL canvasIsBusy;",
+         "@property (nonatomic) BOOL canvasIsBusy;\n"
+         "@property (nonatomic) BOOL canvasUploadValid;\n"
+         "@property (nonatomic) BOOL canvasRetryAvailable;\n"
+         "@property (nonatomic, nullable) id<MTLCommandQueue> canvasUploadQueue;\n"
+         "@property (nonatomic) NSUInteger mrvCanvasFaultStage;"),
+        ("""    } else {
+        return self.canvasTexture;
+    }
+}""",
+         """    } else {
+        return self.canvasUploadValid ? self.canvasTexture : nil;
+    }
+}"""),
+        ("""    self.canvasIsBusy = NO;
+    self.canvasTexture = nil;
+    [self disableScanout];""",
+         """    self.canvasIsBusy = NO;
+    self.canvasUploadValid = NO;
+    self.canvasUploadQueue = nil;
+    self.canvasTexture = nil;
+    [self disableScanout];"""),
+        ("""- (void)rebuildCanvasTexture {
+    CGRect visibleArea = self.visibleArea;""",
+         """- (void)rebuildCanvasTexture {
+    // Invalidate old publication even when allocation or validation fails.
+    self.canvasUploadValid = NO;
+    self.canvasRetryAvailable = YES;
+    self.canvasUploadQueue = nil;
+    self.canvasIsBusy = NO;
+    self.canvasDirtyRect = CGRectZero;
+    self.canvasBuffer = nil;
+    self.canvasTexture = nil;
+    [self disableScanout];
+    CGRect visibleArea = self.visibleArea;"""),
+        ("""    if (!self.canvasData || !self.canvasBuffer || self.canvasStride <= 0) {
+        return; // not ready to draw yet
+    }
+    rect = [self clippedDrawRect:rect];""",
+         """    if (!self.canvasData || !self.canvasBuffer || !self.canvasTexture || self.canvasStride <= 0) {
+        return; // not ready to draw yet
+    }
+    id<MTLCommandQueue> queue = self.renderers.firstObject.commandQueue;
+    if (!queue) {
+        self.canvasUploadValid = NO;
+        return; // a later renderer attach repaints the full framebuffer
+    }
+    if (!self.canvasIsBusy && self.canvasUploadQueue && self.canvasUploadQueue != queue) {
+        // The old command queue may still sample its texture. Allocate a
+        // fresh generation before uploading through the replacement queue.
+        [self rebuildCanvasTexture];
+        return;
+    }
+    if (!self.canvasUploadValid) rect = self.visibleArea;
+    rect = [self clippedDrawRect:rect];"""),
+        ("""    [self copyBuffer:submittedBuffer
+              region:region
+        sourceOffset:self.canvasBufferOffset + offset
+   sourceBytesPerRow:self.canvasStride
+          completion:^ {
+        [CSMain.sharedInstance asyncWith:^{
+            // A late completion must not clear the busy bit of a new surface.
+            if (self.canvasBuffer != submittedBuffer) return;
+            CGRect dirtyRect = self.canvasDirtyRect;
+            self.canvasDirtyRect = CGRectZero;
+            self.canvasIsBusy = NO;
+            if (!CGRectIsEmpty(dirtyRect)) {
+                [self drawRegion:dirtyRect];
+            }
+        }];
+    }];""",
+         """    id<MTLTexture> destination = self.canvasTexture;
+    self.canvasUploadQueue = queue;
+    BOOL full = destX == 0 && destY == 0 &&
+                (NSUInteger)width == destination.width && (NSUInteger)height == destination.height;
+    BOOL previouslyValid = self.canvasUploadValid;
+    // Failure injection is private to the explicit loopback integration test.
+    BOOL inject = g_strcmp0(g_getenv("MRV_ENABLE_INTEGRATION_PROBES"), "1") == 0 &&
+                  g_strcmp0(g_getenv("MRV_CANVAS_UPLOAD_FAULT"), "1") == 0;
+    BOOL rejectEncode = inject && self.mrvCanvasFaultStage == 0;
+    BOOL rejectCompletion = inject && self.mrvCanvasFaultStage == 2;
+    if (rejectEncode) self.mrvCanvasFaultStage = 1;
+    if (rejectCompletion) self.mrvCanvasFaultStage = 3;
+    // All state and source publication remain on the worker. Metal retains
+    // submitted staging/texture resources until GPU completion.
+    void (^finish)(BOOL) = ^(BOOL success) {
+        if (self.canvasBuffer != submittedBuffer || self.canvasTexture != destination ||
+            self.canvasUploadQueue != queue) return;
+        self.canvasIsBusy = NO;
+        CGRect dirty = self.canvasDirtyRect;
+        self.canvasDirtyRect = CGRectZero;
+        if (self.isGLEnabled) {
+            self.canvasUploadValid = NO;
+            return;
+        }
+        if (self.renderers.firstObject.commandQueue != queue) {
+            self.canvasUploadValid = NO;
+            if (self.renderers.count) [self drawRegion:self.visibleArea];
+            return;
+        }
+        if (!success || (!previouslyValid && !full)) {
+            self.canvasUploadValid = NO;
+            [self disableScanout];
+            // One immediate retry per failure episode; persistent failures
+            // wait for the next damage/repaint, never spin the GLib worker.
+            if (self.canvasRetryAvailable) {
+                self.canvasRetryAvailable = NO;
+                [self drawRegion:self.visibleArea];
+            }
+            return;
+        }
+        self.canvasUploadValid = YES;
+        self.canvasRetryAvailable = YES;
+        [self invalidate];
+        if (inject && self.mrvCanvasFaultStage == 1 && full) self.mrvCanvasFaultStage = 2;
+        else if (inject && self.mrvCanvasFaultStage == 3 && full) {
+            self.mrvCanvasFaultStage = 4;
+            puts("MRV_CANVAS_UPLOAD_RECOVERY_OK"); fflush(stdout);
+        }
+        if (!CGRectIsEmpty(dirty)) [self drawRegion:dirty];
+    };
+    id<MTLCommandBuffer> command = rejectEncode ? nil : [queue commandBuffer];
+    id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
+    if (!encoder) {
+        finish(NO);
+        return;
+    }
+    command.label = @"Canvas Upload";
+    [encoder copyFromBuffer:submittedBuffer
+                sourceOffset:self.canvasBufferOffset + offset
+           sourceBytesPerRow:self.canvasStride
+         sourceBytesPerImage:0
+                  sourceSize:region.size
+                   toTexture:destination
+            destinationSlice:0
+            destinationLevel:0
+           destinationOrigin:region.origin];
+    [encoder endEncoding];
+    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        BOOL success = !rejectCompletion && completed.status == MTLCommandBufferStatusCompleted;
+        [CSMain.sharedInstance asyncWith:^{ finish(success); }];
+    }];
+    [command commit];"""),
+    ])
+
+
 def overlay_metal_draw_failure_recovery(checkout: Path) -> None:
     """Do not present an unencoded draw; retry failed current presentations."""
     root = checkout / "Sources" / "CocoaSpiceRenderer"
@@ -2437,6 +2587,7 @@ def main() -> None:
     overlay_canvas_gpu_lifetime(checkout)
     overlay_scanout_ownership(checkout)
     overlay_scanout_runtime_probe(checkout)
+    overlay_canvas_upload_recovery(checkout)
     overlay_metal_pixel_probe(checkout)
     overlay_drawable_demand(checkout)
     overlay_metal_draw_failure_recovery(checkout)
