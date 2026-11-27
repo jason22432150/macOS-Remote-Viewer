@@ -332,8 +332,7 @@ def validate_multi_metrics(lines, network_fault=False, relay_stall=False):
     expected = {(0, 4): set(range(4))} if network_fault else {(i, 4): set(range(4)) for i in range(4)}
     if relay_stall:
         expected = {(0, 4): set(range(4)), (1, 4): set(range(4))}
-    else:
-        expected[(2, 3)] = {0, 2, 3}
+    expected[(2, 3)] = {0, 2, 3}
     resources = {}
     samples = {}
     gpu = {}
@@ -784,6 +783,30 @@ def run_relay_stall_client(command, root, env, relay, victim):
                 raise AssertionError("relay stall: insufficient pause duration")
             relay.pause.clear()
             print("MRV_RELAY_STALL_FORWARDING_RESTORED", flush=True)
+            wait_marker("MRV_RELAY_STALL_LONG_READY victim=1 live=4", 22)
+            relay.pause.set()
+            if not relay.paused.wait(timeout=1):
+                raise AssertionError("relay stall: long pause not acknowledged")
+            long_start = time.monotonic()
+            print("MRV_RELAY_STALL_LONG_PAUSED", flush=True)
+            wait_marker("MRV_RELAY_STALL_LONG_CHECKPOINT seconds=80 connected=4 survivors=3", 90)
+            # Keep the sockets blocked until the client has actually returned
+            # from cancellation, so a resumed relay cannot mask a deadlock.
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                if client.poll() is not None or victim.poll() is not None or relay.error:
+                    raise AssertionError("relay stall: premature exit during cancellation")
+                if any(line.startswith("MRV_RELAY_STALL_LONG_CANCEL_OK ")
+                       for line in stdout_path.read_text(errors="replace").splitlines()):
+                    break
+                time.sleep(0.025)
+            else:
+                raise AssertionError("relay stall: cancellation blocked")
+            elapsed = time.monotonic() - long_start
+            if elapsed < 80 or not relay.paused.is_set():
+                raise AssertionError("relay stall: insufficient long pause duration")
+            print(f"MRV_RELAY_STALL_LONG_PAUSE_MEASURED elapsed-ms={int(elapsed * 1000)}", flush=True)
+            relay.pause.clear()
             client.wait(timeout=25)
         finally:
             relay.pause.clear()
@@ -938,10 +961,18 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                         raise AssertionError(f"workspace: missing {marker}")
             elif relay_stall:
                 markers = [line for line in lines if line.startswith("MRV_RELAY_STALL_")]
-                if markers != ["MRV_RELAY_STALL_READY victim=1 live=4",
-                               "MRV_RELAY_STALL_OBSERVED seconds=6 connected=4 survivors=3",
-                               "MRV_RELAY_STALL_RESUMED live=4", "MRV_RELAY_STALL_OK"]:
+                expected = ["MRV_RELAY_STALL_READY victim=1 live=4",
+                            "MRV_RELAY_STALL_OBSERVED seconds=6 connected=4 survivors=3",
+                            "MRV_RELAY_STALL_RESUMED live=4",
+                            "MRV_RELAY_STALL_LONG_READY victim=1 live=4"]
+                expected += [f"MRV_RELAY_STALL_LONG_CHECKPOINT seconds={seconds} connected=4 survivors=3"
+                             for seconds in (20, 40, 60, 80)]
+                if len(markers) != 11 or markers[:8] != expected or markers[9:] != [
+                        "MRV_RELAY_STALL_LONG_ISOLATION_OK survivors=3", "MRV_RELAY_STALL_OK"]:
                     raise AssertionError("relay stall: incomplete ordered markers")
+                cancelled = re.fullmatch(r"MRV_RELAY_STALL_LONG_CANCEL_OK elapsed-ms=(\d+)", markers[8])
+                if not cancelled or int(cancelled.group(1)) >= 5000:
+                    raise AssertionError("relay stall: missing bounded cancellation")
                 validate_multi_metrics(lines, relay_stall=True)
             elif network_fault:
                 markers = [line for line in lines if line.startswith("MRV_NETWORK_FAULT_")]

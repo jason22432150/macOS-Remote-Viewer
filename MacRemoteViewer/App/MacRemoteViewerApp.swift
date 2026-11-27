@@ -855,6 +855,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await validatePhase(active: 1)
                     guard model.sessions.isEmpty, foreign.isEmpty else { throw SessionError.cancelled }
                     print("MRV_RELAY_STALL_RESUMED live=4")
+                    // A second stall exceeds the nominal 75-second idle
+                    // keepalive window. The relay kernels remain alive, so
+                    // this is not evidence of IP-level packet loss.
+                    print("MRV_RELAY_STALL_LONG_READY victim=1 live=4")
+                    fflush(nil)
+                    try await Task.sleep(for: .seconds(2))
+                    for checkpoint in 1...4 {
+                        for i in live { observed[i].removeAll() }
+                        let until = ContinuousClock.now + .seconds(20)
+                        while ContinuousClock.now < until {
+                            guard foreign.isEmpty, live.allSatisfy({
+                                controllers[$0].state == .connected &&
+                                controllers[$0].displaySize == RemoteFrame(width: 640, height: 480)
+                            }) else { throw SessionError.network }
+                            try await Task.sleep(for: .milliseconds(100))
+                        }
+                        guard observed[1].count <= 1,
+                              [0, 2, 3].allSatisfy({ observed[$0] == expected[$0] }) else {
+                            print("MRV_RELAY_STALL_LONG_DIAGNOSTIC checkpoint=\(checkpoint) victim-colors=\(observed[1].count)")
+                            throw SessionError.displayTimeout
+                        }
+                        print("MRV_RELAY_STALL_LONG_CHECKPOINT seconds=\(checkpoint * 20) connected=4 survivors=3")
+                        fflush(nil)
+                    }
+                    // Explicit user-equivalent cancellation while the relay
+                    // is still paused. No cached ticket reuse or automatic retry.
+                    let cancelStart = ContinuousClock.now
+                    controllers[1].cancel()
+                    canvases[1].setSmokePixelHandler(nil)
+                    canvases[1].prepareForRemoval()
+                    canvases[1].removeFromSuperview()
+                    let cancelElapsed = cancelStart.duration(to: ContinuousClock.now)
+                    guard cancelElapsed < .seconds(5),
+                          controllers[1].state == .disconnected,
+                          controllers[1].displaySize == nil,
+                          !controllers[1].hasRenderedFrame,
+                          !controllers[1].agent.isConnected,
+                          adapters[1].lastNativeCredentialCleanupSucceeded == true,
+                          adapters[1].nativeRendererCountForProbe() == nil,
+                          !adapters[1].rendererRegistrationForProbe() else {
+                        throw SessionError.cancelled
+                    }
+                    let cancelParts = cancelElapsed.components
+                    let cancelMS = Int(cancelParts.seconds * 1000 + cancelParts.attoseconds / 1_000_000_000_000_000)
+                    print("MRV_RELAY_STALL_LONG_CANCEL_OK elapsed-ms=\(cancelMS)")
+                    fflush(nil)
+                    live.remove(1)
+                    try await validatePhase(active: 2)
+                    guard controllers[1].state == .disconnected,
+                          controllers[1].displaySize == nil, !controllers[1].hasRenderedFrame,
+                          foreign.isEmpty, model.sessions.isEmpty else { throw SessionError.cancelled }
+                    print("MRV_RELAY_STALL_LONG_ISOLATION_OK survivors=3")
                     print("MRV_PROBE_WORKSPACE_EMPTY")
                     cleanUp()
                     print("MRV_RELAY_STALL_OK")
