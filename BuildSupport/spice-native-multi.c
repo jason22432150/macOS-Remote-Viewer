@@ -4,6 +4,10 @@
  */
 #include <spice-client.h>
 #include <glib.h>
+#include <gio/gio.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +35,30 @@ typedef struct {
 
 static Probe probe;
 
+/* The read-only SpiceChannel:socket property is documented for connection
+ * details. Never read/write its stream or change any socket options here.
+ * Inspect the actual kernel values instead of assuming setsockopt succeeded. */
+static gboolean verify_keepalive(SpiceChannel *channel, unsigned index, int type, int id) {
+    GSocket *sock = NULL;
+    gint enabled = -1, idle = -1, interval = -1, count = -1;
+    g_object_get(channel, "socket", &sock, NULL);
+    gboolean ok = FALSE;
+    if (sock) {
+        GSocketFamily family = g_socket_get_family(sock);
+        ok = (family == G_SOCKET_FAMILY_IPV4 || family == G_SOCKET_FAMILY_IPV6) &&
+             g_socket_get_option(sock, SOL_SOCKET, SO_KEEPALIVE, &enabled, NULL) &&
+             g_socket_get_option(sock, IPPROTO_TCP, TCP_KEEPALIVE, &idle, NULL) &&
+             g_socket_get_option(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, NULL) &&
+             g_socket_get_option(sock, IPPROTO_TCP, TCP_KEEPCNT, &count, NULL) &&
+             enabled == 1 && idle == 30 && interval == 15 && count == 3;
+    }
+    g_clear_object(&sock);
+    printf("MRV_NATIVE_KEEPALIVE session=%u type=%d id=%d enabled=%d idle=%d interval=%d count=%d ok=%d\n",
+           index, type, id, enabled, idle, interval, count, ok ? 1 : 0);
+    fflush(stdout);
+    return ok;
+}
+
 static void channel_event(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
     Peer *peer = data;
     int type = 0, id = 0;
@@ -41,6 +69,9 @@ static void channel_event(SpiceChannel *channel, SpiceChannelEvent event, gpoint
     if (probe.closing) return;
     switch (event) {
     case SPICE_CHANNEL_OPENED:
+        if ((SPICE_IS_MAIN_CHANNEL(channel) || SPICE_IS_DISPLAY_CHANNEL(channel)) &&
+            !verify_keepalive(channel, peer->index, type, id))
+            probe.failed = TRUE;
         if (SPICE_IS_MAIN_CHANNEL(channel) && ++peer->main_opened != 1)
             probe.failed = TRUE;
         if (SPICE_IS_DISPLAY_CHANNEL(channel) && ++peer->display_opened != 1)
