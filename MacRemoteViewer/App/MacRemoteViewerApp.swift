@@ -649,6 +649,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             var controllers: [SessionController] = []
+            var adapters: [SpiceEngineAdapter] = []
             var canvases: [RemoteCanvasView] = []
             var observed = Array(repeating: Set<UInt32>(), count: 4)
             var completedSamples = Array(repeating: 0, count: 4)
@@ -682,7 +683,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let grid = NSView(frame: rect)
                 window.contentView = grid
                 for i in 0..<4 {
-                    let controller = SessionController(engine: SpiceEngineAdapter(),
+                    let adapter = SpiceEngineAdapter()
+                    adapters.append(adapter)
+                    let controller = SessionController(engine: adapter,
                         connectionTimeout: .seconds(8), displayTimeout: .seconds(12))
                     controller.setClipboardSharingEnabled(false)
                     let canvas = RemoteCanvasView(
@@ -807,10 +810,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         print("MRV_MULTI_FIRST_FRAME session=\(i) ms=\(elapsed)")
                     }
                 }
+                // Temporarily unhost a live canvas without disconnecting its
+                // session. Exercise AppKit window callbacks and explicit retries.
+                let canvas = canvases[1]
+                guard adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                canvas.removeFromSuperview()
+                canvas.attachRendererIfNeeded()
+                guard canvas.window == nil, canvas.isPaused,
+                      !adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                try await Task.sleep(for: .milliseconds(100))
+                guard !adapters[1].rendererRegistrationForProbe(),
+                      controllers[1].state == .connected else { throw SessionError.cancelled }
+                // Require fresh GPU samples after mounting, not old success.
+                grid.addSubview(canvas)
+                canvas.attachRendererIfNeeded()
+                guard canvas.window === window, !canvas.isPaused,
+                      adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                // Drain old GPU callbacks before resetting observations. The
+                // two distinct fixture colors must subsequently appear.
+                try await Task.sleep(for: .milliseconds(300))
+                observed[1].removeAll()
+                let remountDeadline = ContinuousClock.now + .seconds(6)
+                while observed[1] != expected[1] && ContinuousClock.now < remountDeadline {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                guard observed[1] == expected[1], foreign.isEmpty else { throw SessionError.displayTimeout }
+                // Permanent removal also detaches while still hosted. Attempts
+                // to register the retired view must remain harmless.
+                canvas.prepareForRemoval()
+                canvas.attachRendererIfNeeded()
+                guard canvas.isPaused, !adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                canvas.removeFromSuperview()
+                grid.addSubview(canvas)
+                canvas.attachRendererIfNeeded()
+                guard canvas.isPaused, !adapters[1].rendererRegistrationForProbe() else { throw SessionError.cancelled }
+                canvas.removeFromSuperview()
+                print("MRV_CANVAS_RENDERER_LIFECYCLE_OK")
                 // Disconnect one renderer while the remaining three continue.
-                canvases[1].setSmokePixelHandler(nil)
-                canvases[1].prepareForRemoval()
-                canvases[1].removeFromSuperview()
                 controllers[1].cancel()
                 live.remove(1)
                 try await validatePhase(active: 2)

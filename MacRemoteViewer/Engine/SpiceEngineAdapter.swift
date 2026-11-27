@@ -233,6 +233,12 @@ final class SpiceEngineAdapter: NSObject, SpiceEngineing, CSConnectionDelegate {
         display.addRenderer(pendingRenderer)
     }
 
+    // Read only on the main actor; no native handle escapes the test.
+    func rendererRegistrationForProbe() -> Bool {
+        guard ProcessInfo.processInfo.environment["MRV_ENABLE_INTEGRATION_PROBES"] == "1" else { return false }
+        return pendingRenderer != nil || attachedRenderer != nil
+    }
+
     private func clearFrameObserver() {
         frameGeneration = UUID()
         (pendingRenderer as? CSMetalRenderer)?.frameRenderedHandler = nil

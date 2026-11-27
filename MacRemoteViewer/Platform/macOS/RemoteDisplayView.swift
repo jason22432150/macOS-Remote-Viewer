@@ -60,6 +60,8 @@ final class RemoteCanvasView: MTKView {
     private static let backgroundFPS = 15
     private(set) var isActive = true
     private var metalRenderer: CSMetalRenderer?
+    private weak var registeredController: SessionController?
+    private var permanentlyRemoved = false
     private var mapping: GuestPointerMapping?
     private var useNativeDisplayPixels = false
     /// `NSCursor.hide` / `unhide` 是計數式 API，必須成對呼叫。
@@ -75,7 +77,7 @@ final class RemoteCanvasView: MTKView {
     override var isFlipped: Bool { true }
 
     func setActive(_ active: Bool) {
-        guard isActive != active else { return }
+        guard !permanentlyRemoved, isActive != active else { return }
         if !active { releaseKeys(); endRelativeCapture() }
         isActive = active
         preferredFramesPerSecond = active ? Self.foregroundFPS : Self.backgroundFPS
@@ -100,10 +102,11 @@ final class RemoteCanvasView: MTKView {
 
     /// 建立 CocoaSpice Metal renderer，並在 display channel 就緒後掛上。
     func setupMetal() {
+        guard !permanentlyRemoved else { return }
         framebufferOnly = false
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        isPaused = false
+        isPaused = window == nil
         preferredFramesPerSecond = isActive ? Self.foregroundFPS : Self.backgroundFPS
         enableSetNeedsDisplay = false
         autoResizeDrawable = true
@@ -140,9 +143,19 @@ final class RemoteCanvasView: MTKView {
     }
 
     func attachRendererIfNeeded() {
-        guard let metalRenderer else { return }
-        controller?.attachRenderer(metalRenderer)
+        guard !permanentlyRemoved, window != nil, let metalRenderer else { return }
+        if registeredController !== controller {
+            registeredController?.detachRenderer(metalRenderer)
+            registeredController = controller
+        }
+        registeredController?.attachRenderer(metalRenderer)
         updateViewport()
+    }
+
+    private func detachRegisteredRenderer() {
+        if let metalRenderer { registeredController?.detachRenderer(metalRenderer) }
+        registeredController = nil
+        mapping = nil
     }
 
     /// 視窗邏輯尺寸變化時請 guest 對齊解析度；agent 未就緒則由 SessionController 暫存。
@@ -150,9 +163,10 @@ final class RemoteCanvasView: MTKView {
     /// `size` 只做同步 guard；真正送出的是 layout 結束後的 `bounds`，避免用到尚未穩定的 frame。
     func syncGuestResolution(_ size: CGSize? = nil) {
         let canvasSize = size ?? bounds.size
-        guard isActive, canvasSize.width > 0, canvasSize.height > 0 else { return }
+        guard !permanentlyRemoved, window != nil, isActive,
+              canvasSize.width > 0, canvasSize.height > 0 else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isActive else { return }
+            guard let self, !self.permanentlyRemoved, self.window != nil, self.isActive else { return }
             let latest = self.bounds.size
             guard latest.width > 0, latest.height > 0 else { return }
             let target = GuestResolutionPolicy.viewportSize(logicalSize: latest,
@@ -164,7 +178,7 @@ final class RemoteCanvasView: MTKView {
 
     /// CocoaSpice 以 drawable 中心繪製；必須把 scale 設成與滑鼠對應相同的 letterbox。
     func updateViewport() {
-        guard let renderer = metalRenderer,
+        guard !permanentlyRemoved, window != nil, let renderer = metalRenderer,
               let frame = controller?.displaySize,
               frame.width > 0,
               frame.height > 0,
@@ -219,17 +233,19 @@ final class RemoteCanvasView: MTKView {
         if newWindow == nil {
             releaseKeys()
             showLocalCursor()
-            // 只在分頁關閉、視圖真正離開視窗時卸 renderer；切分頁不可走這條路。
-            if let metalRenderer {
-                controller?.detachRenderer(metalRenderer)
-            }
+            // A temporarily unhosted canvas must not register again until
+            // it has a window. Background tabs with a window stay attached.
+            isPaused = true
+            detachRegisteredRenderer()
         }
         super.viewWillMove(toWindow: newWindow)
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let window {
+        guard !permanentlyRemoved, let window else { return }
+        isPaused = false
+        do {
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(windowDidResignKey(_:)),
@@ -356,9 +372,19 @@ final class RemoteCanvasView: MTKView {
     }
 
     func prepareForRemoval() {
+        guard !permanentlyRemoved else { return }
+        permanentlyRemoved = true
         endRelativeCapture()
         releaseKeys()
         showLocalCursor()
+        isActive = false
+        isPaused = true
+        detachRegisteredRenderer()
+        metalRenderer?.smokePixelHandler = nil
+        metalRenderer?.smokeRegionHandler = nil
+        delegate = nil
+        metalRenderer = nil
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
     }
 
     func updateCaptureEligibility(requested: Bool, connected: Bool, hasDisplay: Bool) {

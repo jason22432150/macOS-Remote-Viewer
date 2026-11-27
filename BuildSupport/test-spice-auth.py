@@ -545,6 +545,8 @@ def test_multi(app, root, fixture, native_probe=None, wrapper_only=False, worksp
                 phases = [line for line in lines if line.startswith("MRV_MULTI_PHASE_OK ")]
                 if phases != [f"MRV_MULTI_PHASE_OK active={i} live=4 targets=60,15" for i in range(4)]:
                     raise AssertionError("multi: missing foreground/background phases")
+                if lines.count("MRV_CANVAS_RENDERER_LIFECYCLE_OK") != 1:
+                    raise AssertionError("multi: missing canvas renderer lifecycle gate")
                 if "MRV_MULTI_CLOSE_OK live=3" not in lines or "MRV_MULTI_OK" not in lines:
                     raise AssertionError("multi: missing close/isolation success")
                 validate_multi_metrics(lines)
