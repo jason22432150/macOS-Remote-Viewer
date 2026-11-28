@@ -39,3 +39,6 @@ CocoaSpice 修改版來源證據將保存在 cocoaspice-source-evidence.zip：�
 
 
 Homebrew 上游來源候選封存 `homebrew-upstream-evidence.zip` 以實際安裝 Formula 的固定 URL/SHA-256 為依據，優先收集 FFmpeg、GLib、GStreamer、JSON-GLib、x264、x265、SQLite。未取得、動態 Ruby、Git revision、inline patch、平台條件與其他資源均仍需審查；候選來源不代表完整對應原始碼，literal license 也不等同 SPDX 結論。
+
+
+CI #46134781269 的實際 FFmpeg 六個 dylib 均回報 `GPL version 3 or later`，configuration 包含 `--enable-gpl` 及 `--enable-version3`。不得將目前 FFmpeg bottle 認定為 LGPL；需審查整體連結與散布條件或評估不含 GPL 的替代建置。SQLite literal version 與其他 formula mirror 宣告增加解析支援；x264 固定 Git revision 尚待來源收集。仍不得宣告完整對應原始碼或合法散布。

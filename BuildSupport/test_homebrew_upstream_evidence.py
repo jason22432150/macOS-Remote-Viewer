@@ -34,6 +34,26 @@ class UpstreamEvidenceTests(unittest.TestCase):
                          ["primary-candidate", "nested-candidate"])
         self.assertEqual([p["line"] for p in result["unresolved_declarations"]], [5, 9, 10, 13, 14])
 
+    def test_literal_mirror_and_version_between_url_and_sha(self):
+        sha = "a" * 64
+        text = '\n'.join([
+            '  url "https://www.sqlite.org/source.tar.gz"',
+            '  mirror "https://example.org/source.tar.gz"',
+            '  version "3.54.1"',
+            '  sha256 "' + sha + '"'])
+        result = up.plan(text)
+        self.assertEqual(result["literal_source_candidates"], [
+            {"line": 1, "url": "https://www.sqlite.org/source.tar.gz",
+             "sha256": sha, "kind": "primary-candidate"}])
+        self.assertEqual(result["unresolved_declarations"], [])
+        for intervening in ('  version version_from_network', '  end',
+                            '    mirror "https://example.org/source.tar.gz"',
+                            '  mirror "https://example.org/#{version}"'):
+            # Interpolation in mirror is not used for a download; it must
+            # nevertheless not be treated as literal metadata.
+            candidate = '\n'.join([text.splitlines()[0], intervening, text.splitlines()[-1]])
+            self.assertEqual(up.plan(candidate)["literal_source_candidates"], [])
+
     def test_host_allowlist(self):
         self.assertTrue(up.approved("https://ffmpeg.org/releases/ffmpeg.tar.xz"))
         for url in ("http://ffmpeg.org/a", "https://ffmpeg.org.evil.test/a",
