@@ -60,3 +60,6 @@ Candidate `distribution-inventory.json` 新增 `review_queue`，逐元件列出�
 
 
 新增 `ffmpeg-linkage-evidence.json`（Candidate ARM64 實際 signed Mach-O load command 及傳遞相依證據），供 GPL/LGPL 替代建置評估使用。不等同實際 GStreamer codec 執行路徑或授權結論；不移除或替換現有二進位檔。
+
+
+FFmpeg 連結 CI 已確認 `libgstlibav.dylib` 為唯一直接外部 consumer。新增隔離式 no-libav 測試副本，僅移除該 plugin 與六個 FFmpeg dylib，比對 decoder factory 與啟動/TLS；不代表完整解碼功能或 GPL-free/LGPL 授權，仍保留其他元件。正式 Candidate 不變。
