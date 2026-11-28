@@ -33,3 +33,6 @@ CI 會從實際 Candidate SBOM、baseline audit/notices、修改版 source evide
 
 
 Installed Homebrew formula/receipt 與 FFmpeg dylib 自身回報的 configuration/license 將封存至 homebrew-recipe-evidence.zip；與 baseline SBOM 及 native manifest 綁定，Candidate 清單只採用仍實際散布的 keg。這些是建置與授權線索，並非 SPDX 結論，也不代表已取得完整上游原始碼、資源、下游 patch 或靜態依賴證據。
+
+
+CocoaSpice 修改版來源證據將保存在 cocoaspice-source-evidence.zip：鎖定上游 Git archive、修改後完整 regular files、兩個上游 Symbolic Link 目標資料、overlay diff、建置配方及原始 LICENSE。保留授權文件並不等於完成 Apache-2.0 修改聲明、NOTICE（若適用）及所有靜態相依審查；發布閘門仍保持關閉。

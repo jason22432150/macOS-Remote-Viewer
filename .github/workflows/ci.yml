@@ -37,6 +37,10 @@ jobs:
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport -p 'test_homebrew_recipe_evidence.py'
 
+      - name: CocoaSpice source evidence regression tests
+        if: success() || failure()
+        run: python3 -m unittest discover -s BuildSupport -p 'test_cocoaspice_source_evidence.py'
+
   spice-source-audit:
     runs-on: macos-15
     timeout-minutes: 35
@@ -96,6 +100,8 @@ jobs:
           ./BuildSupport/generate-xcconfig.sh
       - name: Validate patched CocoaSpice GPU lifetime invariants
         run: python3 BuildSupport/cocoaspice/check_gpu_lifetime.py ThirdParty/CocoaSpice
+      - name: Snapshot exact CocoaSpice overlay source before building
+        run: python3 BuildSupport/cocoaspice-source-evidence.py --checkout ThirdParty/CocoaSpice --snapshot "$RUNNER_TEMP/cocoaspice-source-before.json"
       - name: Debug build
         run: xcodebuild -project MacRemoteViewer.xcodeproj -scheme MacRemoteViewer -configuration Debug -destination 'platform=macOS,arch=arm64' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES -derivedDataPath "$RUNNER_TEMP/mrv-debug" CODE_SIGNING_ALLOWED=NO build
       - name: Verify Debug executable architecture
@@ -117,6 +123,8 @@ jobs:
         run: python3 BuildSupport/audit-dependencies.py dist/*.bom.json --manifest "$RUNNER_TEMP/native-build.json"
       - name: Archive installed Homebrew recipe and FFmpeg binary metadata
         run: python3 BuildSupport/homebrew-recipe-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --output dist/homebrew-recipe-evidence.zip
+      - name: Archive CocoaSpice source and overlay build evidence
+        run: python3 BuildSupport/cocoaspice-source-evidence.py --checkout ThirdParty/CocoaSpice --snapshot "$RUNNER_TEMP/cocoaspice-source-before.json" --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --output dist/cocoaspice-source-evidence.zip
       - name: Verify DMG checksum
         run: |
           cd dist
@@ -145,6 +153,7 @@ jobs:
             dist/*.notices.zip
             dist/*.notices.zip.sha256
             dist/homebrew-recipe-evidence.zip
+            dist/cocoaspice-source-evidence.zip
             ${{ runner.temp }}/native-build.json
           if-no-files-found: error
           retention-days: 14
