@@ -29,6 +29,10 @@ jobs:
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport -p 'test_package_portable.py'
 
+      - name: Distribution inventory regression tests
+        if: success() || failure()
+        run: python3 -m unittest discover -s BuildSupport -p 'test_distribution_inventory.py'
+
   spice-source-audit:
     runs-on: macos-15
     timeout-minutes: 35
@@ -165,6 +169,17 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/candidate-sbom-venv"
           "$RUNNER_TEMP/candidate-sbom-venv/bin/python" -m pip install 'jsonschema==4.25.1'
           "$RUNNER_TEMP/candidate-sbom-venv/bin/python" BuildSupport/validate-sbom.py "$RUNNER_TEMP/spice-candidate-runtime"/candidate-package/*.bom.json --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
+      - name: Inventory candidate distribution evidence without granting approval
+        run: |
+          python3 BuildSupport/distribution-inventory.py \
+            --baseline-bom baseline-preview/*.bom.json \
+            --candidate-bom "$RUNNER_TEMP/spice-candidate-runtime"/candidate-package/*.bom.json \
+            --audit baseline-preview/*.dependency-audit.json \
+            --notices baseline-preview/*.notices.zip \
+            --staging "$RUNNER_TEMP/spice-candidate-runtime/staging-report.json" \
+            --source-evidence candidate-native/spice-gtk-candidate-source-evidence.zip \
+            --native-manifest baseline-preview/native-build.json \
+            --output "$RUNNER_TEMP/spice-candidate-runtime/distribution-inventory.json"
       - name: Exercise candidate real TLS link
         run: python3 BuildSupport/test-loopback-tls.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate native link reply receive bounds on TLS loopback
@@ -196,6 +211,7 @@ jobs:
           name: spice-gtk-candidate-runtime-evidence
           path: |
             ${{ runner.temp }}/spice-candidate-runtime/staging-report.json
+            ${{ runner.temp }}/spice-candidate-runtime/distribution-inventory.json
             ${{ runner.temp }}/spice-candidate-runtime/startup.stdout.txt
             ${{ runner.temp }}/spice-candidate-runtime/startup.stderr.txt
             ${{ runner.temp }}/spice-candidate-runtime/candidate-package/*.bom.json

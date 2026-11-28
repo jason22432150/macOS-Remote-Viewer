@@ -25,3 +25,8 @@ CocoaSpice 與底層 C 程式庫授權不同，不可只複製一份 NOTICE 就�
 ## 缺少 keg 授權聲明時的補取
 
 CI #45596255639（2026-11-25）34 個觀察到的 Homebrew keg，OSV 無命中，31 個已有候選聲明；缺 GLib 2.90.1、JSON-GLib 1.10.8、SQLite 3.54.1。GNOME 官方文件標示 GLib 與 JSON-GLib 為 LGPL-2.1-or-later；SQLite 核心為公有領域（https://www.sqlite.org/copyright.html），其原始碼開頭宣告可作候選資料，不應捏造傳統 LICENSE。新版工具僅對上述三個缺漏 keg 以相同穩定版本與 Homebrew revision 核對 formula、HTTPS 官方主機及 SHA-256 後讀取來源封存檔中的候選聲明／SQLite 原始碼前 4096 bytes，保存來源 metadata；不解壓至檔案系統、不安裝或更新套件。取得失敗仍明列 missing-review-required。此來源比對不等於證明瓶裝二進位的完整對應原始碼或補齊下游 patches、所有授權義務；尚須人員審查 LGPL/GPL 等散布條件、專案自身授權及完整 notices。
+
+
+## Candidate 散布證據清單
+
+CI 會從實際 Candidate SBOM、baseline audit/notices、修改版 source evidence、staging report 與建置紀錄產生 distribution-inventory.json。每個 signed Mach-O 檔案歸入唯一元件群組，並記錄 signed SHA-256、已收集授權候選文件與來源證據。CocoaSpice overlay、靜態連結與其他未觀察依賴明列待審。所有授權結論保持空值，release_ready 固定為 false；此清單不是完整授權清單或法律批准，不得用來宣稱可散布。
