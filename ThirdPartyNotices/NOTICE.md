@@ -36,3 +36,6 @@ Installed Homebrew formula/receipt 與 FFmpeg dylib 自身回報的 configuratio
 
 
 CocoaSpice 修改版來源證據將保存在 cocoaspice-source-evidence.zip：鎖定上游 Git archive、修改後完整 regular files、兩個上游 Symbolic Link 目標資料、overlay diff、建置配方及原始 LICENSE。保留授權文件並不等於完成 Apache-2.0 修改聲明、NOTICE（若適用）及所有靜態相依審查；發布閘門仍保持關閉。
+
+
+Homebrew 上游來源候選封存 `homebrew-upstream-evidence.zip` 以實際安裝 Formula 的固定 URL/SHA-256 為依據，優先收集 FFmpeg、GLib、GStreamer、JSON-GLib、x264、x265、SQLite。未取得、動態 Ruby、Git revision、inline patch、平台條件與其他資源均仍需審查；候選來源不代表完整對應原始碼，literal license 也不等同 SPDX 結論。

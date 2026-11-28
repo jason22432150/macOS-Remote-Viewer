@@ -41,6 +41,10 @@ jobs:
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport -p 'test_cocoaspice_source_evidence.py'
 
+      - name: Homebrew upstream source evidence regression tests
+        if: success() || failure()
+        run: python3 -m unittest discover -s BuildSupport -p 'test_homebrew_upstream_evidence.py'
+
   spice-source-audit:
     runs-on: macos-15
     timeout-minutes: 35
@@ -125,6 +129,8 @@ jobs:
         run: python3 BuildSupport/homebrew-recipe-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --output dist/homebrew-recipe-evidence.zip
       - name: Archive CocoaSpice source and overlay build evidence
         run: python3 BuildSupport/cocoaspice-source-evidence.py --checkout ThirdParty/CocoaSpice --snapshot "$RUNNER_TEMP/cocoaspice-source-before.json" --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --output dist/cocoaspice-source-evidence.zip
+      - name: Collect hash-pinned priority Homebrew upstream source candidates
+        run: python3 BuildSupport/homebrew-upstream-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --recipes dist/homebrew-recipe-evidence.zip --output dist/homebrew-upstream-evidence.zip
       - name: Verify DMG checksum
         run: |
           cd dist
@@ -154,6 +160,7 @@ jobs:
             dist/*.notices.zip.sha256
             dist/homebrew-recipe-evidence.zip
             dist/cocoaspice-source-evidence.zip
+            dist/homebrew-upstream-evidence.zip
             ${{ runner.temp }}/native-build.json
           if-no-files-found: error
           retention-days: 14
