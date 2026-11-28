@@ -40,11 +40,12 @@ def fixture(codec, output):
         raise ValueError("unexpected fixture size")
 
 def compile_probe(app, out):
-    libraries = ev.probe_libraries(app) + [app / "Contents/Frameworks/libgstapp-1.0.0.dylib"]
+    libraries = ev.probe_libraries(app) + [app / "Contents/Frameworks" / name for name in
+                                           ("libgstapp-1.0.0.dylib", "libgstvideo-1.0.0.dylib")]
     for lib in libraries:
         if lib.is_symlink() or not lib.is_file() or not lib.resolve().is_relative_to(app.resolve()):
             raise ValueError("unsafe bundled decoder probe library")
-    flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "gstreamer-app-1.0"],
+    flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "gstreamer-app-1.0", "gstreamer-video-1.0"],
                                                text=True, timeout=15))
     subprocess.run(["clang", "-arch", "arm64", *flags, str(HERE / "gst-decode-probe.c"),
                     *map(str, libraries), "-Wl,-rpath," + str(libraries[0].parent),
@@ -58,8 +59,13 @@ def compile_probe(app, out):
             raise ValueError("external probe link")
     return libraries
 
-def decode(app, exe, libraries, path, codec, decoder, work, reduced):
+def decode(app, exe, libraries, path, codec, decoder, work, reduced, profile=None):
     _, _, caps, parser, *_ = CASES[codec]
+    extra = []
+    if profile is not None:
+        width, height, frames = profile
+        caps = caps.replace("width=64,height=48", f"width={width},height={height}")
+        extra = [str(width), str(height), str(frames), "split"]
     work.mkdir()
     plugins = app / ev.linkage.PLUGIN_PREFIX
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
@@ -69,7 +75,7 @@ def decode(app, exe, libraries, path, codec, decoder, work, reduced):
                GST_PLUGIN_SCANNER_1_0=str(app / ev.linkage.SCANNER),
                GST_REGISTRY=str(work / "registry.bin"), DYLD_PRINT_LIBRARIES="1",
                PATH="/usr/bin:/bin:/usr/sbin:/sbin")
-    result = subprocess.run([str(exe), str(path), caps, parser, decoder], env=env, cwd=work,
+    result = subprocess.run([str(exe), str(path), caps, parser, decoder, *extra], env=env, cwd=work,
                             capture_output=True, text=True, timeout=75)
     trace = result.stderr.splitlines()
     for lib in libraries:
@@ -84,10 +90,19 @@ def decode(app, exe, libraries, path, codec, decoder, work, reduced):
         raise ValueError("FFmpeg runtime load in reduced probe")
     matches = [MARKER.fullmatch(line) for line in result.stdout.splitlines()]
     matches = [m for m in matches if m]
-    passed = result.returncode == 0 and len(matches) == 1
+    metrics = [re.fullmatch(r"MRV_DECODE_METRICS frames=(\d+) width=(\d+) height=(\d+) validated_pixels=(\d+) wall_us=(\d+) cpu_us=(\d+) peak_rss_bytes=(\d+)", line)
+               for line in result.stdout.splitlines()]
+    metrics = [m for m in metrics if m]
+    expected = profile or (64, 48, 6)
+    values = list(map(int, metrics[0].groups())) if len(metrics) == 1 else []
+    w, h, n = expected
+    valid_metrics = (len(values) == 7 and values[:4] == [n, w, h, n*w*h]
+                     and values[4] > 0 and values[6] > 0)
+    passed = result.returncode == 0 and valid_metrics and (profile is not None or len(matches) == 1)
     errors = [line[:300] for line in trace if line.startswith("decoder pipeline error:")]
     return {"decoder": decoder, "status": "decoded" if passed else "decode-failed",
-            "exit_code": result.returncode, "elapsed_us": int(matches[0][1]) if passed else None,
+            "exit_code": result.returncode, "elapsed_us": int(matches[0][1]) if passed and profile is None else None,
+            "metrics": dict(zip(("frames", "width", "height", "validated_pixels", "wall_us", "cpu_us", "peak_rss_bytes"), values)) if passed else None,
             "pipeline_errors": errors[:3]}
 
 def main():
