@@ -65,6 +65,36 @@ STAGE_SPEC.loader.exec_module(stage)
 
 
 class PortablePackagingTests(unittest.TestCase):
+    def test_source_evidence_archive_binds_bytes_modes_and_build(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source"
+            source.mkdir()
+            license = source / "COPYING"
+            license.write_bytes(b"test license")
+            tool = source / "build.sh"
+            tool.write_bytes(b"#!/bin/sh\n")
+            tool.chmod(0o755)
+            inventory = build_spice.source_tree(source)
+            self.assertEqual(inventory["build.sh"]["mode"], 0o755)
+            entries = {"source/" + name: source / name for name in inventory}
+            binding = {"candidate_dylib_sha256": "a" * 64}
+            bundle = root / "source.zip"
+            manifest = build_spice.write_source_bundle(bundle, entries, binding)
+            self.assertEqual(manifest["members"]["source/build.sh"], inventory["build.sh"])
+            self.assertEqual(build_spice.verify_source_bundle(bundle, binding), manifest)
+            with self.assertRaises(ValueError):
+                build_spice.verify_source_bundle(bundle, {"candidate_dylib_sha256": "b" * 64})
+            with self.assertRaises(ValueError):
+                build_spice.write_source_bundle(root / "unsafe.zip", {"../COPYING": license}, binding)
+            # Repack altered bytes with the unchanged manifest, valid ZIP CRC.
+            corrupt = root / "corrupt.zip"
+            with zipfile.ZipFile(bundle) as old, zipfile.ZipFile(corrupt, "w") as new:
+                for item in old.infolist():
+                    new.writestr(item, b"altered" if item.filename == "source/COPYING" else old.read(item))
+            with self.assertRaises(ValueError):
+                build_spice.verify_source_bundle(corrupt, binding)
+
     def test_mounted_candidate_report_binds_runtime_copy(self):
         with tempfile.TemporaryDirectory() as raw:
             output = Path(raw)
@@ -99,7 +129,7 @@ class PortablePackagingTests(unittest.TestCase):
         other = "Contents/Frameworks/libother.dylib"
         report = {key: str(i) * 64 for i, key in enumerate((
             "upstream_sha256", "downstream_sha256", "candidate_patch_sha256",
-            "candidate_dylib_sha256", "baseline_sha256"), 1)}
+            "candidate_dylib_sha256", "baseline_sha256", "source_evidence_sha256"), 1)}
         def file(name, formula, digest):
             return {"type": "file", "name": name, "properties": [
                 {"name": "mrv:source-sha256", "value": digest},
@@ -113,6 +143,7 @@ class PortablePackagingTests(unittest.TestCase):
         self.assertNotIn("formula", origins[target])
         self.assertNotIn("keg_path", origins[target])
         self.assertEqual(origins[target]["source_sha256"], report["candidate_dylib_sha256"])
+        self.assertEqual(origins[target]["source_evidence_sha256"], report["source_evidence_sha256"])
         self.assertEqual(origins[other]["formula"], "other")
         with tempfile.TemporaryDirectory() as raw:
             app = Path(raw)

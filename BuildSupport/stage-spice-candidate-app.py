@@ -78,7 +78,7 @@ def candidate_origins(baseline_bom, report):
     if target not in seen:
         raise ValueError("missing baseline candidate origin")
     for key in ("upstream_sha256", "downstream_sha256", "candidate_patch_sha256",
-                "candidate_dylib_sha256", "baseline_sha256"):
+                "candidate_dylib_sha256", "baseline_sha256", "source_evidence_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", report[key]):
             raise ValueError("invalid candidate provenance digest")
     origins[target] = {
@@ -88,6 +88,7 @@ def candidate_origins(baseline_bom, report):
         "downstream_patch_sha256": report["downstream_sha256"],
         "candidate_patch_sha256": report["candidate_patch_sha256"],
         "baseline_source_sha256": report["baseline_sha256"],
+        "source_evidence_sha256": report["source_evidence_sha256"],
         "build_origin": "locally-built-modified-spice-gtk",
     }
     return origins
@@ -192,6 +193,14 @@ def main():
             raise ValueError("baseline artifact checksum mismatch")
     raw_library = only(candidate, LIBRARY)
     report = json.loads(only(candidate, "native-build-report.json").read_text())
+    source_bundle = only(candidate, build.SOURCE_BUNDLE)
+    if (report["source_evidence_name"] != build.SOURCE_BUNDLE
+            or digest(source_bundle) != report["source_evidence_sha256"]):
+        raise ValueError("candidate source evidence transfer checksum mismatch")
+    binding = {key: report[key] for key in ("upstream_sha256", "downstream_sha256",
+                "candidate_patch_sha256", "candidate_dylib_sha256")}
+    build.verify_source_bundle(source_bundle, binding)
+    print("MRV_SPICE_CANDIDATE_SOURCE_TRANSFER_OK", flush=True)
     if digest(raw_library) != report["candidate_dylib_sha256"]:
         raise ValueError("candidate transfer checksum mismatch")
     if report["baseline_exports"] != report["candidate_exports"] or report["extra_exports"]:
@@ -298,6 +307,7 @@ def main():
         "candidate_raw_sha256": report["candidate_dylib_sha256"],
         "candidate_signed_sha256": final_hash,
         "candidate_patch_sha256": report["candidate_patch_sha256"],
+        "source_evidence_sha256": report["source_evidence_sha256"],
         "tls_dependencies": report["tls_dependencies"],
         "minimum_macos": minimum,
         "dyld_image_lines": load_lines,

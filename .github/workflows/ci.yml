@@ -65,6 +65,7 @@ jobs:
           path: |
             ${{ runner.temp }}/spice-candidate-build/prefix/lib/libspice-client-glib-2.0.8.dylib
             ${{ runner.temp }}/spice-source-audit/native-build-report.json
+            ${{ runner.temp }}/spice-source-audit/spice-gtk-candidate-source-evidence.zip
           if-no-files-found: error
           retention-days: 14
 

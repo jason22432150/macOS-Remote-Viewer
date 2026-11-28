@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tarfile
 import tomllib
+import zipfile
 from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
@@ -66,6 +67,103 @@ def unpack(data, destination, version):
                     shutil.copyfileobj(src, dst)
                 output.chmod(0o755 if member.mode & 0o111 else 0o644)
     return destination / expected
+
+
+SOURCE_BUNDLE = "spice-gtk-candidate-source-evidence.zip"
+SOURCE_LIMIT = 384 * 1024 * 1024
+SOURCE_COUNT = 100000
+
+
+def source_tree(source):
+    """Hash the exact regular source inputs, including executable mode."""
+    files = {}
+    total = 0
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("unexpected source symlink")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise ValueError("unexpected nonregular source")
+        size = path.stat().st_size
+        total += size
+        if len(files) >= SOURCE_COUNT or total > audit.MAX_EXPANDED:
+            raise ValueError("source tree expansion limit")
+        relative = path.relative_to(source).as_posix()
+        files[relative] = {"sha256": sha(path.read_bytes()),
+                           "size": size, "mode": 0o755 if path.stat().st_mode & 0o111 else 0o644}
+    if not files:
+        raise ValueError("empty source tree")
+    return files
+
+
+def source_member(name):
+    path = PurePosixPath(name)
+    if (not name or path.is_absolute() or ".." in path.parts or "\\" in name
+            or path.as_posix() != name or name.endswith("/")):
+        raise ValueError("unsafe source evidence member")
+    return path
+
+
+def write_source_bundle(destination, entries, binding):
+    """Fixed names and modes; per-member checksums, no host timestamps."""
+    inventory = {}
+    total = 0
+    with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, path in sorted(entries.items()):
+            source_member(name)
+            if name == "manifest.json" or path.is_symlink() or not path.is_file():
+                raise ValueError("invalid source evidence input")
+            size = path.stat().st_size
+            total += size
+            if len(inventory) >= SOURCE_COUNT or total > SOURCE_LIMIT:
+                raise ValueError("source evidence expansion limit")
+            data = path.read_bytes()
+            if len(data) != size:
+                raise ValueError("source evidence input changed")
+            mode = 0o755 if path.stat().st_mode & 0o111 else 0o644
+            inventory[name] = {"sha256": sha(data), "size": size, "mode": mode}
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = (0o100000 | mode) << 16
+            archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
+        info = zipfile.ZipInfo("manifest.json")
+        info.create_system = 3
+        info.external_attr = 0o100644 << 16
+        data = (json.dumps({"schema": 1, "binding": binding, "members": inventory},
+                           sort_keys=True, indent=2) + "\n").encode()
+        if len(data) > 16 * 1024 * 1024:
+            raise ValueError("source manifest too large")
+        archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
+    return verify_source_bundle(destination, binding)
+
+
+def verify_source_bundle(path, binding):
+    """Verify without extraction; do not trust ZIP names or manifest alone."""
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        names = [item.filename for item in infos]
+        if (len(names) > SOURCE_COUNT + 1 or len(names) != len(set(names))
+                or "manifest.json" not in names
+                or sum(item.file_size for item in infos) > SOURCE_LIMIT + 16 * 1024 * 1024):
+            raise ValueError("invalid source bundle inventory")
+        for item in infos:
+            source_member(item.filename)
+            if item.is_dir() or (item.external_attr >> 16) & 0o170000 != 0o100000:
+                raise ValueError("nonregular source evidence member")
+        if archive.getinfo("manifest.json").file_size > 16 * 1024 * 1024:
+            raise ValueError("source manifest too large")
+        manifest = json.loads(archive.read("manifest.json"))
+        if (manifest["schema"] != 1 or manifest["binding"] != binding
+                or set(manifest["members"]) != set(names) - {"manifest.json"}):
+            raise ValueError("source bundle binding/inventory mismatch")
+        for name, expected in manifest["members"].items():
+            item = archive.getinfo(name)
+            mode = (item.external_attr >> 16) & 0o777
+            if (item.file_size != expected["size"] or mode != expected["mode"]
+                    or sha(archive.read(name)) != expected["sha256"]):
+                raise ValueError("source bundle member mismatch")
+    return manifest
 
 
 def exported_symbols(library):
@@ -166,6 +264,10 @@ def main():
     for source_name, digest in expected["patched_file_sha256"].items():
         if sha((source / source_name).read_bytes()) != digest:
             raise ValueError(f"patched source mismatch: {source_name}")
+    source_before = source_tree(source)
+    if not any(name.startswith(("COPYING", "LICENSE")) and "/" not in name
+               and entry["size"] > 0 for name, entry in source_before.items()):
+        raise ValueError("upstream license text missing")
     build, prefix = work / "build", work / "prefix"
     env = os.environ.copy()
     # Select the actual ABI of the locked bottle, not any installed formula.
@@ -271,6 +373,60 @@ def main():
             for kind, path in baseline_tls.items()
         },
     }
+    # Capture the actual pre/post-build source tree, original archive, every
+    # modification and build recipe. This is evidence, not legal clearance or
+    # a claim of bit-for-bit reproducibility on arbitrary build hosts.
+    if source_tree(source) != source_before:
+        raise ValueError("source tree changed during candidate build")
+    recipe = {
+        "scope": "modified spice-gtk source evidence only; distribution review incomplete",
+        "architecture": "arm64",
+        "source_revision": os.environ.get("GITHUB_SHA", "local-unrecorded"),
+        "patch_order": ["receive-limits-candidate.patch", "homebrew-macos-drm.patch",
+                        "keymap-gen shebang: /usr/bin/python3 -> /usr/bin/env python3"],
+        "meson_commands": ["meson setup BUILD SOURCE --prefix PREFIX --buildtype=release --wrap-mode=nodownload",
+                           "meson compile -C BUILD", "meson install -C BUILD"],
+        "build_flags": flags,
+        "sdk_version": report["sdk_version"],
+        "compiler": report["compiler"],
+        "meson": report["meson"],
+        "ninja": capture("ninja", "--version"),
+        "python": capture("python3", "--version"),
+        "pkg_config": capture("pkg-config", "--version"),
+        "installed_kegs": capture("brew", "list", "--versions").splitlines(),
+        "limitations": "No complete dependency source closure or bit-identical rebuild proof; review all licenses before distribution.",
+    }
+    recipe_path = evidence / "candidate-build-recipe.json"
+    recipe_path.write_text(json.dumps(recipe, indent=2) + "\n")
+    entries = {"source/" + name: source / name for name in source_before}
+    for name in (f"spice-gtk-{version}.tar.xz", "receive-limits-candidate.patch",
+                 "homebrew-macos-drm.patch", "candidate.json", "installed-formula.rb",
+                 "candidate-build-recipe.json"):
+        entries["evidence/" + name] = evidence / name
+    for name in ("build-spice-candidate.py", "audit-spice-source.py",
+                 "spice-receive-candidate.py", "spice-receive-limits.h",
+                 "lockfile.toml"):
+        entries["recipe/" + name] = HERE / name
+    entries["recipe/patches/homebrew-macos-drm.patch"] = HERE / "patches/homebrew-macos-drm.patch"
+    for name in ("intro-buildoptions.json", "intro-dependencies.json", "intro-compilers.json"):
+        entries["meson/" + name] = build / "meson-info" / name
+    binding = {key: report[key] for key in ("upstream_sha256", "downstream_sha256",
+                "candidate_patch_sha256", "candidate_dylib_sha256")}
+    bundle = evidence / SOURCE_BUNDLE
+    manifest = write_source_bundle(bundle, entries, binding)
+    if {name.removeprefix("source/"): value for name, value in manifest["members"].items()
+            if name.startswith("source/")} != source_before:
+        raise ValueError("archived tree differs from compiled tree")
+    for name, key in ((f"spice-gtk-{version}.tar.xz", "upstream_sha256"),
+                      ("receive-limits-candidate.patch", "candidate_patch_sha256"),
+                      ("homebrew-macos-drm.patch", "downstream_sha256")):
+        if manifest["members"]["evidence/" + name]["sha256"] != binding[key]:
+            raise ValueError("source evidence input digest mismatch")
+    report["source_evidence_sha256"] = sha(bundle.read_bytes())
+    report["source_evidence_name"] = SOURCE_BUNDLE
+    (evidence / (SOURCE_BUNDLE + ".sha256")).write_text(
+        f'{report["source_evidence_sha256"]}  {SOURCE_BUNDLE}\n')
+    print("MRV_SPICE_CANDIDATE_SOURCE_EVIDENCE_OK", flush=True)
     (evidence / "native-build-report.json").write_text(json.dumps(report, indent=2) + "\n")
     print("MRV_SPICE_CANDIDATE_NATIVE_BUILD_OK", flush=True)
     print("MRV_SPICE_CANDIDATE_ABI_OK", flush=True)
