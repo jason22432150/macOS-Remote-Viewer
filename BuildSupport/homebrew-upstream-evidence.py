@@ -28,17 +28,25 @@ HOSTS = {"ffmpeg.org", "www.ffmpeg.org", "download.gnome.org",
          "github.com", "codeload.github.com", "release-assets.githubusercontent.com",
          "objects.githubusercontent.com", "raw.githubusercontent.com",
          "sqlite.org", "www.sqlite.org", "downloads.sourceforge.net",
-         "sourceforge.net", "www.videolan.org", "videolan.org"}
+         "sourceforge.net", "www.videolan.org", "videolan.org",
+         "ftpmirror.gnu.org", "ftp.gnu.org",
+         "xorg.freedesktop.org", "www.x.org", "x.org", "www.mpg123.de",
+         "mpg123.de", "ftp.osuosl.org", "cairographics.org", "gitlab.com",
+         "www.spice-space.org", "spice-space.org",
+         "prdownloads.sourceforge.net", "master.dl.sourceforge.net"}
 MAX_FILE = 96 * 1024 * 1024
-MAX_TOTAL = 256 * 1024 * 1024
-MAX_DOWNLOADS = 32
+MAX_TOTAL = 320 * 1024 * 1024
+MAX_DOWNLOADS = 64
 URL = re.compile(r'^([ ]*)url ["\x27](https://[^"\x27\s]+)["\x27]\s*$')
 SHA = re.compile(r'^([ ]*)sha256 ["\x27]([0-9a-f]{64})["\x27]\s*$')
 LICENSE = re.compile(r'^  license ["\x27]([A-Za-z0-9.+-]+)["\x27]\s*$')
-STATUSES = {"collected", "not-prioritized", "unapproved-host", "download-unavailable",
-            "size-limit", "budget-limit"}
+STATUSES = {"collected", "unapproved-host", "download-unavailable",
+            "size-limit", "budget-limit", "redirect-blocked"}
 
 class LimitError(ValueError):
+    pass
+
+class BlockedRedirect(ValueError):
     pass
 
 def plan(text):
@@ -89,7 +97,7 @@ def approved(url):
 class RestrictedRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not approved(newurl):
-            raise ValueError("unapproved source redirect")
+            raise BlockedRedirect("unapproved source redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 def fetch(url, sha, destination, limit):
@@ -101,7 +109,7 @@ def fetch(url, sha, destination, limit):
     try:
         with opener.open(url, timeout=30) as response, destination.open("xb") as out:
             if not approved(response.geturl()):
-                raise ValueError("unapproved final source host")
+                raise BlockedRedirect("unapproved final source host")
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
@@ -155,10 +163,10 @@ def verify(path, bom, native, recipe_path):
                 status = download["status"]
                 if download["line"] != pair["line"] or status not in STATUSES:
                     raise ValueError("invalid download record")
-                if key[0] not in PRIORITY and status != "not-prioritized":
-                    raise ValueError("unexpected non-priority source")
-                if key[0] in PRIORITY and not approved(pair["url"]) and status != "unapproved-host":
+                if (status == "unapproved-host") != (not approved(pair["url"])):
                     raise ValueError("unexpected source host status")
+                if status == "redirect-blocked" and key[0] in PRIORITY:
+                    raise ValueError("priority redirect must fail collection")
                 if status != "collected":
                     if "member" in download:
                         raise ValueError("uncollected source claims bytes")
@@ -185,13 +193,12 @@ def collect(bom, native, recipe_path, output):
     total, attempts = 0, 0
     with tempfile.TemporaryDirectory(prefix="mrv-upstream-") as raw:
         root = Path(raw)
-        for key, candidates in sorted(plans.items()):
+        # Preserve the established priority sources before spending the expanded budget.
+        for key, candidates in sorted(plans.items(), key=lambda item: (item[0][0] not in PRIORITY, item[0])):
             row = {"formula": key[0], "version": key[1], "plan": candidates, "downloads": []}
             for pair in candidates["literal_source_candidates"]:
                 result = {"line": pair["line"]}
-                if key[0] not in PRIORITY:
-                    result["status"] = "not-prioritized"
-                elif not approved(pair["url"]):
+                if not approved(pair["url"]):
                     result["status"] = "unapproved-host"
                 elif attempts >= MAX_DOWNLOADS or total >= MAX_TOTAL:
                     result["status"] = "budget-limit"
@@ -202,6 +209,13 @@ def collect(bom, native, recipe_path, output):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         size = fetch(pair["url"], pair["sha256"], target, min(MAX_FILE, MAX_TOTAL-total))
+                    except BlockedRedirect:
+                        # New non-priority sources may use geo-selected mirrors.
+                        # Never follow unapproved hosts; preserve the original
+                        # fail-closed behavior for established priority sources.
+                        if key[0] in PRIORITY:
+                            raise
+                        result["status"] = "redirect-blocked"
                     except LimitError:
                         result["status"] = "size-limit"
                     except (OSError, urllib.error.URLError, TimeoutError):
@@ -219,9 +233,20 @@ def collect(bom, native, recipe_path, output):
         entries["review.json"] = review
         build.write_source_bundle(output, entries, binding(bom, native, recipe_path))
     report = verify(output, bom, native, recipe_path)
+    for row in report["packages"]:
+        print("MRV_HOMEBREW_UPSTREAM_KEG " + json.dumps({
+            "formula": row["formula"], "version": row["version"],
+            "candidates": len(row["downloads"]),
+            "statuses": [d["status"] for d in row["downloads"]],
+            "unresolved_declarations": len(row["plan"]["unresolved_declarations"]),
+        }, sort_keys=True))
     print("MRV_HOMEBREW_UPSTREAM_EVIDENCE_OK " + json.dumps({
         "kegs": len(report["packages"]),
         "collected": count_status(report, "collected"),
+        "kegs_with_collected_bytes": sum(any(d["status"] == "collected" for d in row["downloads"])
+                                         for row in report["packages"]),
+        "kegs_without_collected_bytes": sorted(row["formula"] for row in report["packages"]
+            if not any(d["status"] == "collected" for d in row["downloads"])),
         "priority_candidates_uncollected": sum(d["status"] != "collected"
             for row in report["packages"] if row["formula"] in PRIORITY for d in row["downloads"]),
         "priority_kegs_without_collected_bytes": sorted(row["formula"] for row in report["packages"]

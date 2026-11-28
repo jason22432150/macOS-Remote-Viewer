@@ -133,7 +133,7 @@ jobs:
         run: python3 BuildSupport/homebrew-recipe-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --output dist/homebrew-recipe-evidence.zip
       - name: Archive CocoaSpice source and overlay build evidence
         run: python3 BuildSupport/cocoaspice-source-evidence.py --checkout ThirdParty/CocoaSpice --snapshot "$RUNNER_TEMP/cocoaspice-source-before.json" --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --output dist/cocoaspice-source-evidence.zip
-      - name: Collect hash-pinned priority Homebrew upstream source candidates
+      - name: Collect hash-pinned Homebrew upstream source candidates across observed kegs
         run: python3 BuildSupport/homebrew-upstream-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --recipes dist/homebrew-recipe-evidence.zip --output dist/homebrew-upstream-evidence.zip
       - name: Collect pinned x264 Git source evidence
         run: python3 BuildSupport/homebrew-git-source-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --recipes dist/homebrew-recipe-evidence.zip --output dist/homebrew-git-source-evidence.zip

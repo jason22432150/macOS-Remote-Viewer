@@ -45,3 +45,6 @@ CI #46134781269 的實際 FFmpeg 六個 dylib 均回報 `GPL version 3 or later`
 
 
 x264 固定 Git revision 證據另存 `homebrew-git-source-evidence.zip`，以封存的實際 Formula、原始 commit object 與 Git tree hash 驗證來源，不執行原始碼或解壓。下載不可用時明列狀態；不代表已完成授權審查或完整對應原始碼。
+
+
+CI #46143648742 確認 x264 Git 來源已取得並驗證 Commit／Tree，七個優先元件皆有來源證據。固定 URL/SHA-256 收集現擴展至所有實際觀測的 baseline Homebrew keg；新增非優先來源的未允許 redirect 會阻擋且明列缺漏，原優先來源仍直接失敗。仍需補齊動態配方、inline patch、建置資源及逐元件授權審查。

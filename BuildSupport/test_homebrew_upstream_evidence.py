@@ -63,6 +63,38 @@ class UpstreamEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             up.RestrictedRedirect().redirect_request(None, None, 302, "", {}, "https://127.0.0.1/a")
 
+    def test_expanded_scope_collects_nonpriority_and_preserves_redirect_gate(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bom, native, recipe = [root / n for n in ("bom", "native", "recipe")]
+            for p in (bom, native, recipe):
+                p.write_text(p.name)
+            body = b"source"
+            sha = up.hashlib.sha256(body).hexdigest()
+            plans = {("libusb", "1"): up.plan('  url "https://github.com/libusb/source"\n  sha256 "' + sha + '"'),
+                     ("ffmpeg", "1"): up.plan('  url "https://ffmpeg.org/source"\n  sha256 "' + sha + '"')}
+            calls = []
+            def download(url, digest, target, limit):
+                calls.append(url)
+                self.assertEqual(digest, sha)
+                target.write_bytes(body)
+                return len(body)
+            with patch.object(up, "recipe_plans", return_value=plans), patch.object(up, "fetch", side_effect=download):
+                output = root / "all.zip"
+                up.collect(bom, native, recipe, output)
+                self.assertEqual(calls, ["https://ffmpeg.org/source", "https://github.com/libusb/source"])
+                report = up.verify(output, bom, native, recipe)
+                self.assertEqual(up.count_status(report, "collected"), 2)
+            with patch.object(up, "recipe_plans", return_value={("libusb", "1"): plans[("libusb", "1")]}), \
+                 patch.object(up, "fetch", side_effect=up.BlockedRedirect("blocked")):
+                output = root / "blocked.zip"
+                up.collect(bom, native, recipe, output)
+                self.assertEqual(up.count_status(up.verify(output, bom, native, recipe), "redirect-blocked"), 1)
+            with patch.object(up, "recipe_plans", return_value=plans), \
+                 patch.object(up, "fetch", side_effect=up.BlockedRedirect("blocked")):
+                with self.assertRaises(up.BlockedRedirect):
+                    up.collect(bom, native, recipe, root / "priority.zip")
+
     def test_download_hash_and_limit_are_enforced(self):
         class Response(io.BytesIO):
             def geturl(self):
