@@ -42,3 +42,6 @@ Homebrew 上游來源候選封存 `homebrew-upstream-evidence.zip` 以實際安�
 
 
 CI #46134781269 的實際 FFmpeg 六個 dylib 均回報 `GPL version 3 or later`，configuration 包含 `--enable-gpl` 及 `--enable-version3`。不得將目前 FFmpeg bottle 認定為 LGPL；需審查整體連結與散布條件或評估不含 GPL 的替代建置。SQLite literal version 與其他 formula mirror 宣告增加解析支援；x264 固定 Git revision 尚待來源收集。仍不得宣告完整對應原始碼或合法散布。
+
+
+x264 固定 Git revision 證據另存 `homebrew-git-source-evidence.zip`，以封存的實際 Formula、原始 commit object 與 Git tree hash 驗證來源，不執行原始碼或解壓。下載不可用時明列狀態；不代表已完成授權審查或完整對應原始碼。

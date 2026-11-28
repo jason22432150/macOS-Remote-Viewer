@@ -21,6 +21,7 @@ build = load("build_spice_candidate", "build-spice-candidate.py")
 recipes = load("homebrew_recipe_evidence", "homebrew-recipe-evidence.py")
 cocoa = load("cocoaspice_source_evidence", "cocoaspice-source-evidence.py")
 upstream = load("homebrew_upstream_evidence", "homebrew-upstream-evidence.py")
+git_source = load("homebrew_git_source_evidence", "homebrew-git-source-evidence.py")
 TARGET = "Contents/Frameworks/" + build.SPICE_CLIENT_DYLIB
 MODIFIED = "modified:spice-gtk@0.43"
 BASE_SPICE = "homebrew:spice-gtk@0.43_1"
@@ -172,6 +173,7 @@ def main():
     args.recipe_evidence = only(args.baseline, recipes.ARCHIVE)
     args.cocoa_evidence = only(args.baseline, cocoa.ARCHIVE)
     args.upstream_evidence = only(args.baseline, upstream.ARCHIVE)
+    args.git_evidence = only(args.baseline, git_source.ARCHIVE)
     args.source_evidence = only(args.candidate, build.SOURCE_BUNDLE)
     # There are two intentional identical staging report copies; the root
     # report is the uploaded evidence contract, not a recursive lookup.
@@ -216,9 +218,13 @@ def main():
     for row in result["components"]:
         if row["component"].startswith("homebrew:"):
             row["upstream_source_candidates"] = upstream_rows[row["component"]]
+    git_review = git_source.verify(args.git_evidence, args.baseline_bom, args.native_manifest, args.recipe_evidence)
+    for row in result["components"]:
+        if row["component"] == "homebrew:x264@" + git_review["source"]["version"]:
+            row["git_source_evidence"] = git_review
     result["evidence_sha256"] = {key: digest(getattr(args, key)) for key in (
         "baseline_bom", "candidate_bom", "audit", "notices", "staging",
-        "source_evidence", "native_manifest", "recipe_evidence", "cocoa_evidence", "upstream_evidence")}
+        "source_evidence", "native_manifest", "recipe_evidence", "cocoa_evidence", "upstream_evidence", "git_evidence")}
     with args.output.open("x", encoding="utf-8") as handle:
         json.dump(result, handle, indent=2, sort_keys=True)
         handle.write("\n")

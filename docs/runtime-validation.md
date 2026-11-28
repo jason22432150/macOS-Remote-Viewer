@@ -580,3 +580,8 @@ CI #46134781269 on f54f7bf all four jobs green. Downloaded actual runtime eviden
 
 
 The initial 1a54e82 commit contained an accidental duplicated source suffix introduced by the JavaScript replacement-string metacharacter in a Python regex. Restore the exact previous verified source and apply only the intended literal-metadata loop using a replacement callback. Keep all existing and newly added regression tests. No force-push; CI pending.
+
+
+## Pinned x264 Git source candidate
+
+CI #46138208813 on d04fab0 all four jobs green; upstream source count 9, sqlite recovered, x264 only priority keg without bytes. Add independent x264-only Git evidence module bound to observed archived recipe, baseline SBOM and native manifest. Require exact VideoLAN HTTPS repository and full 40-hex stable revision; shallow bare fetch, no checkout, submodules, tags or redirects, no inherited Git configuration. Preserve raw commit and tar; independently reconstruct Git object tree hash from bytes, modes and symlink targets (no extraction) and verify commit ID. Reject invalid/missing/unexpected members, commit/tree mismatch; explicitly report unavailable network fetch without granting release approval. Bound tar 32 MiB, commit 1 MiB, 20k entries; fetch timeout 120 s but no network-byte cap. Test real local Git fixture and tampered tree/commit. Integrate into Candidate inventory; original URL collector unchanged. CI pending; no main merge/release; no legal conclusion or complete source claim.
