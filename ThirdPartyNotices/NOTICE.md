@@ -57,3 +57,6 @@ CI #46143648742 確認 x264 Git 來源已取得並驗證 Commit／Tree，七個�
 
 
 Candidate `distribution-inventory.json` 新增 `review_queue`，逐元件列出來源、授權、Patch、連結及散布待審事項。專案根目錄尚未發現 LICENSE/COPYING 候選檔；未替著作權人選擇授權。FFmpeg 實際 GPL 回報、LAME 缺少來源、GLib 本地 Tap Patch 缺少可核實版本均不得自動批准。
+
+
+新增 `ffmpeg-linkage-evidence.json`（Candidate ARM64 實際 signed Mach-O load command 及傳遞相依證據），供 GPL/LGPL 替代建置評估使用。不等同實際 GStreamer codec 執行路徑或授權結論；不移除或替換現有二進位檔。
