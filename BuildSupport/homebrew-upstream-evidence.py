@@ -73,7 +73,7 @@ def plan(text):
                 if (not lines[j].strip() or lines[j].lstrip().startswith("#")
                         or (metadata and metadata[1] == m[1]
                             and "#{" not in lines[j] and "\\" not in lines[j])):
-                    mirror = re.fullmatch(r\'[ ]*mirror "(https://[^"\s]+)"\s*\', lines[j])
+                    mirror = re.fullmatch(r'[ ]*mirror "(https://[^"\s]+)"\s*', lines[j])
                     if mirror and metadata and mirror[1] not in mirrors:
                         mirrors.append(mirror[1])
                     j += 1
