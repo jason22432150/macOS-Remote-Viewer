@@ -72,6 +72,9 @@ class PortablePackagingTests(unittest.TestCase):
             evidence = root / "evidence"
             (source / "subprojects").mkdir(parents=True)
             evidence.mkdir()
+            # Keep a real source member so removing the lock exercises the
+            # per-path difference gate rather than the empty-tree guard.
+            (source / "meson.build").write_text("project('fixture')\n")
             lock = build_spice.prepare_meson_wraplock(source)
             self.assertEqual(lock, source / "subprojects" / ".wraplock")
             self.assertEqual(lock.read_bytes(), b"")
@@ -88,6 +91,9 @@ class PortablePackagingTests(unittest.TestCase):
             lock.unlink()
             with self.assertRaisesRegex(ValueError, "added=0, removed=1, changed=0"):
                 build_spice.verify_unchanged_source(source, before, evidence)
+            diff = json.loads((evidence / "source-tree-difference.json").read_text())
+            self.assertEqual(diff, {"added": {}, "removed": {
+                "subprojects/.wraplock": before["subprojects/.wraplock"]}, "changed": {}})
             lock.symlink_to(source / "nonexistent")
             with self.assertRaises(FileExistsError):
                 build_spice.prepare_meson_wraplock(source)
