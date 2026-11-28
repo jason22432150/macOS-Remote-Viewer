@@ -74,6 +74,20 @@ SOURCE_LIMIT = 384 * 1024 * 1024
 SOURCE_COUNT = 100000
 
 
+def prepare_meson_wraplock(source):
+    """Prepare Meson's observed empty lock before taking the source snapshot."""
+    subprojects = source / "subprojects"
+    if subprojects.is_symlink() or not subprojects.is_dir():
+        raise ValueError("missing or invalid Meson subprojects directory")
+    lock = subprojects / ".wraplock"
+    # The pinned upstream archive does not contain this file. Refuse any
+    # pre-existing path, including an empty file or a dangling symlink.
+    with lock.open("xb"):
+        pass
+    lock.chmod(0o644)
+    return lock
+
+
 def source_tree(source):
     """Hash the exact regular source inputs, including executable mode."""
     files = {}
@@ -283,6 +297,10 @@ def main():
     for source_name, digest in expected["patched_file_sha256"].items():
         if sha((source / source_name).read_bytes()) != digest:
             raise ValueError(f"patched source mismatch: {source_name}")
+    # CI #46116031341 observed this one empty Meson lock file as the
+    # only source-tree addition. Prepare it explicitly and hash it like
+    # every other member, rather than exempting hidden or generated files.
+    prepare_meson_wraplock(source)
     source_before = source_tree(source)
     if not any(name.startswith(("COPYING", "LICENSE")) and "/" not in name
                and entry["size"] > 0 for name, entry in source_before.items()):
@@ -410,6 +428,9 @@ def main():
                            "meson compile -C BUILD", "meson install -C BUILD"],
         "build_flags": flags,
         "python_dont_write_bytecode": env["PYTHONDONTWRITEBYTECODE"],
+        "prepared_build_metadata": {
+            "subprojects/.wraplock": source_before["subprojects/.wraplock"],
+        },
         "sdk_version": report["sdk_version"],
         "compiler": report["compiler"],
         "meson": report["meson"],

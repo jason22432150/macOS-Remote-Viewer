@@ -65,6 +65,33 @@ STAGE_SPEC.loader.exec_module(stage)
 
 
 class PortablePackagingTests(unittest.TestCase):
+    def test_prepared_meson_wraplock_remains_subject_to_integrity_gate(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source"
+            evidence = root / "evidence"
+            (source / "subprojects").mkdir(parents=True)
+            evidence.mkdir()
+            lock = build_spice.prepare_meson_wraplock(source)
+            self.assertEqual(lock, source / "subprojects" / ".wraplock")
+            self.assertEqual(lock.read_bytes(), b"")
+            before = build_spice.source_tree(source)
+            self.assertEqual(before["subprojects/.wraplock"], {
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0, "mode": 0o644})
+            build_spice.verify_unchanged_source(source, before, evidence)
+            with self.assertRaises(FileExistsError):
+                build_spice.prepare_meson_wraplock(source)
+            lock.write_bytes(b"unexpected")
+            with self.assertRaisesRegex(ValueError, "added=0, removed=0, changed=1"):
+                build_spice.verify_unchanged_source(source, before, evidence)
+            lock.unlink()
+            with self.assertRaisesRegex(ValueError, "added=0, removed=1, changed=0"):
+                build_spice.verify_unchanged_source(source, before, evidence)
+            lock.symlink_to(source / "nonexistent")
+            with self.assertRaises(FileExistsError):
+                build_spice.prepare_meson_wraplock(source)
+
     def test_source_tree_integrity_does_not_ignore_generated_files(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
