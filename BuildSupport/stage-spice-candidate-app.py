@@ -150,6 +150,30 @@ def package_candidate(app, baseline_bom, report, final_hash, output):
             "distribution_scope": "candidate-test-only"}
 
 
+def publish_mounted_report(output, report):
+    """Keep the existing sidecar contract, but bind it to the tested DMG copy."""
+    copied = output / "mounted-copy" / APP
+    library = copied / "Contents" / "Frameworks" / LIBRARY
+    if not library.is_file() or library.is_symlink():
+        raise ValueError("missing mounted-copy candidate library")
+    package = report["candidate_package"]
+    if (package["runtime_input"] != "mounted-copy/" + APP
+            or package["signed_library_sha256"] != report["candidate_signed_sha256"]
+            or digest(library) != report["candidate_signed_sha256"]):
+        raise ValueError("mounted-copy staging hash mismatch")
+    lines = report["dyld_image_lines"]
+    if not lines or not all(line.rstrip().endswith(str(library.resolve())) or
+                            line.rstrip().endswith(str(library)) for line in lines):
+        raise ValueError("mounted-copy dyld evidence mismatch")
+    sidecar = copied.parent / "staging-report.json"
+    data = (json.dumps(report, indent=2) + "\n").encode("utf-8")
+    # Only publish the runtime sidecar after all copy/hash/load checks.
+    with sidecar.open("xb") as handle:
+        handle.write(data)
+    (output / "staging-report.json").write_bytes(data)
+    print("MRV_SPICE_CANDIDATE_MOUNTED_REPORT_OK", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", type=Path, required=True)
@@ -238,13 +262,18 @@ def main():
     final_hash = digest(target)
     if final_hash == baseline_hash:
         raise ValueError("candidate staging unexpectedly reverted to baseline")
-    executable = app / "Contents" / "MacOS" / "Mac Remote Viewer"
+    package = package_candidate(app, baseline_bom, report, final_hash, output)
+    # Verify dyld on the same mounted image copy that all runtime probes use,
+    # not the staging input app. Its parent carries the probe sidecar.
+    runtime_app = output / "mounted-copy" / APP
+    target = runtime_app / "Contents" / "Frameworks" / LIBRARY
+    executable = runtime_app / "Contents" / "MacOS" / "Mac Remote Viewer"
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
     env.update(PATH="/usr/bin:/bin:/usr/sbin:/sbin",
                MRV_ENABLE_INTEGRATION_PROBES="1", DYLD_PRINT_LIBRARIES="1")
     result = subprocess.run([str(executable), "--startup-smoke-test"], env=env,
-                            cwd=output, capture_output=True, text=True, timeout=45)
+                            cwd=runtime_app.parent, capture_output=True, text=True, timeout=45)
     (output / "startup.stdout.txt").write_text(result.stdout)
     (output / "startup.stderr.txt").write_text(result.stderr)
     lines = result.stdout.splitlines()
@@ -262,8 +291,8 @@ def main():
         raise ValueError(f"candidate library runtime load not established: {load_lines}")
     if digest(target) != final_hash:
         raise ValueError("candidate changed during startup")
-    (output / "staging-report.json").write_text(json.dumps({
-        "scope": "test-only candidate app; original preview unchanged",
+    publish_mounted_report(output, {
+        "scope": "test-only candidate app copied from verified DMG; original preview unchanged",
         "baseline_dmg_sha256": digest(image),
         "baseline_bundled_dylib_sha256": baseline_hash,
         "candidate_raw_sha256": report["candidate_dylib_sha256"],
@@ -272,14 +301,10 @@ def main():
         "tls_dependencies": report["tls_dependencies"],
         "minimum_macos": minimum,
         "dyld_image_lines": load_lines,
-    }, indent=2) + "\n")
+        "candidate_package": package,
+    })
     print("MRV_SPICE_CANDIDATE_APP_STAGED_OK", flush=True)
     print("MRV_SPICE_CANDIDATE_APP_DYLD_OK", flush=True)
-    package = package_candidate(app, baseline_bom, report, final_hash, output)
-    staging_path = output / "staging-report.json"
-    staging = json.loads(staging_path.read_text())
-    staging["candidate_package"] = package
-    staging_path.write_text(json.dumps(staging, indent=2) + "\n")
 
 
 if __name__ == "__main__":

@@ -65,6 +65,35 @@ STAGE_SPEC.loader.exec_module(stage)
 
 
 class PortablePackagingTests(unittest.TestCase):
+    def test_mounted_candidate_report_binds_runtime_copy(self):
+        with tempfile.TemporaryDirectory() as raw:
+            output = Path(raw)
+            app = output / "mounted-copy" / stage.APP
+            library = app / "Contents" / "Frameworks" / stage.LIBRARY
+            library.parent.mkdir(parents=True)
+            library.write_bytes(b"signed candidate")
+            digest = stage.digest(library)
+            report = {
+                "candidate_signed_sha256": digest,
+                "candidate_package": {"signed_library_sha256": digest,
+                                      "runtime_input": "mounted-copy/" + stage.APP},
+                "dyld_image_lines": ["dyld: loaded " + str(library.resolve())],
+            }
+            sidecar = app.parent / "staging-report.json"
+            with self.assertRaises(ValueError):
+                stage.publish_mounted_report(output, dict(report, dyld_image_lines=[]))
+            with self.assertRaises(ValueError):
+                stage.publish_mounted_report(output, dict(report, dyld_image_lines=[
+                    "dyld: loaded " + str(output / stage.APP / "Contents/Frameworks" / stage.LIBRARY)]))
+            with self.assertRaises(ValueError):
+                stage.publish_mounted_report(output, dict(report, candidate_signed_sha256="0" * 64))
+            self.assertFalse(sidecar.exists())
+            stage.publish_mounted_report(output, report)
+            self.assertEqual(json.loads(sidecar.read_text()), report)
+            self.assertEqual(sidecar.read_bytes(), (output / "staging-report.json").read_bytes())
+            with self.assertRaises(FileExistsError):
+                stage.publish_mounted_report(output, report)
+
     def test_candidate_sbom_does_not_inherit_bottle_provenance(self):
         target = "Contents/Frameworks/" + stage.LIBRARY
         other = "Contents/Frameworks/libother.dylib"
