@@ -23,6 +23,19 @@ public enum SessionState: Equatable, Sendable, CustomStringConvertible, CustomDe
     }
 
     public var debugDescription: String { description }
+
+    /// Offer a fresh, explicit import only after terminal transport errors.
+    /// This is a new connection, not a retry using retained credentials.
+    public var canOpenFreshConnectionFile: Bool {
+        switch self {
+        case .disconnected:
+            return true
+        case .failed(let error):
+            return error.isRetryableWithNewFile
+        default:
+            return false
+        }
+    }
 }
 
 /// 遠端 guest agent 能力。缺少剪貼簿時畫面與輸入仍可用。

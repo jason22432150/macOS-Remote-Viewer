@@ -80,12 +80,12 @@ struct RemoteSessionView: View {
                 Text(error.userMessage(language: language))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
-                if error.isRetryableWithNewFile {
-                    Button(L10n.string(.openNewVV, language: language)) { model.chooseFile() }
-                }
+                recoveryControls
                 Button(L10n.string(.back, language: language)) { model.closeSession(controller.sessionID) }
             case .disconnecting, .disconnected:
-                Text(L10n.string(.disconnected, language: language))
+                Text(L10n.string(controller.state == .disconnecting ? .statusDisconnecting : .disconnected,
+                                 language: language))
+                recoveryControls
                 Button(L10n.string(.back, language: language)) { model.closeSession(controller.sessionID) }
             default:
                 EmptyView()
@@ -93,6 +93,20 @@ struct RemoteSessionView: View {
         }
         .padding(24)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var recoveryControls: some View {
+        if controller.state.canOpenFreshConnectionFile {
+            Text(L10n.string(.freshConnectionHint, language: language))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Button(L10n.string(.openNewVV, language: language)) {
+                model.chooseRecoveryFile()
+            }
+        }
     }
 
     private var statusBar: some View {

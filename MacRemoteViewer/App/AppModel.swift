@@ -78,11 +78,22 @@ final class AppModel {
     }
 
     func chooseFile() {
+        chooseFile(recovery: false)
+    }
+
+    /// Recovery always imports an explicitly selected file into a new tab.
+    /// Never resurrect a terminal controller or reuse its prior ticket.
+    func chooseRecoveryFile() {
+        chooseFile(recovery: true)
+    }
+
+    private func chooseFile(recovery: Bool) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.virtViewer, .data]
-        panel.allowsMultipleSelection = true
+        panel.allowsMultipleSelection = !recovery
         panel.canChooseDirectories = false
-        panel.message = L10n.string(.chooseVVMessage, language: settings.language)
+        panel.message = L10n.string(recovery ? .chooseRecoveryVVMessage : .chooseVVMessage,
+                                    language: settings.language)
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
         open(urls: panel.urls)
     }

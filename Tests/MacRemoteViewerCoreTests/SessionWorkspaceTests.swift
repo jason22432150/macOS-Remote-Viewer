@@ -39,6 +39,35 @@ final class SessionWorkspaceTests: XCTestCase {
         XCTAssertTrue(harness.workspace.showsTabBar)
     }
 
+    func testFreshImportAfterAuthenticationRejectionDoesNotRetryOrDisconnectHealthyPeer() throws {
+        let harness = WorkspaceHarness()
+        let healthy = try Self.profile(title: "healthy", sessionID: "healthy")
+        let expired = try Self.profile(title: "expired", sessionID: "expired")
+        harness.workspace.open([healthy, expired])
+        harness.engines[0].delegate?.engineDidConnect()
+        harness.engines[1].delegate?.engineDidFail(.authenticationRejected)
+        let failed = try XCTUnwrap(harness.workspace.selectedSession)
+        XCTAssertTrue(failed.state.canOpenFreshConnectionFile)
+        XCTAssertEqual(failed.state, .failed(.authenticationRejected))
+        let before = harness.engines.all.map(\.disconnectCount)
+
+        // The production import path parses a newly selected file into a new
+        // profile, then opens it through this same workspace entry point.
+        let fresh = try VVParser().parse(data: Data(Self.minimalVV(title: "fresh").replacingOccurrences(
+            of: "password=example-ticket-not-secret", with: "password=fresh-test-ticket").utf8))
+        harness.workspace.open(fresh)
+        harness.engines[2].delegate?.engineDidConnect()
+        XCTAssertEqual(harness.workspace.sessions.map(\.sessionID), ["healthy", "expired", fresh.sessionID])
+        XCTAssertEqual(harness.workspace.selectedSessionID, fresh.sessionID)
+        XCTAssertTrue(harness.workspace.sessions[1] === failed)
+        XCTAssertEqual(failed.state, .failed(.authenticationRejected))
+        XCTAssertEqual(harness.workspace.sessions[0].state, .connected)
+        XCTAssertEqual(harness.workspace.sessions[2].state, .connected)
+        XCTAssertEqual(harness.engines.all.map(\.connectCount), [1, 1, 1])
+        XCTAssertEqual(Array(harness.engines.all.prefix(2)).map(\.disconnectCount), before)
+        XCTAssertEqual(harness.engines.all.map(\.clipboardSharingEnabled), [false, false, true])
+    }
+
     func testOpeningSeveralProfilesAtOnceKeepsAllSessionsAndSelectsTheLast() throws {
         let harness = WorkspaceHarness()
         let profiles = try [
@@ -268,13 +297,14 @@ private final class EngineBox {
 private final class WorkspaceMockEngine: SpiceEngineing {
     weak var delegate: SpiceEngineDelegate?
     var disconnectCount = 0
+    var connectCount = 0
     var didReleaseKeys = false
     var clipboardSharingEnabled = true
     var requestedResolutions: [CGSize] = []
 
     func startWorker() throws {}
 
-    func connect(profile: ConnectionProfile) throws {}
+    func connect(profile: ConnectionProfile) throws { connectCount += 1 }
 
     func disconnect() {
         disconnectCount += 1

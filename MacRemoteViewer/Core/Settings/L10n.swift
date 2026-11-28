@@ -37,6 +37,8 @@ public enum L10nKey: String, CaseIterable, Sendable {
     case sendCtrlAltDel
     case releasePointer
     case chooseVVMessage
+    case chooseRecoveryVVMessage
+    case freshConnectionHint
     case settingsMouse
     case settingsLanguage
     case settingsConnectionFile
@@ -159,6 +161,8 @@ public enum L10n {
         .sendCtrlAltDel: "傳送 Ctrl+Alt+Del",
         .releasePointer: "釋放滑鼠／鍵盤",
         .chooseVVMessage: "選擇 PVE 下載的 .vv 連線檔",
+        .chooseRecoveryVVMessage: "請選擇剛從可信任 PVE 下載的新 .vv 連線檔",
+        .freshConnectionHint: "請重新從可信任的 PVE 下載 .vv。開啟後會建立新分頁，保留目前的錯誤或斷線分頁；不會自動重試舊票證。",
         .settingsMouse: "滑鼠",
         .settingsLanguage: "語言",
         .settingsConnectionFile: "連線檔",
@@ -215,7 +219,7 @@ public enum L10n {
         .errorCancelled: "連線已取消。",
         .errorNetwork: "無法經由 proxy 或網路連到遠端。",
         .errorDisplayTimeout: "已建立連線，但遠端畫面通道未在期限內提供有效畫面尺寸。請重新下載連線檔再試。",
-        .errorTLS: "TLS 驗證失敗。請確認憑證與 host-subject 來自新下載的連線檔。",
+        .errorTLS: "TLS 驗證失敗。請從可信任的 PVE 重新下載連線檔，並確認憑證與 host-subject 正確。不要略過驗證。",
         .errorAuthenticationRejected: "票證已失效或被拒絕。請重新從 PVE 下載連線檔；本 App 不會自動更新票證。",
         .errorGuestAgentUnavailable: "Guest agent 不可用，畫面與輸入仍可使用，但剪貼簿已停用。",
         .errorDisconnected: "遠端連線已中斷。",
@@ -258,6 +262,8 @@ public enum L10n {
         .sendCtrlAltDel: "Send Ctrl+Alt+Del",
         .releasePointer: "Release mouse and keyboard",
         .chooseVVMessage: "Choose a .vv connection file downloaded from PVE",
+        .chooseRecoveryVVMessage: "Choose a newly downloaded .vv file from your trusted PVE server",
+        .freshConnectionHint: "Download a fresh .vv from your trusted PVE server. Opening it creates a new tab and keeps this failed or disconnected tab; the old ticket is not retried automatically.",
         .settingsMouse: "Mouse",
         .settingsLanguage: "Language",
         .settingsConnectionFile: "Connection file",
@@ -314,7 +320,7 @@ public enum L10n {
         .errorCancelled: "The connection was cancelled.",
         .errorNetwork: "Could not reach the remote session through the proxy or network.",
         .errorDisplayTimeout: "Connected, but the remote display channel did not provide valid dimensions in time. Download a new connection file and retry.",
-        .errorTLS: "TLS verification failed. Confirm the certificate and host-subject come from a newly downloaded connection file.",
+        .errorTLS: "TLS verification failed. Download a new connection file from your trusted PVE server and verify its certificate and host-subject. Do not bypass verification.",
         .errorAuthenticationRejected: "The ticket was rejected or has expired. Download a new connection file from PVE; this app will not refresh tickets.",
         .errorGuestAgentUnavailable: "The guest agent is unavailable. Display and input still work, but the clipboard is disabled.",
         .errorDisconnected: "The remote connection was lost.",

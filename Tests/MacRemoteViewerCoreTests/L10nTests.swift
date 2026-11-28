@@ -56,6 +56,21 @@ final class L10nTests: XCTestCase {
         XCTAssertEqual(english, "Remote IP: 192.0.2.10")
     }
 
+    func testFreshConnectionIsOfferedOnlyForTerminalRecoveryStates() {
+        for state: SessionState in [.disconnected, .failed(.authenticationRejected),
+                                   .failed(.network), .failed(.tls), .failed(.displayTimeout)] {
+            XCTAssertTrue(state.canOpenFreshConnectionFile)
+        }
+        for state: SessionState in [.idle, .parsing, .connecting, .connected, .disconnecting,
+                                   .failed(.invalidCA), .failed(.cancelled), .failed(.engineUnavailable)] {
+            XCTAssertFalse(state.canOpenFreshConnectionFile)
+        }
+        for language: AppLanguage in [.zhHant, .english] {
+            XCTAssertTrue(L10n.string(.freshConnectionHint, language: language).contains(".vv"))
+            XCTAssertTrue(L10n.string(.chooseRecoveryVVMessage, language: language).contains(".vv"))
+        }
+    }
+
     func testSessionErrorUsesSelectedLanguage() {
         XCTAssertEqual(
             SessionError.disconnected.userMessage(language: .zhHant),
