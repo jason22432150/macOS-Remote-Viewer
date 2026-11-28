@@ -49,6 +49,10 @@ jobs:
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport -p 'test_homebrew_git_source_evidence.py'
 
+      - name: Inline patch evidence regression tests
+        if: success() || failure()
+        run: python3 -m unittest discover -s BuildSupport -p 'test_homebrew_inline_patch_evidence.py'
+
   spice-source-audit:
     runs-on: macos-15
     timeout-minutes: 35
@@ -137,6 +141,8 @@ jobs:
         run: python3 BuildSupport/homebrew-upstream-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --recipes dist/homebrew-recipe-evidence.zip --output dist/homebrew-upstream-evidence.zip
       - name: Collect pinned x264 Git source evidence
         run: python3 BuildSupport/homebrew-git-source-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --recipes dist/homebrew-recipe-evidence.zip --output dist/homebrew-git-source-evidence.zip
+      - name: Archive exact Homebrew inline patch evidence
+        run: python3 BuildSupport/homebrew-inline-patch-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --recipes dist/homebrew-recipe-evidence.zip --output dist/homebrew-inline-patch-evidence.zip
       - name: Verify DMG checksum
         run: |
           cd dist
@@ -168,6 +174,7 @@ jobs:
             dist/cocoaspice-source-evidence.zip
             dist/homebrew-upstream-evidence.zip
             dist/homebrew-git-source-evidence.zip
+            dist/homebrew-inline-patch-evidence.zip
             ${{ runner.temp }}/native-build.json
           if-no-files-found: error
           retention-days: 14

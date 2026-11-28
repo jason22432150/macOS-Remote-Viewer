@@ -44,7 +44,8 @@ class UpstreamEvidenceTests(unittest.TestCase):
         result = up.plan(text)
         self.assertEqual(result["literal_source_candidates"], [
             {"line": 1, "url": "https://www.sqlite.org/source.tar.gz",
-             "sha256": sha, "kind": "primary-candidate"}])
+             "sha256": sha, "kind": "primary-candidate",
+             "mirrors": ["https://example.org/source.tar.gz"]}])
         self.assertEqual(result["unresolved_declarations"], [])
         for intervening in ('  version version_from_network', '  end',
                             '    mirror "https://example.org/source.tar.gz"',
@@ -94,6 +95,21 @@ class UpstreamEvidenceTests(unittest.TestCase):
                  patch.object(up, "fetch", side_effect=up.BlockedRedirect("blocked")):
                 with self.assertRaises(up.BlockedRedirect):
                     up.collect(bom, native, recipe, root / "priority.zip")
+
+    def test_fixed_mirror_fallback_keeps_formula_checksum(self):
+        sha = "a" * 64
+        pair = {"url": "https://ftpmirror.gnu.org/gettext/a.tar.gz", "sha256": sha,
+                "mirrors": ["https://unapproved.test/a", "https://ftp.gnu.org/gnu/gettext/a.tar.gz"]}
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw) / "source"
+            with patch.object(up, "fetch", side_effect=[up.BlockedRedirect("blocked"), 10]) as fetch:
+                self.assertEqual(up.fetch_candidate(("gettext", "1"), pair, target, 20),
+                                 (10, "https://ftp.gnu.org/gnu/gettext/a.tar.gz"))
+                self.assertEqual(fetch.call_args_list[1].args,
+                                 ("https://ftp.gnu.org/gnu/gettext/a.tar.gz", sha, target, 20))
+            with patch.object(up, "fetch", side_effect=[up.BlockedRedirect("blocked"), ValueError("checksum")]):
+                with self.assertRaisesRegex(ValueError, "checksum"):
+                    up.fetch_candidate(("gettext", "1"), pair, target, 20)
 
     def test_download_hash_and_limit_are_enforced(self):
         class Response(io.BytesIO):

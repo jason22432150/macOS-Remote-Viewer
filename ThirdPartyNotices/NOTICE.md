@@ -48,3 +48,6 @@ x264 固定 Git revision 證據另存 `homebrew-git-source-evidence.zip`，以�
 
 
 CI #46143648742 確認 x264 Git 來源已取得並驗證 Commit／Tree，七個優先元件皆有來源證據。固定 URL/SHA-256 收集現擴展至所有實際觀測的 baseline Homebrew keg；新增非優先來源的未允許 redirect 會阻擋且明列缺漏，原優先來源仍直接失敗。仍需補齊動態配方、inline patch、建置資源及逐元件授權審查。
+
+
+來源收集新增固定 GNU Formula mirror／特定 LAME SourceForge master 備援，仍須匹配原 SHA-256。`homebrew-inline-patch-evidence.zip` 保存實際 Formula `patch :DATA` 的原始位元組並與來源證據綁定；不代表已套用或完成所有下游修改、資源及法律審查。

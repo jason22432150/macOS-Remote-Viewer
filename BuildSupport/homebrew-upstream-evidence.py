@@ -65,6 +65,7 @@ def plan(text):
         m = URL.fullmatch(line)
         if m and "#{" not in m[2] and "\\" not in m[2]:
             j = i + 1
+            mirrors = []
             while j < len(lines):
                 # Only known literal metadata can intervene. Never evaluate Ruby,
                 # cross a block boundary, or substitute a mirror for the primary.
@@ -72,6 +73,9 @@ def plan(text):
                 if (not lines[j].strip() or lines[j].lstrip().startswith("#")
                         or (metadata and metadata[1] == m[1]
                             and "#{" not in lines[j] and "\\" not in lines[j])):
+                    mirror = re.fullmatch(r\'[ ]*mirror "(https://[^"\s]+)"\s*\', lines[j])
+                    if mirror and metadata and mirror[1] not in mirrors:
+                        mirrors.append(mirror[1])
                     j += 1
                 else:
                     break
@@ -79,6 +83,8 @@ def plan(text):
             if s and s[1] == m[1]:
                 pairs.append({"line": i + 1, "url": m[2], "sha256": s[2],
                               "kind": "primary-candidate" if m[1] == "  " else "nested-candidate"})
+                if mirrors:
+                    pairs[-1]["mirrors"] = mirrors
                 continue
         if not license_match:
             unresolved.append({"line": i + 1, "declaration": stripped[:512]})
@@ -124,6 +130,30 @@ def fetch(url, sha, destination, limit):
         return total
     except BaseException:
         destination.unlink(missing_ok=True)
+        raise
+
+def fallback_urls(key, pair):
+    # Explicit archived HTTPS mirrors; never relax the host allowlist.
+    urls = [url for url in pair.get("mirrors", []) if approved(url)]
+    # SourceForge's fixed project download host, for this exact observed
+    # LAME path only. Keep the original Formula checksum as authority.
+    if key == ("lame", "4.0") and pair["url"] == (
+            "https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz"):
+        urls.append("https://master.dl.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz")
+    return list(dict.fromkeys(url for url in urls if url != pair["url"] and approved(url)))
+
+def fetch_candidate(key, pair, target, limit):
+    try:
+        return fetch(pair["url"], pair["sha256"], target, limit), pair["url"]
+    except BlockedRedirect:
+        # Preserve existing fail-closed behavior for priority packages.
+        if key[0] in PRIORITY:
+            raise
+        for url in fallback_urls(key, pair):
+            try:
+                return fetch(url, pair["sha256"], target, limit), url
+            except (BlockedRedirect, OSError):
+                continue
         raise
 
 def binding(bom, native, recipe_path):
@@ -174,6 +204,8 @@ def verify(path, bom, native, recipe_path):
                 name = "/".join(key) + "/source-" + str(pair["line"])
                 if download.get("member") != name or name in members or not approved(pair["url"]):
                     raise ValueError("invalid source member identity")
+                if download.get("retrieved_from", pair["url"]) not in [pair["url"], *fallback_urls(key, pair)]:
+                    raise ValueError("unapproved source fallback provenance")
                 entry = manifest["members"][name]
                 if (entry["sha256"] != pair["sha256"] or entry["size"] != download["size"]
                         or not 0 < entry["size"] <= MAX_FILE):
@@ -208,7 +240,7 @@ def collect(bom, native, recipe_path, output):
                     target = root / member
                     target.parent.mkdir(parents=True, exist_ok=True)
                     try:
-                        size = fetch(pair["url"], pair["sha256"], target, min(MAX_FILE, MAX_TOTAL-total))
+                        size, retrieved = fetch_candidate(key, pair, target, min(MAX_FILE, MAX_TOTAL-total))
                     except BlockedRedirect:
                         # New non-priority sources may use geo-selected mirrors.
                         # Never follow unapproved hosts; preserve the original
@@ -223,7 +255,7 @@ def collect(bom, native, recipe_path, output):
                     else:
                         entries[member] = target
                         total += size
-                        result.update(status="collected", member=member, size=size)
+                        result.update(status="collected", member=member, size=size, retrieved_from=retrieved)
                 row["downloads"].append(result)
             rows.append(row)
         review = root / "review.json"
