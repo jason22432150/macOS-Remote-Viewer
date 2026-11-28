@@ -45,16 +45,35 @@ def verify_original(app, evidence):
         if path.is_symlink() or not path.resolve().is_relative_to(app.resolve()) or digest(path) != node["signed_sha256"]:
             raise ValueError("original signed file changed: " + name)
 
+PROBE_LIBRARIES = ("libgstreamer-1.0.0.dylib", "libgobject-2.0.0.dylib", "libglib-2.0.0.dylib")
+
+def probe_libraries(app):
+    frameworks = app / "Contents/Frameworks"
+    libraries = [frameworks / name for name in PROBE_LIBRARIES]
+    for path in libraries:
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(app.resolve()):
+            raise ValueError("bundled probe library missing or unsafe: " + path.name)
+    return libraries
+
 def factory_probe(app, work):
     frameworks = app / "Contents/Frameworks"
-    gst = list(frameworks.glob("libgstreamer-1.0.0.dylib"))
-    if len(gst) != 1:
-        raise ValueError("bundled GStreamer core absent")
+    libraries = probe_libraries(app)
     work.mkdir()
     exe = work / "gst-factory-probe"
+    # pkg-config supplies headers only. GObject macros directly reference
+    # g_type_check_instance_cast, so explicitly link bundled GObject/GLib
+    # instead of relying on transitive linking or host pkg-config --libs.
     flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "gstreamer-1.0"], text=True, timeout=15))
-    subprocess.run(["clang", *flags, str(HERE / "gst-factory-probe.c"), str(gst[0]),
-                    "-Wl,-rpath," + str(frameworks), "-o", str(exe)], check=True, timeout=60)
+    subprocess.run(["clang", "-arch", "arm64", *flags, str(HERE / "gst-factory-probe.c"),
+                    *map(str, libraries), "-Wl,-rpath," + str(frameworks),
+                    "-o", str(exe)], check=True, timeout=60)
+    _, deps, rpaths = pack.parse_macho(exe)
+    for dep in deps:
+        if pack.is_system_library(dep):
+            continue
+        resolved = pack.expand_load_path(dep, loader=exe, executable=exe, rpaths=rpaths)
+        if resolved is None or not resolved.is_relative_to(frameworks.resolve()):
+            raise ValueError("probe linked outside bundled Frameworks: " + dep)
     plugin_dir = app / linkage.PLUGIN_PREFIX
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DYLD_", "GST_", "OPENSSL_"))}
     env.update(GST_PLUGIN_PATH_1_0=str(plugin_dir), GST_PLUGIN_SYSTEM_PATH_1_0="",
@@ -67,8 +86,10 @@ def factory_probe(app, work):
                             capture_output=True, text=True, timeout=90, check=True)
     # The probe must load the actual bundled core; reject Homebrew fallback.
     trace = result.stderr.splitlines()
-    if not any(line.rstrip().endswith(str(gst[0].resolve())) for line in trace):
-        raise ValueError("bundled GStreamer core load not established")
+    for library in libraries:
+        if not any(line.rstrip().endswith(str(library.resolve())) or
+                   line.rstrip().endswith(str(library)) for line in trace):
+            raise ValueError("bundled probe library runtime load not established: " + library.name)
     if any("/opt/homebrew/" in line or "/usr/local/" in line for line in trace
            if line.startswith("dyld[") and ": <" in line):
         raise ValueError("external Homebrew dylib loaded")
