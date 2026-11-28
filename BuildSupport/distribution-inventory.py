@@ -150,12 +150,28 @@ def make_inventory(baseline, candidate, audit_report, staging, archive_sha, revi
                             "CocoaSpice linkage and all other static/system dependencies require review.",
                             "No complete corresponding-source or distribution approval is asserted."]}
 
+def only(root, pattern):
+    paths = list(root.rglob(pattern))
+    if len(paths) != 1 or not paths[0].is_file() or paths[0].is_symlink():
+        raise ValueError(f"expected exactly one regular artifact: {pattern}")
+    return paths[0]
+
 def main():
     parser = argparse.ArgumentParser()
-    for arg in ("baseline-bom", "candidate-bom", "audit", "notices", "staging",
-                "source-evidence", "native-manifest", "output"):
+    for arg in ("baseline", "candidate", "runtime", "output"):
         parser.add_argument("--" + arg, type=Path, required=True)
     args = parser.parse_args()
+    args.baseline_bom = only(args.baseline, "*.bom.json")
+    args.candidate_bom = only(args.runtime / "candidate-package", "*.bom.json")
+    args.audit = only(args.baseline, "*.dependency-audit.json")
+    args.notices = only(args.baseline, "*.notices.zip")
+    args.native_manifest = only(args.baseline, "native-build.json")
+    args.source_evidence = only(args.candidate, build.SOURCE_BUNDLE)
+    # There are two intentional identical staging report copies; the root
+    # report is the uploaded evidence contract, not a recursive lookup.
+    args.staging = args.runtime / "staging-report.json"
+    if not args.staging.is_file() or args.staging.is_symlink():
+        raise ValueError("missing root staging report")
     audit.verify_report(args.baseline_bom, args.audit, args.notices)
     read = lambda path: json.loads(path.read_text())
     staging = read(args.staging)

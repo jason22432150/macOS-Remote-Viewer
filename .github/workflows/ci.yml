@@ -172,13 +172,9 @@ jobs:
       - name: Inventory candidate distribution evidence without granting approval
         run: |
           python3 BuildSupport/distribution-inventory.py \
-            --baseline-bom baseline-preview/*.bom.json \
-            --candidate-bom "$RUNNER_TEMP/spice-candidate-runtime"/candidate-package/*.bom.json \
-            --audit baseline-preview/*.dependency-audit.json \
-            --notices baseline-preview/*.notices.zip \
-            --staging "$RUNNER_TEMP/spice-candidate-runtime/staging-report.json" \
-            --source-evidence candidate-native/spice-gtk-candidate-source-evidence.zip \
-            --native-manifest baseline-preview/native-build.json \
+            --baseline baseline-preview \
+            --candidate candidate-native \
+            --runtime "$RUNNER_TEMP/spice-candidate-runtime" \
             --output "$RUNNER_TEMP/spice-candidate-runtime/distribution-inventory.json"
       - name: Exercise candidate real TLS link
         run: python3 BuildSupport/test-loopback-tls.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"

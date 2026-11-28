@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import unittest
+import tempfile
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("distribution_inventory", Path(__file__).with_name("distribution-inventory.py"))
@@ -43,6 +44,20 @@ class DistributionInventoryTests(unittest.TestCase):
         stage = {"source_evidence_sha256": "d" * 64, "candidate_raw_sha256": "c" * 64,
                  "candidate_patch_sha256": "e" * 64, "candidate_signed_sha256": "a" * 64}
         return baseline, candidate, report, stage, "d" * 64, "f" * 40
+
+    def test_unique_artifact_resolves_nested_upload_layout(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            child = root / "nested"
+            child.mkdir()
+            archive = child / "source.zip"
+            archive.write_bytes(b"fixture")
+            self.assertEqual(inv.only(root, "source.zip"), archive)
+            (root / "source.zip").write_bytes(b"duplicate")
+            with self.assertRaises(ValueError):
+                inv.only(root, "source.zip")
+            with self.assertRaises(ValueError):
+                inv.only(root, "missing.zip")
 
     def test_exact_coverage_and_no_implicit_approval(self):
         result = inv.make_inventory(*self.fixture())

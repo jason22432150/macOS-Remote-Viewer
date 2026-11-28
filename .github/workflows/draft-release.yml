@@ -37,6 +37,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      # Explicit fail-closed hold until a reviewed, evidence-bound candidate
+      # distribution artifact exists. A checkbox alone cannot clear it.
+      - name: Block distribution until candidate promotion and source review
+        shell: bash
+        run: |
+          echo "::error::Distribution disabled: candidate promotion, corresponding-source and license evidence gate are incomplete."
+          exit 1
       - name: Verify existing tag and successful CI provenance
         shell: bash
         run: |
