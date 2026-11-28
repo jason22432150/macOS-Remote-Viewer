@@ -65,6 +65,35 @@ STAGE_SPEC.loader.exec_module(stage)
 
 
 class PortablePackagingTests(unittest.TestCase):
+    def test_source_tree_integrity_does_not_ignore_generated_files(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source, evidence = root / "source", root / "evidence"
+            source.mkdir()
+            evidence.mkdir()
+            script = source / "generator.py"
+            script.write_text("print('test')\n")
+            old = source / "old.h"
+            old.write_bytes(b"old")
+            executable = source / "tool.sh"
+            executable.write_bytes(b"#!/bin/sh\n")
+            before = build_spice.source_tree(source)
+            build_spice.verify_unchanged_source(source, before, evidence)
+            report = evidence / "source-tree-difference.json"
+            self.assertEqual(json.loads(report.read_text()), {"added": {}, "removed": {}, "changed": {}})
+            cache = source / "__pycache__" / "generator.pyc"
+            cache.parent.mkdir()
+            cache.write_bytes(b"synthetic bytecode")
+            script.write_text("print('changed')\n")
+            old.unlink()
+            executable.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "added=1, removed=1, changed=2"):
+                build_spice.verify_unchanged_source(source, before, evidence)
+            diff = json.loads(report.read_text())
+            self.assertEqual(set(diff["added"]), {"__pycache__/generator.pyc"})
+            self.assertEqual(set(diff["removed"]), {"old.h"})
+            self.assertEqual(set(diff["changed"]), {"generator.py", "tool.sh"})
+
     def test_source_evidence_archive_binds_bytes_modes_and_build(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

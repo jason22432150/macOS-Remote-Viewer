@@ -97,6 +97,25 @@ def source_tree(source):
     return files
 
 
+def source_tree_difference(before, after):
+    """Never silently filter generated files or changes to build inputs."""
+    return {
+        "added": {name: after[name] for name in sorted(after.keys() - before.keys())},
+        "removed": {name: before[name] for name in sorted(before.keys() - after.keys())},
+        "changed": {name: {"before": before[name], "after": after[name]}
+                    for name in sorted(before.keys() & after.keys()) if before[name] != after[name]},
+    }
+
+
+def verify_unchanged_source(source, before, evidence):
+    difference = source_tree_difference(before, source_tree(source))
+    (evidence / "source-tree-difference.json").write_text(
+        json.dumps(difference, indent=2, sort_keys=True) + "\n")
+    if any(difference.values()):
+        counts = ", ".join(f"{key}={len(value)}" for key, value in difference.items())
+        raise ValueError(f"source tree changed during candidate build ({counts}); see source-tree-difference.json")
+
+
 def source_member(name):
     path = PurePosixPath(name)
     if (not name or path.is_absolute() or ".." in path.parts or "\\" in name
@@ -270,6 +289,10 @@ def main():
         raise ValueError("upstream license text missing")
     build, prefix = work / "build", work / "prefix"
     env = os.environ.copy()
+    # spice-common's Python code generator imports modules in the source
+    # tree. Prevent interpreter caches at their origin, rather than ignoring
+    # files or deleting them after a build. Keep all integrity checks intact.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     # Select the actual ABI of the locked bottle, not any installed formula.
     baseline = spice_client_library(keg)
     baseline_tls = resolve_tls_pair(baseline)
@@ -376,8 +399,7 @@ def main():
     # Capture the actual pre/post-build source tree, original archive, every
     # modification and build recipe. This is evidence, not legal clearance or
     # a claim of bit-for-bit reproducibility on arbitrary build hosts.
-    if source_tree(source) != source_before:
-        raise ValueError("source tree changed during candidate build")
+    verify_unchanged_source(source, source_before, evidence)
     recipe = {
         "scope": "modified spice-gtk source evidence only; distribution review incomplete",
         "architecture": "arm64",
@@ -387,6 +409,7 @@ def main():
         "meson_commands": ["meson setup BUILD SOURCE --prefix PREFIX --buildtype=release --wrap-mode=nodownload",
                            "meson compile -C BUILD", "meson install -C BUILD"],
         "build_flags": flags,
+        "python_dont_write_bytecode": env["PYTHONDONTWRITEBYTECODE"],
         "sdk_version": report["sdk_version"],
         "compiler": report["compiler"],
         "meson": report["meson"],
@@ -401,7 +424,7 @@ def main():
     entries = {"source/" + name: source / name for name in source_before}
     for name in (f"spice-gtk-{version}.tar.xz", "receive-limits-candidate.patch",
                  "homebrew-macos-drm.patch", "candidate.json", "installed-formula.rb",
-                 "candidate-build-recipe.json"):
+                 "candidate-build-recipe.json", "source-tree-difference.json"):
         entries["evidence/" + name] = evidence / name
     for name in ("build-spice-candidate.py", "audit-spice-source.py",
                  "spice-receive-candidate.py", "spice-receive-limits.h",
