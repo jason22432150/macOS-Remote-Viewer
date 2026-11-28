@@ -257,6 +257,10 @@ jobs:
           python3 BuildSupport/ffmpeg-no-libav-experiment.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app" --bom "$RUNNER_TEMP/spice-candidate-runtime"/candidate-package/*.bom.json --linkage "$RUNNER_TEMP/spice-candidate-runtime/ffmpeg-linkage-evidence.json" --output "$RUNNER_TEMP/spice-candidate-runtime/no-libav-experiment"
       - name: Exercise isolated no-libav real TLS link
         run: python3 BuildSupport/test-loopback-tls.py --app "$RUNNER_TEMP/spice-candidate-runtime/no-libav-experiment/Mac Remote Viewer.app"
+      - name: Compare actual compressed video decoding on isolated no-libav clone
+        run: |
+          brew install ffmpeg
+          python3 BuildSupport/gst-compressed-decode-evidence.py --baseline "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app" --reduced "$RUNNER_TEMP/spice-candidate-runtime/no-libav-experiment/Mac Remote Viewer.app" --output "$RUNNER_TEMP/spice-candidate-runtime/compressed-decode"
       - name: Upload candidate runtime staging evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -267,6 +271,7 @@ jobs:
             ${{ runner.temp }}/spice-candidate-runtime/distribution-inventory.json
             ${{ runner.temp }}/spice-candidate-runtime/ffmpeg-linkage-evidence.json
             ${{ runner.temp }}/spice-candidate-runtime/no-libav-experiment/no-libav-evidence.json
+            ${{ runner.temp }}/spice-candidate-runtime/compressed-decode/decode-evidence.json
             ${{ runner.temp }}/spice-candidate-runtime/startup.stdout.txt
             ${{ runner.temp }}/spice-candidate-runtime/startup.stderr.txt
             ${{ runner.temp }}/spice-candidate-runtime/candidate-package/*.bom.json
