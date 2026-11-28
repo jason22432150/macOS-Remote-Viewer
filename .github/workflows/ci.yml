@@ -33,6 +33,10 @@ jobs:
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport -p 'test_distribution_inventory.py'
 
+      - name: Installed recipe evidence regression tests
+        if: success() || failure()
+        run: python3 -m unittest discover -s BuildSupport -p 'test_homebrew_recipe_evidence.py'
+
   spice-source-audit:
     runs-on: macos-15
     timeout-minutes: 35
@@ -111,6 +115,8 @@ jobs:
           "$RUNNER_TEMP/sbom-venv/bin/python" BuildSupport/validate-sbom.py dist/*.bom.json --app "dist/work/Mac Remote Viewer.app"
       - name: Audit bundled keg versions, notices and OSV advisories
         run: python3 BuildSupport/audit-dependencies.py dist/*.bom.json --manifest "$RUNNER_TEMP/native-build.json"
+      - name: Archive installed Homebrew recipe and FFmpeg binary metadata
+        run: python3 BuildSupport/homebrew-recipe-evidence.py --bom dist/*.bom.json --native-manifest "$RUNNER_TEMP/native-build.json" --output dist/homebrew-recipe-evidence.zip
       - name: Verify DMG checksum
         run: |
           cd dist
@@ -138,6 +144,7 @@ jobs:
             dist/*.dependency-audit.json.sha256
             dist/*.notices.zip
             dist/*.notices.zip.sha256
+            dist/homebrew-recipe-evidence.zip
             ${{ runner.temp }}/native-build.json
           if-no-files-found: error
           retention-days: 14

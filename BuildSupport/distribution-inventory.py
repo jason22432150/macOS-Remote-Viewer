@@ -18,6 +18,7 @@ def load(name, filename):
 
 audit = load("audit_dependencies", "audit-dependencies.py")
 build = load("build_spice_candidate", "build-spice-candidate.py")
+recipes = load("homebrew_recipe_evidence", "homebrew-recipe-evidence.py")
 TARGET = "Contents/Frameworks/" + build.SPICE_CLIENT_DYLIB
 MODIFIED = "modified:spice-gtk@0.43"
 BASE_SPICE = "homebrew:spice-gtk@0.43_1"
@@ -166,6 +167,7 @@ def main():
     args.audit = only(args.baseline, "*.dependency-audit.json")
     args.notices = only(args.baseline, "*.notices.zip")
     args.native_manifest = only(args.baseline, "native-build.json")
+    args.recipe_evidence = only(args.baseline, recipes.ARCHIVE)
     args.source_evidence = only(args.candidate, build.SOURCE_BUNDLE)
     # There are two intentional identical staging report copies; the root
     # report is the uploaded evidence contract, not a recursive lookup.
@@ -192,9 +194,15 @@ def main():
     if read(args.native_manifest)["cocoaspice_revision"] != revision:
         raise ValueError("CocoaSpice build manifest revision mismatch")
     result = make_inventory(baseline, candidate, read(args.audit), staging, sha, revision)
+    recipe_report = recipes.verify(args.recipe_evidence, args.baseline_bom, args.native_manifest)
+    recipe_rows = {"homebrew:" + row["formula"] + "@" + row["version"]: row
+                   for row in recipe_report["packages"]}
+    for row in result["components"]:
+        if row["component"].startswith("homebrew:"):
+            row["installed_recipe_evidence"] = recipe_rows[row["component"]]
     result["evidence_sha256"] = {key: digest(getattr(args, key)) for key in (
         "baseline_bom", "candidate_bom", "audit", "notices", "staging",
-        "source_evidence", "native_manifest")}
+        "source_evidence", "native_manifest", "recipe_evidence")}
     with args.output.open("x", encoding="utf-8") as handle:
         json.dump(result, handle, indent=2, sort_keys=True)
         handle.write("\n")

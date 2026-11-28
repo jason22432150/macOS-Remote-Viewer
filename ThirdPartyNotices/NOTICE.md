@@ -30,3 +30,6 @@ CI #45596255639（2026-11-25）34 個觀察到的 Homebrew keg，OSV 無命中�
 ## Candidate 散布證據清單
 
 CI 會從實際 Candidate SBOM、baseline audit/notices、修改版 source evidence、staging report 與建置紀錄產生 distribution-inventory.json。每個 signed Mach-O 檔案歸入唯一元件群組，並記錄 signed SHA-256、已收集授權候選文件與來源證據。CocoaSpice overlay、靜態連結與其他未觀察依賴明列待審。所有授權結論保持空值，release_ready 固定為 false；此清單不是完整授權清單或法律批准，不得用來宣稱可散布。
+
+
+Installed Homebrew formula/receipt 與 FFmpeg dylib 自身回報的 configuration/license 將封存至 homebrew-recipe-evidence.zip；與 baseline SBOM 及 native manifest 綁定，Candidate 清單只採用仍實際散布的 keg。這些是建置與授權線索，並非 SPDX 結論，也不代表已取得完整上游原始碼、資源、下游 patch 或靜態依賴證據。
