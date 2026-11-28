@@ -34,6 +34,11 @@ HOSTS = {"ffmpeg.org", "www.ffmpeg.org", "download.gnome.org",
          "mpg123.de", "ftp.osuosl.org", "cairographics.org", "gitlab.com",
          "www.spice-space.org", "spice-space.org",
          "prdownloads.sourceforge.net", "master.dl.sourceforge.net"}
+# Additional exact URL paths, not a blanket mirror-host allowlist.
+LAME_PATH = "/project/lame/lame/4.0/lame-4.0.tar.gz"
+LAME_MIRRORS = ("phoenixnap.dl.sourceforge.net", "psychz.dl.sourceforge.net")
+PY_PARSING_PATH = "/packages/e4/11/b213bebff182584360cb8d17c72c1677fec5c5c228de439e63bcf8ab1c8f/pyparsing-3.3.3.tar.gz"
+MAX_FALLBACKS = 4
 MAX_FILE = 96 * 1024 * 1024
 MAX_TOTAL = 320 * 1024 * 1024
 MAX_DOWNLOADS = 64
@@ -89,12 +94,66 @@ def plan(text):
         if not license_match:
             unresolved.append({"line": i + 1, "declaration": stripped[:512]})
     return {"literal_license_candidates": sorted(set(licenses)),
-            "literal_source_candidates": pairs, "unresolved_declarations": unresolved}
+            "literal_source_candidates": pairs, "unresolved_declarations": unresolved,
+            "review_hints": review_hints(lines, pairs, unresolved)}
+
+def review_hints(lines, pairs, unresolved):
+    """Lexical hints only, not an interpreter or build-scope determination.
+
+    Recognize explicit, indented formula sections; retain every unresolved
+    declaration. Never infer that a resource is unnecessary for distribution.
+    """
+    wanted = {p["line"] for p in pairs} | {p["line"] for p in unresolved}
+    stack, rows = [], []
+    for i, raw in enumerate(lines, 1):
+        if raw == "__END__":
+            break
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        context = [name for _, name in stack]
+        role = None
+        if i in wanted:
+            if "head" in context or re.match(r"^head\b", line):
+                role = "head-declaration-hint"
+            elif "livecheck" in context:
+                role = "livecheck-hint"
+            elif "test" in context or "test-resource" in context:
+                role = "test-resource-hint"
+            elif "patch" in context or re.match(r"^patch\b", line):
+                role = "patch-review"
+            elif "resource" in context or re.match(r"^resource\b", line):
+                role = "resource-review"
+            elif re.match(r"^license\b", line):
+                role = "license-review"
+            elif (indent == 2 or "stable" in context) and re.match(r"^url\b", line):
+                role = "stable-source-hint"
+            else:
+                role = "unclassified-review"
+        # The original parser does not see local tap patch files or inreplace.
+        if re.match(r"^file\s+", line) and "patch" in context:
+            role = "local-tap-patch-unverified"
+        elif re.match(r"^inreplace\b", line):
+            role = "recipe-source-edit-review"
+        if role:
+            rows.append({"line": i, "role": role, "declaration": line[:512]})
+        block = re.fullmatch(r"(stable|head|livecheck|test|patch)\s+do", line)
+        resource = re.fullmatch(r'resource\s+"[^"]+"(?:,\s*(:test))?\s+do', line)
+        if block:
+            stack.append((indent, block[1]))
+        elif resource:
+            stack.append((indent, "test-resource" if resource[1] else "resource"))
+    return rows
 
 def approved(url):
     try:
         parts = urlsplit(url)
-        return (parts.scheme == "https" and parts.hostname in HOSTS
+        exact_extra = ((parts.hostname in LAME_MIRRORS and parts.path == LAME_PATH and not parts.query)
+                       or (parts.hostname == "files.pythonhosted.org" and parts.path == PY_PARSING_PATH and not parts.query))
+        return (parts.scheme == "https" and (parts.hostname in HOSTS or exact_extra)
                 and not parts.username and not parts.password
                 and parts.port in (None, 443) and not parts.fragment)
     except ValueError:
@@ -139,8 +198,8 @@ def fallback_urls(key, pair):
     # LAME path only. Keep the original Formula checksum as authority.
     if key == ("lame", "4.0") and pair["url"] == (
             "https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz"):
-        urls.append("https://master.dl.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz")
-    return list(dict.fromkeys(url for url in urls if url != pair["url"] and approved(url)))
+        urls.extend("https://" + host + LAME_PATH for host in (*LAME_MIRRORS, "master.dl.sourceforge.net"))
+    return list(dict.fromkeys(url for url in urls if url != pair["url"] and approved(url)))[:MAX_FALLBACKS]
 
 def fetch_candidate(key, pair, target, limit):
     try:
@@ -271,6 +330,8 @@ def collect(bom, native, recipe_path, output):
             "candidates": len(row["downloads"]),
             "statuses": [d["status"] for d in row["downloads"]],
             "unresolved_declarations": len(row["plan"]["unresolved_declarations"]),
+            "local_tap_patch_hints": [h["declaration"] for h in row["plan"]["review_hints"]
+                                      if h["role"] == "local-tap-patch-unverified"],
         }, sort_keys=True))
     print("MRV_HOMEBREW_UPSTREAM_EVIDENCE_OK " + json.dumps({
         "kegs": len(report["packages"]),

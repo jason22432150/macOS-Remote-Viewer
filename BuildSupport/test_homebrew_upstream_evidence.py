@@ -111,6 +111,46 @@ class UpstreamEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "checksum"):
                     up.fetch_candidate(("gettext", "1"), pair, target, 20)
 
+    def test_exact_additional_hosts_and_review_hints(self):
+        for host in up.LAME_MIRRORS:
+            self.assertTrue(up.approved("https://" + host + up.LAME_PATH))
+            self.assertFalse(up.approved("https://" + host + "/other/project"))
+            self.assertFalse(up.approved("https://" + host + up.LAME_PATH + "?other=1"))
+        self.assertTrue(up.approved("https://files.pythonhosted.org" + up.PY_PARSING_PATH))
+        self.assertFalse(up.approved("https://files.pythonhosted.org/other"))
+        text = '\n'.join([
+            '  stable do',
+            '    url "https://ffmpeg.org/source"',
+            '    sha256 "' + "a"*64 + '"',
+            '  end',
+            '  resource "fixture", :test do',
+            '    url "https://ffmpeg.org/test"',
+            '    sha256 "' + "b"*64 + '"',
+            '  end',
+            '  patch do',
+            '    file "Patches/glib/hardcoded-paths.diff"',
+            '  end',
+            '  livecheck do',
+            '    url :stable',
+            '  end',
+            '  def install',
+            '    inreplace "file", "old", "new"',
+            '  end',
+            '__END__',
+            '  inreplace "not Ruby"'])
+        plan = up.plan(text)
+        hints = {r["line"]: r["role"] for r in plan["review_hints"]}
+        self.assertEqual(hints[2], "stable-source-hint")
+        self.assertEqual(hints[6], "test-resource-hint")
+        self.assertEqual(hints[10], "local-tap-patch-unverified")
+        self.assertEqual(hints[13], "livecheck-hint")
+        self.assertEqual(hints[16], "recipe-source-edit-review")
+        self.assertNotIn(19, hints)
+        pair = {"url": "https://downloads.sourceforge.net" + up.LAME_PATH}
+        urls = up.fallback_urls(("lame", "4.0"), pair)
+        self.assertEqual(len(urls), 3)
+        self.assertEqual(up.fallback_urls(("lame", "other"), pair), [])
+
     def test_download_hash_and_limit_are_enforced(self):
         class Response(io.BytesIO):
             def geturl(self):

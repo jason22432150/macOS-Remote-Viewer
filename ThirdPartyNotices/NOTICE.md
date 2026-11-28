@@ -51,3 +51,6 @@ CI #46143648742 確認 x264 Git 來源已取得並驗證 Commit／Tree，七個�
 
 
 來源收集新增固定 GNU Formula mirror／特定 LAME SourceForge master 備援，仍須匹配原 SHA-256。`homebrew-inline-patch-evidence.zip` 保存實際 Formula `patch :DATA` 的原始位元組並與來源證據綁定；不代表已套用或完成所有下游修改、資源及法律審查。
+
+
+已驗證 Inline Patch 三個元件及 gettext 來源；LAME 仍未取得，新增限定路徑的官方 SourceForge 鏡像及 spice-gtk 固定 pyparsing 資源來源。GLib 本地 tap Patch 缺少安裝時 tap Git revision，保留未驗證狀態；來源範圍提示不構成完整 Ruby 解析或授權結論。
