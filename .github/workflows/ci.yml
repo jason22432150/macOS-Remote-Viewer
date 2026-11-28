@@ -53,6 +53,10 @@ jobs:
         if: success() || failure()
         run: python3 -m unittest discover -s BuildSupport -p 'test_homebrew_inline_patch_evidence.py'
 
+      - name: Distribution review queue regression tests
+        if: success() || failure()
+        run: python3 -m unittest discover -s BuildSupport -p 'test_distribution_review.py'
+
   spice-source-audit:
     runs-on: macos-15
     timeout-minutes: 35

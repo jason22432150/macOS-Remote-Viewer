@@ -23,6 +23,7 @@ cocoa = load("cocoaspice_source_evidence", "cocoaspice-source-evidence.py")
 upstream = load("homebrew_upstream_evidence", "homebrew-upstream-evidence.py")
 git_source = load("homebrew_git_source_evidence", "homebrew-git-source-evidence.py")
 inline_patch = load("homebrew_inline_patch_evidence", "homebrew-inline-patch-evidence.py")
+review = load("distribution_review", "distribution-review.py")
 TARGET = "Contents/Frameworks/" + build.SPICE_CLIENT_DYLIB
 MODIFIED = "modified:spice-gtk@0.43"
 BASE_SPICE = "homebrew:spice-gtk@0.43_1"
@@ -233,6 +234,8 @@ def main():
     result["evidence_sha256"] = {key: digest(getattr(args, key)) for key in (
         "baseline_bom", "candidate_bom", "audit", "notices", "staging",
         "source_evidence", "native_manifest", "recipe_evidence", "cocoa_evidence", "upstream_evidence", "git_evidence", "inline_evidence")}
+    result["review_queue"] = review.make_review(result, review.project_license_files(HERE.parent))
+    print("MRV_DISTRIBUTION_REVIEW_QUEUE " + json.dumps(result["review_queue"]["task_counts"], sort_keys=True))
     with args.output.open("x", encoding="utf-8") as handle:
         json.dump(result, handle, indent=2, sort_keys=True)
         handle.write("\n")

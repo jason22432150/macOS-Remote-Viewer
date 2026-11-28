@@ -54,3 +54,6 @@ CI #46143648742 確認 x264 Git 來源已取得並驗證 Commit／Tree，七個�
 
 
 已驗證 Inline Patch 三個元件及 gettext 來源；LAME 仍未取得，新增限定路徑的官方 SourceForge 鏡像及 spice-gtk 固定 pyparsing 資源來源。GLib 本地 tap Patch 缺少安裝時 tap Git revision，保留未驗證狀態；來源範圍提示不構成完整 Ruby 解析或授權結論。
+
+
+Candidate `distribution-inventory.json` 新增 `review_queue`，逐元件列出來源、授權、Patch、連結及散布待審事項。專案根目錄尚未發現 LICENSE/COPYING 候選檔；未替著作權人選擇授權。FFmpeg 實際 GPL 回報、LAME 缺少來源、GLib 本地 Tap Patch 缺少可核實版本均不得自動批准。
