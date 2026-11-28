@@ -669,7 +669,7 @@ def create_compressed_dmg(*, source: Path, destination: Path, volume_name: str) 
     )
 
 
-def make_dmg(app: Path, dist_dir: Path, bom_path: Path) -> Path:
+def make_dmg(app: Path, dist_dir: Path, bom_path: Path, *, candidate_test_only: bool = False) -> Path:
     """產生可拖到「應用程式」的 DMG。"""
     version = app_version(app)
     minimum_os = capture(
@@ -681,6 +681,8 @@ def make_dmg(app: Path, dist_dir: Path, bom_path: Path) -> Path:
         ]
     ).strip()
     artifact_stem = f"MacRemoteViewer-{version}-arm64"
+    if candidate_test_only:
+        artifact_stem += "-candidate-test-only"
     stage = dist_dir.resolve() / "stage" / artifact_stem
     if stage.exists():
         shutil.rmtree(stage)
@@ -691,7 +693,12 @@ def make_dmg(app: Path, dist_dir: Path, bom_path: Path) -> Path:
     if applications_link.exists() or applications_link.is_symlink():
         applications_link.unlink()
     applications_link.symlink_to("/Applications")
-    write_open_instructions(stage / "如何開啟.txt", version=version, minimum_os=minimum_os)
+    if candidate_test_only:
+        (stage / "如何開啟.txt").write_text(
+            "CI 驗證專用：含修改版 spice-gtk。未完成散布授權與公證審查，"
+            "不得作為正式發布或一般安裝套件。\n", encoding="utf-8")
+    else:
+        write_open_instructions(stage / "如何開啟.txt", version=version, minimum_os=minimum_os)
     notices = ROOT / "ThirdPartyNotices" / "NOTICE.md"
     if notices.exists():
         shutil.copy2(notices, stage / "NOTICE.md")
@@ -700,7 +707,7 @@ def make_dmg(app: Path, dist_dir: Path, bom_path: Path) -> Path:
     create_compressed_dmg(
         source=stage,
         destination=dmg_path,
-        volume_name="Mac Remote Viewer",
+        volume_name="MRV Candidate Test Only" if candidate_test_only else "Mac Remote Viewer",
     )
     for leftover in dist_dir.resolve().glob(f"{artifact_stem}.zip*"):
         leftover.unlink()

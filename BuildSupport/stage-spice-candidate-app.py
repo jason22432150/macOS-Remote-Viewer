@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -49,6 +50,104 @@ def source_properties(bom, relative):
     if len(matches) != 1:
         raise ValueError(f"missing or duplicate baseline SBOM file: {relative}")
     return {entry["name"]: entry["value"] for entry in matches[0]["properties"]}
+
+
+def candidate_origins(baseline_bom, report):
+    """Preserve observed origins except the replaced bottle; never mislabel it."""
+    target = "Contents/Frameworks/" + LIBRARY
+    origins = {}
+    seen = set()
+    for item in dmg.validator.components(baseline_bom["components"]):
+        if item["type"] != "file":
+            continue
+        relative = item["name"]
+        if relative in seen:
+            raise ValueError("duplicate baseline origin")
+        seen.add(relative)
+        props = {p["name"]: p["value"] for p in item["properties"]}
+        if relative == target:
+            if props.get("mrv:source-sha256") != report["baseline_sha256"]:
+                raise ValueError("candidate baseline origin mismatch")
+            continue
+        origin = {}
+        for key in ("source-sha256", "source-name", "formula", "version", "keg-path"):
+            if "mrv:" + key in props:
+                origin[key.replace("-", "_")] = props["mrv:" + key]
+        if origin:
+            origins[relative] = origin
+    if target not in seen:
+        raise ValueError("missing baseline candidate origin")
+    for key in ("upstream_sha256", "downstream_sha256", "candidate_patch_sha256",
+                "candidate_dylib_sha256", "baseline_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", report[key]):
+            raise ValueError("invalid candidate provenance digest")
+    origins[target] = {
+        "source_sha256": report["candidate_dylib_sha256"],
+        "source_name": LIBRARY,
+        "upstream_sha256": report["upstream_sha256"],
+        "downstream_patch_sha256": report["downstream_sha256"],
+        "candidate_patch_sha256": report["candidate_patch_sha256"],
+        "baseline_source_sha256": report["baseline_sha256"],
+        "build_origin": "locally-built-modified-spice-gtk",
+    }
+    return origins
+
+
+def candidate_sbom(app, baseline_bom, report, final_hash):
+    origins = candidate_origins(baseline_bom, report)
+    bom = pack.build_sbom(app, origins, version=pack.app_version(app))
+    target = "Contents/Frameworks/" + LIBRARY
+    matches = [item for item in bom["components"] if item["type"] == "file" and item["name"] == target]
+    if len(matches) != 1 or matches[0]["hashes"] != [{"alg": "SHA-256", "content": final_hash}]:
+        raise ValueError("candidate signed file inventory mismatch")
+    file = matches[0]
+    bom["components"].remove(file)
+    bom["components"].append({
+        "type": "library", "bom-ref": "modified:spice-gtk@0.43",
+        "name": "spice-gtk (locally modified)", "version": "0.43",
+        "externalReferences": [{"type": "website", "url": "https://www.spice-space.org/"}],
+        "components": [file],
+    })
+    bom["metadata"]["properties"].append({
+        "name": "mrv:distribution-scope", "value": "candidate-test-only; distribution review incomplete"
+    })
+    return bom
+
+
+def package_candidate(app, baseline_bom, report, final_hash, output):
+    """Build a separate verification image; test only the copy from that image."""
+    dist = output / "candidate-package"
+    dist.mkdir(exist_ok=False)
+    bom = candidate_sbom(app, baseline_bom, report, final_hash)
+    stem = f"MacRemoteViewer-{pack.app_version(app)}-arm64-candidate-test-only"
+    bom_path = dist / (stem + ".bom.json")
+    bom_path.write_text(json.dumps(bom, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    bom_path.with_suffix(".json.sha256").write_text(f"{digest(bom_path)}  {bom_path.name}\n")
+    dmg.validator.verify_inventory(bom, app)
+    image = pack.make_dmg(app, dist, bom_path, candidate_test_only=True)
+    run("hdiutil", "verify", image)
+    if image.with_suffix(".dmg.sha256").read_text().split() != [digest(image), image.name]:
+        raise ValueError("candidate DMG checksum mismatch")
+    copied = output / "mounted-copy" / APP
+    copied.parent.mkdir(exist_ok=False)
+    with tempfile.TemporaryDirectory(prefix="mrv-candidate-package-") as directory:
+        mount = Path(directory) / "mount"
+        mount.mkdir()
+        run("hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mount, image)
+        try:
+            mounted = dmg.verify_mounted(mount, bom_path)
+            run("ditto", mounted, copied)
+        finally:
+            run("hdiutil", "detach", mount)
+    run("codesign", "--verify", "--deep", "--strict", copied)
+    dmg.validator.verify_inventory(bom, copied)
+    if digest(copied / "Contents" / "Frameworks" / LIBRARY) != final_hash:
+        raise ValueError("candidate image copy library mismatch")
+    print("MRV_SPICE_CANDIDATE_DMG_INVENTORY_OK", flush=True)
+    return {"dmg_sha256": digest(image), "sbom_sha256": digest(bom_path),
+            "signed_library_sha256": final_hash,
+            "runtime_input": "mounted-copy/" + APP,
+            "distribution_scope": "candidate-test-only"}
 
 
 def main():
@@ -176,6 +275,11 @@ def main():
     }, indent=2) + "\n")
     print("MRV_SPICE_CANDIDATE_APP_STAGED_OK", flush=True)
     print("MRV_SPICE_CANDIDATE_APP_DYLD_OK", flush=True)
+    package = package_candidate(app, baseline_bom, report, final_hash, output)
+    staging_path = output / "staging-report.json"
+    staging = json.loads(staging_path.read_text())
+    staging["candidate_package"] = package
+    staging_path.write_text(json.dumps(staging, indent=2) + "\n")
 
 
 if __name__ == "__main__":

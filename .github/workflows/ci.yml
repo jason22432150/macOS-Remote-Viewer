@@ -159,30 +159,35 @@ jobs:
         id: stage_candidate
         run: |
           python3 BuildSupport/stage-spice-candidate-app.py --baseline baseline-preview --candidate candidate-native --output "$RUNNER_TEMP/spice-candidate-runtime"
+      - name: Validate candidate DMG SBOM schema and mounted-copy inventory
+        run: |
+          python3 -m venv "$RUNNER_TEMP/candidate-sbom-venv"
+          "$RUNNER_TEMP/candidate-sbom-venv/bin/python" -m pip install 'jsonschema==4.25.1'
+          "$RUNNER_TEMP/candidate-sbom-venv/bin/python" BuildSupport/validate-sbom.py "$RUNNER_TEMP/spice-candidate-runtime"/candidate-package/*.bom.json --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Exercise candidate real TLS link
-        run: python3 BuildSupport/test-loopback-tls.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-loopback-tls.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate native link reply receive bounds on TLS loopback
-        run: python3 BuildSupport/test-spice-receive-link.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-link.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate native authenticated wire receive bounds
-        run: python3 BuildSupport/test-spice-receive-wire.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-wire.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate full-header submessage ownership and receive bounds
-        run: python3 BuildSupport/test-spice-receive-full.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-full.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate native guest agent reassembly receive bounds
-        run: python3 BuildSupport/test-spice-receive-agent.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-agent.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate concurrent agent budget exhaustion and recovery
-        run: python3 BuildSupport/test-spice-receive-budget.py --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-budget.py --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate concurrent wire budget exhaustion and recovery
         if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
-        run: python3 BuildSupport/test-spice-receive-budget.py --kind wire --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-budget.py --kind wire --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate native Agent allocation failure rollback
         if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
-        run: python3 BuildSupport/test-spice-receive-budget.py --kind agent --alloc-fault --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-budget.py --kind agent --alloc-fault --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Verify candidate native wire allocation failure rollback
         if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
-        run: python3 BuildSupport/test-spice-receive-budget.py --kind wire --alloc-fault --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-receive-budget.py --kind wire --alloc-fault --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Exercise candidate real SPICE authentication, display, clipboard and workspace
         if: ${{ !cancelled() && steps.stage_candidate.outcome == 'success' }}
-        run: python3 BuildSupport/test-spice-auth.py --require-credential-wipe --app "$RUNNER_TEMP/spice-candidate-runtime/Mac Remote Viewer.app"
+        run: python3 BuildSupport/test-spice-auth.py --require-credential-wipe --app "$RUNNER_TEMP/spice-candidate-runtime/mounted-copy/Mac Remote Viewer.app"
       - name: Upload candidate runtime staging evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -192,5 +197,8 @@ jobs:
             ${{ runner.temp }}/spice-candidate-runtime/staging-report.json
             ${{ runner.temp }}/spice-candidate-runtime/startup.stdout.txt
             ${{ runner.temp }}/spice-candidate-runtime/startup.stderr.txt
+            ${{ runner.temp }}/spice-candidate-runtime/candidate-package/*.bom.json
+            ${{ runner.temp }}/spice-candidate-runtime/candidate-package/*.bom.json.sha256
+            ${{ runner.temp }}/spice-candidate-runtime/candidate-package/*.dmg.sha256
           if-no-files-found: warn
           retention-days: 14

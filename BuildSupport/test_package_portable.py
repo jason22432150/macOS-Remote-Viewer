@@ -58,7 +58,56 @@ agent_fixture = importlib.util.module_from_spec(AGENT_SPEC)
 AGENT_SPEC.loader.exec_module(agent_fixture)
 
 
+STAGE_SPEC = importlib.util.spec_from_file_location(
+    "stage_spice_candidate", Path(__file__).with_name("stage-spice-candidate-app.py"))
+stage = importlib.util.module_from_spec(STAGE_SPEC)
+STAGE_SPEC.loader.exec_module(stage)
+
+
 class PortablePackagingTests(unittest.TestCase):
+    def test_candidate_sbom_does_not_inherit_bottle_provenance(self):
+        target = "Contents/Frameworks/" + stage.LIBRARY
+        other = "Contents/Frameworks/libother.dylib"
+        report = {key: str(i) * 64 for i, key in enumerate((
+            "upstream_sha256", "downstream_sha256", "candidate_patch_sha256",
+            "candidate_dylib_sha256", "baseline_sha256"), 1)}
+        def file(name, formula, digest):
+            return {"type": "file", "name": name, "properties": [
+                {"name": "mrv:source-sha256", "value": digest},
+                {"name": "mrv:formula", "value": formula},
+                {"name": "mrv:version", "value": "0.43_1"},
+                {"name": "mrv:keg-path", "value": "lib/" + Path(name).name}]}
+        baseline = {"components": [{"type": "library", "components": [
+            file(target, "spice-gtk", report["baseline_sha256"]),
+            file(other, "other", "a" * 64)]}]}
+        origins = stage.candidate_origins(baseline, report)
+        self.assertNotIn("formula", origins[target])
+        self.assertNotIn("keg_path", origins[target])
+        self.assertEqual(origins[target]["source_sha256"], report["candidate_dylib_sha256"])
+        self.assertEqual(origins[other]["formula"], "other")
+        with tempfile.TemporaryDirectory() as raw:
+            app = Path(raw)
+            binaries = [app / target, app / other]
+            for binary in binaries:
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.write_bytes(binary.name.encode())
+            final = stage.digest(binaries[0])
+            with patch.object(stage.pack, "iter_macho_files", return_value=binaries), \
+                 patch.object(stage.pack, "parse_macho", return_value=(None, [], [])), \
+                 patch.object(stage.pack, "capture", return_value="arm64"), \
+                 patch.object(stage.pack, "app_version", return_value="1.0.0"):
+                bom = stage.candidate_sbom(app, baseline, report, final)
+                candidate = next(p for p in bom["components"] if p["bom-ref"] == "modified:spice-gtk@0.43")
+                self.assertEqual(candidate["components"][0]["hashes"][0]["content"], final)
+                self.assertFalse(any(p["bom-ref"].startswith("homebrew:spice-gtk") for p in bom["components"]))
+                self.assertTrue(any(p["bom-ref"].startswith("homebrew:other") for p in bom["components"]))
+                with self.assertRaises(ValueError):
+                    stage.candidate_sbom(app, baseline, report, "f" * 64)
+        with self.assertRaises(ValueError):
+            stage.candidate_origins(baseline, dict(report, baseline_sha256="f" * 64))
+        with self.assertRaises(ValueError):
+            stage.candidate_origins(baseline, dict(report, candidate_patch_sha256="bad"))
+
     def test_proxy_certificate_rejection_requires_established_tunnel_and_tls_evidence(self):
         def stats(**overrides):
             return {"decoy": {"connections": 0},
